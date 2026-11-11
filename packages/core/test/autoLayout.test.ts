@@ -55,6 +55,17 @@ describe('autoLayout', () => {
     }
   });
 
+  it('trims with a non-dividing x period: no tileU, no trim group', () => {
+    const period = { ...PERIOD, x: 0.3 };
+    for (let seed = 1; seed <= 20; seed++) {
+      const l = autoLayout({ ...base, target: 'trims', period, seed });
+      expect(validateLayout(l)).toEqual([]);
+      expect(checkProportions(l, period)).toEqual([]);
+      expect(l.rects.some((r) => r.tileU)).toBe(false);
+      expect(l.rects.some((r) => r.group === 'trim')).toBe(false);
+    }
+  });
+
   it('CONTINUOUS covers the whole atlas and respects minSizeM (trim bands are exempt)', () => {
     const minSizeM = 0.3;
     for (const target of TARGETS) {

@@ -156,7 +156,7 @@ export function autoLayout(o: AutoLayoutOptions): HotspotLayout {
       // Tiling needs the full atlas width; a partial-width band cannot repeat.
       tileU: c.tileU && w === o.widthPx,
       useOn,
-      group: c.tileU ? 'trim' : '',
+      group: c.tileU ? (w === o.widthPx ? 'trim' : 'band') : '',
     });
   });
 
