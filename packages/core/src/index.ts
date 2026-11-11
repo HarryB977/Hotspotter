@@ -12,3 +12,5 @@ export { autoLayout } from './autoLayout';
 export type { AutoTarget, AutoLayoutOptions } from './autoLayout';
 export { placeMaterial, atlasPxToMaterialM } from './placement';
 export type { RectPlacement, PlacementOptions } from './placement';
+export { classifyMapFile, materialNameFromFiles, chooseMaps, MAP_DEFAULTS } from './material';
+export type { MapKind, MapMatch, MaterialSettings } from './material';
