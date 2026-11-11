@@ -1,16 +1,11 @@
-import { packMaps, placeMaterial, resolveLayout, toAnvilTable, toHotspotJson } from '@hotspotter/core';
+import { encodePngRgba8, packMaps, placeMaterial, resolveLayout, toAnvilTable, toHotspotJson } from '@hotspotter/core';
 import type { ExportPreset, MapPixels, MaterialSettings, NodeParams } from '@hotspotter/core';
 import { composeAtlas, heightToRgba8, readbackRgba8 } from '@hotspotter/engine';
 import type { AtlasMaps } from '@hotspotter/engine';
 import { useProject } from '../state/store';
 
 export async function encodePng(p: MapPixels): Promise<Blob> {
-  const canvas = new OffscreenCanvas(p.width, p.height);
-  const ctx = canvas.getContext('2d');
-  if (!ctx) throw new Error('2D canvas unavailable');
-  const bytes = new Uint8ClampedArray(p.data.buffer, p.data.byteOffset, p.data.byteLength);
-  ctx.putImageData(new ImageData(bytes, p.width, p.height), 0, 0);
-  return canvas.convertToBlob({ type: 'image/png' });
+  return new Blob([await encodePngRgba8(p)], { type: 'image/png' });
 }
 
 export interface ExportOptions {
@@ -54,15 +49,19 @@ export async function exportProject(opts: ExportOptions): Promise<string[]> {
   try {
     maps = await composeAtlas(gpu, { layout, material: gpuMaterial, placements, resolutionPx: opts.resolutionPx });
     heightTex = heightToRgba8(gpu, maps);
-    const [baseColor, normal, height, roughness, metallic, ao] = await Promise.all([
-      readbackRgba8(gpu, maps.baseColor),
-      readbackRgba8(gpu, maps.normal),
-      readbackRgba8(gpu, heightTex),
-      readbackRgba8(gpu, maps.roughness),
-      readbackRgba8(gpu, maps.metallic),
-      readbackRgba8(gpu, maps.ao),
-    ]);
-    const packed = packMaps(opts.preset, { baseColor, normal, height, roughness, metallic, ao });
+    // One readback at a time keeps the staging buffers and CPU copies from stacking up at 8192.
+    const atlas = maps;
+    const heightRgba = heightTex;
+    const readAll = async () => {
+      const baseColor = await readbackRgba8(gpu, atlas.baseColor);
+      const normal = await readbackRgba8(gpu, atlas.normal);
+      const height = await readbackRgba8(gpu, heightRgba);
+      const roughness = await readbackRgba8(gpu, atlas.roughness);
+      const metallic = await readbackRgba8(gpu, atlas.metallic);
+      const ao = await readbackRgba8(gpu, atlas.ao);
+      return { baseColor, normal, height, roughness, metallic, ao };
+    };
+    const packed = packMaps(opts.preset, await readAll());
     const pngNames = packed.map((f) => `${mat.name}${f.suffix}.png`);
     const total = packed.length + 2;
     const written: string[] = [];
@@ -71,7 +70,8 @@ export async function exportProject(opts: ExportOptions): Promise<string[]> {
       opts.onProgress?.(i++, total, name);
       written.push(await upload(opts.dir, name, body));
     };
-    for (let k = 0; k < packed.length; k++) await put(pngNames[k], await encodePng(packed[k].pixels));
+    // Shift each file off the list so its pixels can be collected once uploaded.
+    for (const name of pngNames) await put(name, await encodePng(packed.shift()!.pixels));
     const json = toHotspotJson(layout, { name: mat.name, heightRangeM: maps.heightRangeM, maps: pngNames });
     await put(`${mat.name}.hotspot.json`, json);
     await put(`${mat.name}.anvil.csv`, toAnvilTable(layout));

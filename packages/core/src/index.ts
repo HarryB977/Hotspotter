@@ -22,3 +22,4 @@ export { toHotspotJson, parseHotspotJson } from './export/hotspotJson';
 export { toAnvilTable } from './export/anvilTable';
 export { packMaps } from './export/packing';
 export type { ExportPreset, MapPixels, PackedFile } from './export/packing';
+export { encodePngRgba8 } from './export/png';

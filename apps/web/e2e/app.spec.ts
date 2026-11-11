@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { inflateSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 
 const SAMPLE_DIR = resolve(fileURLToPath(new URL('.', import.meta.url)), '../../../samples/pbr/bricks wall 13');
@@ -124,6 +125,22 @@ test.describe('layout, inspector and atlas view', () => {
   });
 });
 
+/** Decodes an 8-bit RGBA, filter-0 PNG as written by encodePngRgba8. */
+function decodeRgbaPng(buf: Buffer): { w: number; h: number; data: Buffer } {
+  const w = buf.readUInt32BE(16);
+  const h = buf.readUInt32BE(20);
+  const idat: Buffer[] = [];
+  for (let o = 8; o < buf.length; ) {
+    const len = buf.readUInt32BE(o);
+    if (buf.toString('latin1', o + 4, o + 8) === 'IDAT') idat.push(buf.subarray(o + 8, o + 8 + len));
+    o += 12 + len;
+  }
+  const raw = inflateSync(Buffer.concat(idat));
+  const data = Buffer.alloc(w * h * 4);
+  for (let y = 0; y < h; y++) raw.copy(data, y * w * 4, y * (w * 4 + 1) + 1, (y + 1) * (w * 4 + 1));
+  return { w, h, data };
+}
+
 test('exports Unity URP maps, hotspot.json and Anvil csv to a folder, and overwrites on re-export', async ({ page }) => {
   await page.goto('/');
   await page.getByTestId('folder-input').setInputFiles(SAMPLE_DIR);
@@ -154,6 +171,30 @@ test('exports Unity URP maps, hotspot.json and Anvil csv to a folder, and overwr
     expect(buf.subarray(1, 4).toString('latin1')).toBe('PNG');
     expect([buf.readUInt32BE(16), buf.readUInt32BE(20)]).toEqual([1024, 1024]);
   }
+  // R must hold metallic untouched where smoothness (A) < 255; compare with a fresh readback of the preview atlas.
+  const ms = decodeRgbaPng(readFileSync(join(dir, 'bricks_wall_13_MetallicSmoothness.png')));
+  const metalRef = await page.evaluate(async () => {
+    const hs = window.__hs!;
+    const { data } = await hs.engine.readbackRgba8(hs.store.getState().gpu!, hs.lastAtlas!.metallic);
+    return { size: Math.sqrt(data.length / 4), r: Array.from(data.filter((_, i) => i % 4 === 0)) };
+  });
+  let partial = 0;
+  let nonZero = 0;
+  for (let i = 0; i < ms.data.length; i += 4) {
+    if (ms.data[i + 3] < 255) partial++;
+    if (ms.data[i] > 0) nonZero++;
+  }
+  expect(partial).toBeGreaterThan(0);
+  expect(ms.w).toBe(1024);
+  expect(metalRef.size).toBe(1024);
+  // Same inputs and size as the preview (1024), so metallic R must match exactly.
+  for (let i = 0; i < metalRef.r.length; i++) {
+    if (ms.data[i * 4 + 3] < 255 && ms.data[i * 4] !== metalRef.r[i]) {
+      throw new Error(`metallic R differs at pixel ${i}: ${ms.data[i * 4]} vs ${metalRef.r[i]}`);
+    }
+  }
+  expect(nonZero > 0 || metalRef.r.every((v) => v === 0)).toBe(true);
+
   const json = JSON.parse(readFileSync(join(dir, 'bricks_wall_13.hotspot.json'), 'utf8'));
   expect(json.rects).toHaveLength(rectTotal);
   expect(json.maps).toEqual(names);

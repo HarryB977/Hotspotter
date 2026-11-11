@@ -98,6 +98,9 @@ export function ExportDialog() {
               </Select>
             </div>
           </div>
+          {res === 8192 && (
+            <div className="text-xs text-amber-400" data-testid="export-warning">{es.export.bigWarning}</div>
+          )}
           {progress && busy && (
             <div className="text-xs text-zinc-400">
               <progress className="h-1 w-full" max={progress.total} value={progress.index} data-testid="export-progress" />

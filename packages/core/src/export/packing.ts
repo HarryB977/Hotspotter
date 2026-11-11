@@ -18,8 +18,8 @@ function build(ref: MapPixels, fn: (i: number) => [number, number, number, numbe
   return { width: ref.width, height: ref.height, data };
 }
 
-const copy = (m: MapPixels): MapPixels => ({ width: m.width, height: m.height, data: m.data.slice() });
 
+/** Passthrough outputs (BaseColor, Normal, Height) alias the input buffers; callers must not mutate them. */
 export function packMaps(preset: ExportPreset, maps: MapSet): PackedFile[] {
   const ref = maps.baseColor;
   for (const m of Object.values(maps)) {
@@ -29,10 +29,10 @@ export function packMaps(preset: ExportPreset, maps: MapSet): PackedFile[] {
   }
   const metal = maps.metallic.data, rough = maps.roughness.data, ao = maps.ao.data;
   const common: PackedFile[] = [
-    { suffix: '_BaseColor', pixels: copy(maps.baseColor) },
-    { suffix: '_Normal', pixels: copy(maps.normal) },
+    { suffix: '_BaseColor', pixels: maps.baseColor },
+    { suffix: '_Normal', pixels: maps.normal },
   ];
-  const height: PackedFile = { suffix: '_Height', pixels: copy(maps.height) };
+  const height: PackedFile = { suffix: '_Height', pixels: maps.height };
 
   if (preset === 'unity-urp') {
     return [
