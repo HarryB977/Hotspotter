@@ -14,3 +14,7 @@ export { placeMaterial, atlasPxToMaterialM } from './placement';
 export type { RectPlacement, PlacementOptions } from './placement';
 export { classifyMapFile, materialNameFromFiles, chooseMaps, MAP_DEFAULTS } from './material';
 export type { MapKind, MapMatch, MaterialSettings } from './material';
+export {
+  createDefaultDoc, serializeDoc, parseDoc, toStack, resolveLayout, updateNodeParams, DocParseError,
+} from './document';
+export type { NodeType, NodeParams, DocNode, DocEdge, ProjectDoc, StackEntry } from './document';
