@@ -30,3 +30,16 @@ Quién decidió qué, para no reabrir decisiones cerradas. "Usuario" = el autor 
 | 24 | Unity + Anvil CSG es el destino prioritario de exportación | Constructor | 2026-11-11 |
 | 25 | Revelado en zona y variantes sobre el mismo layout (vistos en samples/examples) | Constructor | 2026-11-11 |
 | 26 | `samples/` no se commitea (material de terceros, posible repo público) | Constructor | 2026-11-11 |
+| 27 | La normal interna sigue el signo físico de la pendiente (Sobel): donde la altura baja hacia +X, la normal GL apunta a +X | Constructor | 2026-11-11 |
+| 28 | El layout automático cubre la mayor región múltiplo del periodo anclada abajo a la izquierda; las franjas sobrantes (< 1 periodo) quedan vacías como ranura | Constructor | 2026-11-11 |
+| 29 | Molduras con periodo X que no divide el ancho del atlas: se emiten como bandas (`group: band`) sin `tileU`, nunca estiradas ni cortadas | Constructor | 2026-11-11 |
+| 30 | Origen del material (y hacia arriba) = texel inferior izquierdo del albedo; los mapas se muestrean con repetición | Constructor | 2026-11-11 |
+| 31 | En v0.1-A el BaseColor se trata como bytes de 8 bits sin decodificar sRGB (filtrado en espacio gamma); el filtrado lineal correcto se aplaza | Constructor | 2026-11-11 |
+| 32 | El ancho de ranura es el fondo plano (`widthM`); el bisel ocupa `widthM/2` extra a cada lado, dentro del rectángulo. La UI lo llama "Fondo de ranura"; un ancho de bisel propio se aplaza a v0.1-B | Constructor | 2026-11-11 |
+| 33 | El servidor solo acepta Host de loopback y Origin de la app (localhost/127.0.0.1 en 5173 y 7420); escribir archivos exige la cabecera `X-Hotspotter: 1`; rechaza rutas UNC, `..`, `:` y nombres reservados de Windows; Vite sin CORS | Constructor | 2026-11-11 |
+| 34 | Si un ajuste del material cambia durante una importación, gana la importación | Constructor | 2026-11-11 |
+| 35 | Los PNG se codifican en TypeScript puro (RGBA 8 bits, sin premultiplicar) en vez de con canvas, para no corromper RGB donde A < 255 | Constructor | 2026-11-11 |
+| 36 | Export con poca memoria: mapas leídos y subidos de uno en uno; aviso de ≈2 GB de RAM al elegir 8192 | Constructor | 2026-11-11 |
+| 37 | El export resuelve el layout a su propia resolución: los px de `hotspot.json` y del CSV de Anvil coinciden con los PNG (±1 px respecto a la preview) | Constructor | 2026-11-11 |
+| 38 | Si el material trae normal map, Sobel solo actúa sobre la altura de la ranura (altura total menos la del material) y el relieve del material lo aporta su normal; sin normal map, Sobel sobre la altura total. El Height exportado es siempre la altura total | Constructor | 2026-11-11 |
+| 39 | Si los archivos no comparten prefijo, el material toma el nombre de la carpeta, y si no, "material"; el nombre es editable y se sanea para usarlo en archivos | Constructor | 2026-11-11 |

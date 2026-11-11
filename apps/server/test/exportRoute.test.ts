@@ -9,12 +9,12 @@ let app: FastifyInstance;
 let root: string;
 let dir: string;
 
-const put = (query: Record<string, string>, body: Buffer) =>
+const put = (query: Record<string, string>, body: Buffer, headers: Record<string, string> = {}) =>
   app.inject({
     method: 'PUT',
     url: '/api/export/file',
     query,
-    headers: { 'content-type': 'application/octet-stream' },
+    headers: { 'content-type': 'application/octet-stream', 'x-hotspotter': '1', ...headers },
     payload: body,
   });
 
@@ -90,5 +90,34 @@ describe('server', () => {
     await strict.close();
     const res = await app.inject({ method: 'GET', url: '/api/health', headers: { host: 'evil.example:7420' } });
     expect(res.statusCode).toBe(403);
+  });
+
+  it('rejects requests from a foreign Origin with 403', async () => {
+    for (const origin of ['http://evil.example', 'http://localhost:9999', 'null']) {
+      const res = await app.inject({ method: 'GET', url: '/api/health', headers: { origin } });
+      expect(res.statusCode, origin).toBe(403);
+      expect(res.json()).toEqual({ error: expect.any(String) });
+    }
+    const write = await put({ dir, name: 'evil.png' }, Buffer.from('x'), { origin: 'http://evil.example' });
+    expect(write.statusCode).toBe(403);
+  });
+
+  it('rejects an export upload without the X-Hotspotter header with 403', async () => {
+    const res = await app.inject({
+      method: 'PUT',
+      url: '/api/export/file',
+      query: { dir, name: 'noheader.png' },
+      headers: { 'content-type': 'application/octet-stream', origin: 'http://localhost:5173' },
+      payload: Buffer.from('x'),
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json()).toEqual({ error: expect.any(String) });
+  });
+
+  it('accepts an export upload from an allowed Origin with the X-Hotspotter header', async () => {
+    for (const origin of ['http://localhost:5173', 'http://127.0.0.1:5173', 'http://localhost:7420', 'http://127.0.0.1:7420']) {
+      const res = await put({ dir, name: 'ok.png' }, Buffer.from(origin), { origin });
+      expect(res.statusCode, origin).toBe(200);
+    }
   });
 });

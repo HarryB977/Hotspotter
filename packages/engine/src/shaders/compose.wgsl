@@ -13,6 +13,7 @@ struct Params {
   profile: u32,            // 0 bevel, 1 round, 2 step, 3 none
   roughnessIsGloss: u32,
   refHeightPx: f32,        // layout height in reference px
+  sobelMacro: u32,         // 1: Sobel on the macro height (matNormal.a), the material has a normal map
 }
 
 struct Rect {
@@ -113,15 +114,20 @@ fn surface(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Material +X runs along atlas +Y and material +Y along atlas -X.
     n = vec3<f32>(-n.y, n.x, n.z);
   }
-  textureStore(outMatNormal, c, vec4<f32>(n, 1.0));
 
+  // Macro height: the groove/profile part of the height, without the material's own relief.
+  var macroH: f32;
   var h: f32;
   if (q.id == 0u) {
-    h = -P.grooveDepthM;
+    macroH = -P.grooveDepthM;
+    h = macroH;
   } else {
     let raw = textureSampleLevel(tHeight, samp, q.uv, 0.0).r;
-    h = (raw - 0.5) * P.heightScaleM - P.grooveDepthM * q.prof;
+    macroH = -P.grooveDepthM * q.prof;
+    h = (raw - 0.5) * P.heightScaleM + macroH;
   }
+  // Alpha carries the macro height to the normal pass.
+  textureStore(outMatNormal, c, vec4<f32>(n, macroH));
   textureStore(outHeight, c, vec4<f32>(h, 0.0, 0.0, 1.0));
 }
 

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { InputHTMLAttributes } from 'react';
-import { classifyMapFile } from '@hotspotter/core';
+import { classifyMapFile, sanitizeMaterialName } from '@hotspotter/core';
 import type { MapKind, MaterialPeriod } from '@hotspotter/core';
 import { FolderOpen } from 'lucide-react';
 import { es } from '../i18n/es';
@@ -14,8 +14,8 @@ import { cn } from '../lib/utils';
 const KINDS: MapKind[] = ['baseColor', 'normal', 'height', 'roughness', 'metallic', 'ao', 'opacity'];
 const NONE = 'none';
 
-/** Collects the files of a dropped folder or file list. */
-async function filesFromDrop(dt: DataTransfer): Promise<File[]> {
+/** Collects the files of a dropped folder or file list, plus the dropped folder's name. */
+async function filesFromDrop(dt: DataTransfer): Promise<{ files: File[]; folder?: string }> {
   const out: File[] = [];
   const walk = async (entry: FileSystemEntry): Promise<void> => {
     if (entry.isFile) {
@@ -32,15 +32,17 @@ async function filesFromDrop(dt: DataTransfer): Promise<File[]> {
   const entries = Array.from(dt.items)
     .map((i) => i.webkitGetAsEntry())
     .filter((e): e is FileSystemEntry => e !== null);
-  if (entries.length === 0) return Array.from(dt.files);
+  if (entries.length === 0) return { files: Array.from(dt.files) };
   for (const e of entries) await walk(e);
-  return out;
+  return { files: out, folder: entries.find((e) => e.isDirectory)?.name };
 }
 
-export function Row({ label, children, testId }: { label: string; children: React.ReactNode; testId?: string }) {
+export function Row({ label, hint, children, testId }: {
+  label: string; hint?: string; children: React.ReactNode; testId?: string;
+}) {
   return (
     <div className="flex min-h-6 items-center gap-2" data-testid={testId}>
-      <span className="w-24 shrink-0 truncate text-zinc-400" title={label}>{label}</span>
+      <span className="w-24 shrink-0 truncate text-zinc-400" title={hint ? `${label}. ${hint}` : label}>{label}</span>
       <div className="flex min-w-0 flex-1 items-center gap-1">{children}</div>
     </div>
   );
@@ -73,6 +75,29 @@ export function NumField({ value, onCommit, nullable, className, ...rest }: NumF
       {...rest}
       inputMode="decimal"
       className={cn('text-right', className)}
+      value={text}
+      onChange={(e) => setText(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+    />
+  );
+}
+
+/** Material name, used as the export file prefix; sanitized on commit, empty keeps the old name. */
+function NameField({ value, onCommit }: { value: string; onCommit(v: string): void }) {
+  const [text, setText] = useState(value);
+  useEffect(() => setText(value), [value]);
+  const commit = () => {
+    const name = sanitizeMaterialName(text);
+    if (name && name !== value) onCommit(name);
+    else setText(value);
+  };
+  return (
+    <Input
+      className="h-7 text-lg text-zinc-100"
+      aria-label={es.material.name}
+      title={es.material.nameHint}
+      data-testid="material-name"
       value={text}
       onChange={(e) => setText(e.target.value)}
       onBlur={commit}
@@ -135,7 +160,7 @@ export function MaterialPanel() {
           onDrop={(e) => {
             e.preventDefault();
             setDragging(false);
-            void filesFromDrop(e.dataTransfer).then(importFiles);
+            void filesFromDrop(e.dataTransfer).then(({ files, folder }) => importFiles(files, folder));
           }}
         >
           <span>{importing ? es.material.importing : es.material.drop}</span>
@@ -165,9 +190,7 @@ export function MaterialPanel() {
 
         {s && (
           <div className="mt-1 flex flex-col gap-1">
-            <div className="truncate text-lg text-zinc-100" data-testid="material-name" title={s.name}>
-              {s.name}
-            </div>
+            <NameField value={s.name} onCommit={(name) => void updateSettings({ name })} />
             {rows.map(([kind, name]) => (
               <div key={name} className="flex items-center gap-1" data-testid="map-row" data-kind={kind}>
                 <Select value={kind} onValueChange={(v) => void assignMap(name, v === NONE ? null : (v as MapKind))}>

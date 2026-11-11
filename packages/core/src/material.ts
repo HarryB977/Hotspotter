@@ -83,6 +83,22 @@ export function materialNameFromFiles(filenames: string[]): string {
   return common.replace(/[_. -]+$/, '');
 }
 
+const RESERVED_DEVICE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i;
+
+/**
+ * Makes a material name safe as an export file prefix: drops path separators, `:<>"|?*` and control
+ * characters, trims spaces and trailing dots, and suffixes Windows device names (CON → CON_).
+ */
+export function sanitizeMaterialName(name: string): string {
+  const s = name.replace(/[\\/:<>"|?*\x00-\x1f]/g, '').trim().replace(/[. ]+$/, '');
+  return RESERVED_DEVICE.test(s) ? `${s}_` : s;
+}
+
+/** Name from the file prefix, else the folder name, else 'material'; always sanitized. */
+export function resolveMaterialName(filenames: string[], folder?: string): string {
+  return sanitizeMaterialName(materialNameFromFiles(filenames)) || sanitizeMaterialName(folder ?? '') || 'material';
+}
+
 /** Lower is better: explicit gl, then unspecified, then dx. */
 const normalRank = (c?: 'gl' | 'dx'): number => (c === 'gl' ? 0 : c === undefined ? 1 : 2);
 

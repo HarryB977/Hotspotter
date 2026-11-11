@@ -31,7 +31,7 @@ export interface AtlasMaps {
 const MAX_RECTS = 256;
 
 const PROFILE_CODE: Record<GrooveProfile, number> = { bevel: 0, round: 1, step: 2, none: 3 };
-const PARAMS_BYTES = 48;
+const PARAMS_BYTES = 64;
 const RECT_BYTES = 32;
 
 const OUT_USAGE =
@@ -59,6 +59,7 @@ function paramsBuffer(device: GPUDevice, input: ComposeInput, outW: number, outH
   u[9] = PROFILE_CODE[layout.groove.profile];
   u[10] = s.roughnessIsGloss ? 1 : 0;
   f[11] = layout.heightPx;
+  u[12] = material.hasNormalMap ? 1 : 0;
   const buf = device.createBuffer({ size: PARAMS_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   device.queue.writeBuffer(buf, 0, data);
   return buf;

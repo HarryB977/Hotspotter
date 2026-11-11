@@ -54,6 +54,8 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: true,
+    // No CORS: other sites must not read dev-server responses or reach /api through the proxy.
+    cors: false,
     fs: { allow: ['../..'] },
     proxy: { '/api': { target: 'http://127.0.0.1:7420', changeOrigin: true } },
   },

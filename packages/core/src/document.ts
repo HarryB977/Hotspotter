@@ -5,6 +5,10 @@ import type { PresetId } from './presets';
 import { autoLayout } from './autoLayout';
 import type { AutoTarget } from './autoLayout';
 import type { MaterialSettings } from './material';
+import { placeMaterial } from './placement';
+import type { RectPlacement } from './placement';
+import { checkProportions } from './period';
+import type { ProportionIssue } from './period';
 
 export type NodeType = 'material' | 'layout' | 'placement' | 'output';
 
@@ -110,15 +114,38 @@ function findNode<T extends NodeType>(d: ProjectDoc, type: T): DocNode<T> {
   return n as DocNode<T>;
 }
 
-export function resolveLayout(d: ProjectDoc): HotspotLayout {
+/** Resolves the layout at the output resolution, or at `opts.widthPx` when given. */
+export function resolveLayout(d: ProjectDoc, opts?: { widthPx?: number }): HotspotLayout {
   const material = findNode(d, 'material').params;
   const layout = findNode(d, 'layout').params;
   const output = findNode(d, 'output').params;
-  const { resolutionPx: widthPx, worldWidthM } = output;
+  const widthPx = opts?.widthPx ?? output.resolutionPx;
+  const { worldWidthM } = output;
   const base = layout.mode === 'preset'
     ? presetLayout(layout.preset, widthPx, worldWidthM)
     : autoLayout({ target: layout.target, widthPx, worldWidthM, period: material.period, seed: layout.seed });
   return { ...base, groove: { ...output.groove } };
+}
+
+export interface ComposeInputs {
+  layout: HotspotLayout;
+  placements: RectPlacement[];
+  material: MaterialSettings;
+  issues: ProportionIssue[];
+}
+
+/** Layout, placements and proportion checks for composing `d`, shared by preview and export. */
+export function composeInputsFromDoc(d: ProjectDoc, widthPx?: number): ComposeInputs {
+  const layout = resolveLayout(d, { widthPx });
+  const material = findNode(d, 'material').params;
+  const pl = findNode(d, 'placement').params;
+  const placements = placeMaterial(layout, material.period, {
+    variation: pl.variation,
+    seed: pl.seed,
+    materialAllowsRotation: material.allowRotation,
+    tileSizeM: material.tileSizeM,
+  });
+  return { layout, placements, material, issues: checkProportions(layout, material.period) };
 }
 
 export function updateNodeParams<T extends NodeType>(

@@ -34,6 +34,8 @@ export function registerExportRoute(app: FastifyInstance): void {
     '/api/export/file',
     { bodyLimit: MAX_EXPORT_BYTES },
     async (req, reply) => {
+      // A custom header forces a CORS preflight, so a plain cross-site form or fetch cannot write files.
+      if (req.headers['x-hotspotter'] !== '1') return reply.code(403).send({ error: 'Falta la cabecera X-Hotspotter' });
       const { dir, name } = req.query;
       const problem = validate(dir, name);
       if (problem) return reply.code(400).send({ error: problem });

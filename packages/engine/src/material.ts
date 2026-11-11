@@ -13,6 +13,8 @@ export interface LoadedMaterial {
 export interface GpuMaterial {
   textures: Record<MapKind, GPUTexture>;
   settings: MaterialSettings;
+  /** True when a normal map was uploaded (not the flat default); the normal pass then skips material relief. */
+  hasNormalMap: boolean;
 }
 
 const KINDS: MapKind[] = ['baseColor', 'normal', 'height', 'roughness', 'metallic', 'ao', 'opacity'];
@@ -67,5 +69,5 @@ export function uploadMaterial(ctx: GpuContext, m: LoadedMaterial): GpuMaterial 
     const tex = uploadRgba8(ctx, bmp, { srgb: false });
     textures[kind] = kind === 'normal' && m.settings.normalConvention === 'dx' ? flipGreen(ctx, tex) : tex;
   }
-  return { textures, settings: m.settings };
+  return { textures, settings: m.settings, hasNormalMap: m.images.normal !== undefined };
 }

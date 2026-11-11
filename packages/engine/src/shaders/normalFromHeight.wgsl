@@ -1,5 +1,8 @@
 // Pass 3: Sobel normal from the height map (metres), combined with the
 // (already rotated) material normal via Reoriented Normal Mapping.
+// When the material has its own normal map, that map already holds the
+// material relief, so Sobel runs only on the macro (groove) height stored in
+// matNormal.a; otherwise it runs on the full height.
 // Output is OpenGL convention: +X right, +Y up (image rows grow downwards).
 
 struct Params {
@@ -13,6 +16,7 @@ struct Params {
   profile: u32,
   roughnessIsGloss: u32,
   refHeightPx: f32,
+  sobelMacro: u32,         // 1: Sobel on the macro height (matNormal.a), the material has a normal map
 }
 
 @group(0) @binding(0) var<uniform> P: Params;
@@ -22,7 +26,11 @@ struct Params {
 
 fn h(p: vec2<i32>) -> f32 {
   let size = vec2<i32>(textureDimensions(heightTex));
-  return textureLoad(heightTex, clamp(p, vec2<i32>(0), size - 1), 0).r;
+  let q = clamp(p, vec2<i32>(0), size - 1);
+  if (P.sobelMacro != 0u) {
+    return textureLoad(matNormalTex, q, 0).a;
+  }
+  return textureLoad(heightTex, q, 0).r;
 }
 
 @compute @workgroup_size(8, 8)

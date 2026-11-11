@@ -68,7 +68,7 @@ export function Inspector() {
         </Row>
       </Section>
       <Section title={es.inspector.groove}>
-        <Row label={es.inspector.grooveWidth}>
+        <Row label={es.inspector.grooveWidth} hint={es.inspector.grooveWidthHint}>
           <NumField
             aria-label={es.inspector.grooveWidth}
             value={Math.round(g.widthM * 1e4) / 10}

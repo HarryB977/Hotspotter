@@ -26,6 +26,7 @@ export function App() {
   const atlas = useProject((s) => s.atlas);
   const activeMap = useProject((s) => s.activeMap);
   const setActiveMap = useProject((s) => s.setActiveMap);
+  const composeError = useProject((s) => s.composeError);
 
   useEffect(() => {
     void useProject.getState().initGpu();
@@ -76,12 +77,17 @@ export function App() {
               ))}
             </TabsList>
           </Tabs>
-          <span className="flex items-center gap-3 px-2 text-zinc-500">
+          <span className="flex min-w-0 items-center gap-3 px-2 text-zinc-500">
+            {composeError && (
+              <span className="truncate text-red-400" title={composeError} data-testid="compose-error">
+                {composeError}
+              </span>
+            )}
             {atlas && (
               <>
                 <span
                   className={atlas.issues.length > 0 ? 'text-amber-400' : undefined}
-                  title={es.mapBar.issues(atlas.issues.length)}
+                  title={es.mapBar.issues(atlas.issues.length, atlas.layoutIssues.length)}
                   data-testid="proportion-issues"
                 >
                   {atlas.issues.length}

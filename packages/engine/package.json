@@ -9,5 +9,8 @@
   },
   "devDependencies": {
     "@webgpu/types": "0.1.51"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
   }
 }

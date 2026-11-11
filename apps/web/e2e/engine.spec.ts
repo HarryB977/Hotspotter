@@ -67,7 +67,14 @@ interface ComposeProbe {
 declare global {
   interface Window {
     __t11?: {
-      compose(opts: { albedoOnly?: boolean; normal?: 'gl' | 'dx' }): Promise<ComposeProbe>;
+      compose(opts: {
+        albedoOnly?: boolean;
+        normal?: 'gl' | 'dx';
+        /** Adds a flat normal map (128, 128, 255) instead of the tilted one. */
+        flatNormal?: boolean;
+        /** Adds a height map of 8-texel vertical stripes. */
+        heightRelief?: boolean;
+      }): Promise<ComposeProbe>;
     };
   }
 }
@@ -92,7 +99,7 @@ test.describe('composeAtlas', () => {
         return [(cx + cy) % 2 ? 255 : 0, cx * 32, cy * 32, 255];
       };
       window.__t11 = {
-        async compose({ albedoOnly = true, normal = 'gl' }) {
+        async compose({ albedoOnly = true, normal = 'gl', flatNormal = false, heightRelief = false }) {
           const { core, engine } = window.__hs!;
           const ctx = await engine.initGpu();
           const period = { x: 0.125, y: 0.125, phaseX: 0, phaseY: 0, cutAllowedX: false, cutAllowedY: false };
@@ -107,11 +114,13 @@ test.describe('composeAtlas', () => {
             ],
             groove: { widthM: 0.02, depthM, profile: 'bevel' as const },
           };
-          const images: Partial<Record<'baseColor' | 'normal', ImageBitmap>> = {
+          const images: Partial<Record<'baseColor' | 'normal' | 'height', ImageBitmap>> = {
             baseColor: await bitmap(128, 128, checker),
           };
           // Unit-length normal (0, 0.6, 0.8), encoded.
           if (!albedoOnly) images.normal = await bitmap(16, 16, () => [128, 204, 230, 255]);
+          if (flatNormal) images.normal = await bitmap(16, 16, () => [128, 128, 255, 255]);
+          if (heightRelief) images.height = await bitmap(128, 128, (x) => (x % 16 < 8 ? [255, 255, 255, 255] : [0, 0, 0, 255]));
           const material = engine.uploadMaterial(ctx, {
             settings: {
               name: 't11',
@@ -254,6 +263,42 @@ test.describe('composeAtlas', () => {
     expect(r.gl).toBeGreaterThan(190);
     expect(r.dx).toBeLessThan(65);
     expect(Math.abs(r.gl + r.dx - 255)).toBeLessThanOrEqual(2);
+  });
+
+  test.describe('relief is not counted twice', () => {
+    // Largest |n - flat| over the centre row of rect 1, away from the grooves.
+    const maxTilt = async (page: import('@playwright/test').Page, flatNormal: boolean) =>
+      page.evaluate(async (flat) => {
+        const m = await window.__t11!.compose({ heightRelief: true, flatNormal: flat });
+        let worst = 0;
+        const y = 256;
+        for (let x = 32; x < 224; x++) {
+          const i = (y * m.w + x) * 4;
+          worst = Math.max(worst, Math.abs(m.normal[i] - 128), Math.abs(m.normal[i + 1] - 128), 255 - m.normal[i + 2]);
+        }
+        const hs = Array.from({ length: 192 }, (_, k) => m.height[y * m.w + 32 + k]);
+        return { worst, heightSpan: Math.max(...hs) - Math.min(...hs) };
+      }, flatNormal);
+
+    test('with a normal map, height-map relief stays out of the output normal', async ({ page }) => {
+      const r = await maxTilt(page, true);
+      expect(r.heightSpan).toBeGreaterThan(0.01); // the height map does have relief here
+      expect(r.worst).toBeLessThanOrEqual(2);
+    });
+
+    test('without a normal map, height-map relief shows in the output normal', async ({ page }) => {
+      const r = await maxTilt(page, false);
+      expect(r.heightSpan).toBeGreaterThan(0.01);
+      expect(r.worst).toBeGreaterThan(20);
+    });
+
+    test('with a normal map, the groove slope still shows in the output normal', async ({ page }) => {
+      const nx = await page.evaluate(async () => {
+        const m = await window.__t11!.compose({ heightRelief: true, flatNormal: true });
+        return (m.normal[(256 * m.w + 504) * 4] / 255) * 2 - 1;
+      });
+      expect(nx).toBeGreaterThan(0.1);
+    });
   });
 });
 

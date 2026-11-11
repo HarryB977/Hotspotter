@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { inflateSync } from 'node:zlib';
@@ -17,7 +17,7 @@ test('loads with title and imports the bricks wall 13 folder', async ({ page }) 
   // A webkitdirectory input takes the directory itself.
   await page.getByTestId('folder-input').setInputFiles(SAMPLE_DIR);
 
-  await expect(page.getByTestId('material-name')).toHaveText('bricks_wall_13');
+  await expect(page.getByTestId('material-name')).toHaveValue('bricks_wall_13');
   await expect(page.getByTestId('map-row')).toHaveCount(6);
   await expect(page.getByTestId('normal-convention')).toHaveText('GL');
   await expect(page.getByTestId('ignored-file')).toHaveCount(1);
@@ -49,6 +49,22 @@ test('a folder without recognised maps shows the no-maps message', async ({ page
   await expect(page.getByTestId('webgpu-error')).toHaveCount(0);
 });
 
+test('files without a shared prefix take the folder name, and the name is editable and sanitized', async ({ page }, testInfo) => {
+  const dir = testInfo.outputPath('Old Planks');
+  mkdirSync(dir, { recursive: true });
+  copyFileSync(join(SAMPLE_DIR, 'bricks_wall_13_basecolor_1k.png'), join(dir, 'basecolor.png'));
+
+  await page.goto('/');
+  await page.getByTestId('folder-input').setInputFiles(dir);
+  const name = page.getByTestId('material-name');
+  await expect(name).toHaveValue('Old Planks');
+
+  await name.fill('my:wall?');
+  await name.press('Enter');
+  await expect(name).toHaveValue('mywall');
+  await expect.poll(() => page.evaluate(() => window.__hs!.store.getState().material?.settings.name)).toBe('mywall');
+});
+
 test('a settings change during an in-flight import does not strand the import', async ({ page }) => {
   await page.goto('/');
   await page.waitForFunction(() => !!window.__hs);
@@ -74,7 +90,7 @@ test.describe('layout, inspector and atlas view', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/');
     await page.getByTestId('folder-input').setInputFiles(SAMPLE_DIR);
-    await expect(page.getByTestId('material-name')).toHaveText('bricks_wall_13');
+    await expect(page.getByTestId('material-name')).toHaveValue('bricks_wall_13');
   });
 
   const rectCount = (page: import('@playwright/test').Page) => page.locator('[data-rect-id]').count();
@@ -144,7 +160,7 @@ function decodeRgbaPng(buf: Buffer): { w: number; h: number; data: Buffer } {
 test('exports Unity URP maps, hotspot.json and Anvil csv to a folder, and overwrites on re-export', async ({ page }) => {
   await page.goto('/');
   await page.getByTestId('folder-input').setInputFiles(SAMPLE_DIR);
-  await expect(page.getByTestId('material-name')).toHaveText('bricks_wall_13');
+  await expect(page.getByTestId('material-name')).toHaveValue('bricks_wall_13');
   await page.waitForFunction(() => !!window.__hs?.store.getState().atlas);
   const rectTotal = await page.evaluate(() => window.__hs!.store.getState().atlas!.layout.rects.length);
   expect(rectTotal).toBeGreaterThan(0);
@@ -187,7 +203,8 @@ test('exports Unity URP maps, hotspot.json and Anvil csv to a folder, and overwr
   expect(partial).toBeGreaterThan(0);
   expect(ms.w).toBe(1024);
   expect(metalRef.size).toBe(1024);
-  // Same inputs and size as the preview (1024), so metallic R must match exactly.
+  // Same size as the preview (1024); bricks metallic is uniform, so R must match exactly even though
+  // the export layout is resolved at 1024 px and the preview layout at the 4096 px reference.
   for (let i = 0; i < metalRef.r.length; i++) {
     if (ms.data[i * 4 + 3] < 255 && ms.data[i * 4] !== metalRef.r[i]) {
       throw new Error(`metallic R differs at pixel ${i}: ${ms.data[i * 4]} vs ${metalRef.r[i]}`);
@@ -197,6 +214,8 @@ test('exports Unity URP maps, hotspot.json and Anvil csv to a folder, and overwr
 
   const json = JSON.parse(readFileSync(join(dir, 'bricks_wall_13.hotspot.json'), 'utf8'));
   expect(json.rects).toHaveLength(rectTotal);
+  // The layout is resolved at the export resolution, so px metadata matches the 1024 maps.
+  expect(json.atlas.widthPx).toBe(1024);
   expect(json.maps).toEqual(names);
   expect(existsSync(join(dir, 'bricks_wall_13.anvil.csv'))).toBe(true);
 

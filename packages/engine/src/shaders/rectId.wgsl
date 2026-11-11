@@ -12,6 +12,7 @@ struct Params {
   profile: u32,            // 0 bevel, 1 round, 2 step, 3 none
   roughnessIsGloss: u32,
   refHeightPx: f32,        // layout height in reference px
+  sobelMacro: u32,         // 1: Sobel on the macro height (matNormal.a), the material has a normal map
 }
 
 struct Rect {

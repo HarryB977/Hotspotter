@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { classifyMapFile, materialNameFromFiles, chooseMaps, MAP_DEFAULTS } from '../src/material';
+import {
+  classifyMapFile, materialNameFromFiles, chooseMaps, MAP_DEFAULTS, resolveMaterialName, sanitizeMaterialName,
+} from '../src/material';
 
 const BRICKS = [
   'bricks_wall_13_ambientocclusion_1k.png',
@@ -47,6 +49,40 @@ describe('classifyMapFile', () => {
 describe('materialNameFromFiles', () => {
   it('returns the common prefix without map suffix or resolution', () => {
     expect(materialNameFromFiles(BRICKS)).toBe('bricks_wall_13');
+  });
+  it('returns an empty prefix for bare map names', () => {
+    expect(materialNameFromFiles(['basecolor.png', 'normal.png'])).toBe('');
+  });
+});
+
+describe('sanitizeMaterialName', () => {
+  it('strips characters the export server rejects', () => {
+    const backslash = String.fromCharCode(92);
+    expect(sanitizeMaterialName(`a:b<c>d"e|f?g*h/i${backslash}j\x01k`)).toBe('abcdefghijk');
+  });
+  it('trims spaces and trailing dots', () => {
+    expect(sanitizeMaterialName('  brick wall.. ')).toBe('brick wall');
+  });
+  it('suffixes Windows reserved device names', () => {
+    expect(sanitizeMaterialName('CON')).toBe('CON_');
+    expect(sanitizeMaterialName('lpt1')).toBe('lpt1_');
+  });
+});
+
+describe('resolveMaterialName', () => {
+  it('uses the file prefix when there is one', () => {
+    expect(resolveMaterialName(BRICKS, 'whatever')).toBe('bricks_wall_13');
+  });
+  it('falls back to the folder name when the prefix is empty', () => {
+    expect(resolveMaterialName(['basecolor.png', 'normal.png'], 'Old Planks')).toBe('Old Planks');
+  });
+  it('falls back to "material" without prefix or folder', () => {
+    expect(resolveMaterialName(['basecolor.png'])).toBe('material');
+    expect(resolveMaterialName(['basecolor.png'], '')).toBe('material');
+    expect(resolveMaterialName(['basecolor.png'], '???')).toBe('material');
+  });
+  it('sanitizes the prefix', () => {
+    expect(resolveMaterialName(['a:b_basecolor.png', 'a:b_normal.png'])).toBe('ab');
   });
 });
 

@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
   createDefaultDoc, serializeDoc, parseDoc, toStack, resolveLayout, updateNodeParams, DocParseError,
+  composeInputsFromDoc,
 } from '../src/document';
+import { pxPerMetre, rectSizeM } from '../src/layout';
 import type { MaterialSettings } from '../src/material';
 import { checkProportions } from '../src/period';
 
@@ -59,5 +61,43 @@ describe('project document', () => {
     const next = updateNodeParams<'placement'>(doc, 'placement', { variation: 0.9 });
     expect(serializeDoc(doc)).toBe(before);
     expect(next.nodes.find((n) => n.id === 'placement')!.params).toEqual({ variation: 0.9, seed: 0 });
+  });
+
+  it('resolveLayout honours a widthPx override', () => {
+    const doc = createDefaultDoc(material);
+    const l = resolveLayout(doc, { widthPx: 1024 });
+    expect(l.widthPx).toBe(1024);
+    expect(l.worldWidthM).toBe(8);
+  });
+
+  describe('composeInputsFromDoc', () => {
+    const docs: [string, ReturnType<typeof createDefaultDoc>][] = [
+      ['preset', createDefaultDoc(material)],
+      ['auto', updateNodeParams<'layout'>(createDefaultDoc(material), 'layout', { mode: 'auto', target: 'walls', seed: 3 })],
+    ];
+    for (const [label, doc] of docs) {
+      it(`gives the same rects in metres at 1024 and 4096 (${label})`, () => {
+        const lo = composeInputsFromDoc(doc, 1024);
+        const hi = composeInputsFromDoc(doc, 4096);
+        expect(lo.layout.widthPx).toBe(1024);
+        expect(hi.layout.widthPx).toBe(4096);
+        expect(lo.layout.rects.length).toBe(hi.layout.rects.length);
+        expect(lo.placements.length).toBe(lo.layout.rects.length);
+        const onePxM = 1 / pxPerMetre(lo.layout);
+        lo.layout.rects.forEach((r, i) => {
+          const a = rectSizeM(lo.layout, r);
+          const b = rectSizeM(hi.layout, hi.layout.rects[i]);
+          expect(Math.abs(a.w - b.w), r.id).toBeLessThanOrEqual(onePxM);
+          expect(Math.abs(a.h - b.h), r.id).toBeLessThanOrEqual(onePxM);
+        });
+      });
+    }
+
+    it('defaults to the output resolution and carries the material settings', () => {
+      const r = composeInputsFromDoc(createDefaultDoc(material));
+      expect(r.layout.widthPx).toBe(4096);
+      expect(r.material).toEqual(material);
+      expect(r.issues).toEqual(checkProportions(r.layout, material.period));
+    });
   });
 });

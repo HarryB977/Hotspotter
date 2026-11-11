@@ -1,5 +1,5 @@
-import { encodePngRgba8, packMaps, placeMaterial, resolveLayout, toAnvilTable, toHotspotJson } from '@hotspotter/core';
-import type { ExportPreset, MapPixels, MaterialSettings, NodeParams } from '@hotspotter/core';
+import { composeInputsFromDoc, encodePngRgba8, packMaps, toAnvilTable, toHotspotJson } from '@hotspotter/core';
+import type { ExportPreset, MapPixels } from '@hotspotter/core';
 import { composeAtlas, heightToRgba8, readbackRgba8 } from '@hotspotter/engine';
 import type { AtlasMaps } from '@hotspotter/engine';
 import { useProject } from '../state/store';
@@ -23,7 +23,7 @@ async function upload(dir: string, name: string, body: Blob | string): Promise<s
   const q = new URLSearchParams({ dir, name });
   const res = await fetch(`/api/export/file?${q}`, {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/octet-stream' },
+    headers: { 'Content-Type': 'application/octet-stream', 'X-Hotspotter': '1' },
     body: typeof body === 'string' ? new TextEncoder().encode(body) : body,
   });
   const json = (await res.json().catch(() => ({}))) as { path?: string; error?: string };
@@ -35,15 +35,8 @@ async function upload(dir: string, name: string, body: Blob | string): Promise<s
 export async function exportProject(opts: ExportOptions): Promise<string[]> {
   const { doc, gpuMaterial, gpu } = useProject.getState();
   if (!doc || !gpuMaterial || !gpu) throw new Error('No project');
-  const layout = resolveLayout(doc);
-  const mat = doc.nodes.find((n) => n.id === 'material')!.params as MaterialSettings;
-  const pl = doc.nodes.find((n) => n.id === 'placement')!.params as NodeParams['placement'];
-  const placements = placeMaterial(layout, mat.period, {
-    variation: pl.variation,
-    seed: pl.seed,
-    materialAllowsRotation: mat.allowRotation,
-    tileSizeM: mat.tileSizeM,
-  });
+  // Resolved at the export resolution, so hotspot.json and the Anvil csv px match the PNGs.
+  const { layout, placements, material: mat } = composeInputsFromDoc(doc, opts.resolutionPx);
   let maps: AtlasMaps | null = null;
   let heightTex: GPUTexture | null = null;
   try {

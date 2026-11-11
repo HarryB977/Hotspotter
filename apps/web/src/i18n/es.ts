@@ -10,6 +10,8 @@ export const es = {
     importing: 'Importando…',
     decodeFailed: (name: string) => `No se pudo leer la imagen ${name}.`,
     noMaps: 'No se reconocieron mapas en los archivos.',
+    name: 'Nombre del material',
+    nameHint: 'Prefijo de los archivos exportados',
     properties: 'Propiedades',
     periodSection: 'Periodo',
     ignoredAlt: 'alternativa (ignorada)',
@@ -73,7 +75,9 @@ export const es = {
     variation: 'Variación',
     placementSeed: 'Seed de colocación',
     groove: 'Ranura',
-    grooveWidth: 'Ancho (mm)',
+    grooveWidth: 'Fondo de ranura (mm)',
+    grooveWidthHint:
+      'Ancho del fondo plano de la ranura. El bisel añade la mitad de este ancho a cada lado, dentro del rectángulo.',
     grooveDepth: 'Profundidad (mm)',
     grooveProfile: 'Perfil',
     profiles: { bevel: 'Bisel', round: 'Redondo', step: 'Escalón', none: 'Ninguno' },
@@ -81,6 +85,8 @@ export const es = {
   mapBar: {
     empty: 'Sin mapas',
     rectId: 'IDs rect',
-    issues: (n: number) => `${n} avisos de proporción`,
+    issues: (proportion: number, layout: number) =>
+      `${proportion} avisos de proporción · ${layout} problemas de layout (solapes, fuera de límites…)`,
+    composeFailed: (msg: string) => `No se pudo componer el atlas: ${msg}`,
   },
 } as const;

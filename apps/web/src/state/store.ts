@@ -1,10 +1,10 @@
 import { create } from 'zustand';
 import {
-  CONTINUOUS, checkProportions, chooseMaps, classifyMapFile, createDefaultDoc, materialNameFromFiles,
-  placeMaterial, resolveLayout, updateNodeParams,
+  CONTINUOUS, chooseMaps, classifyMapFile, composeInputsFromDoc, createDefaultDoc, resolveMaterialName,
+  updateNodeParams, validateLayout,
 } from '@hotspotter/core';
 import type {
-  HotspotLayout, MapKind, MaterialSettings, NodeParams, NodeType, ProjectDoc, ProportionIssue,
+  HotspotLayout, LayoutIssue, MapKind, MaterialSettings, NodeParams, NodeType, ProjectDoc, ProportionIssue,
 } from '@hotspotter/core';
 import { composeAtlas, initGpu, uploadMaterial, WebGpuUnavailableError } from '@hotspotter/engine';
 import type { AtlasMaps, GpuContext, GpuMaterial, LoadedMaterial } from '@hotspotter/engine';
@@ -18,6 +18,8 @@ export interface AtlasResult {
   maps: AtlasMaps;
   layout: HotspotLayout;
   issues: ProportionIssue[];
+  /** Structural problems (overlap, out of bounds…) from validateLayout. */
+  layoutIssues: LayoutIssue[];
   resolutionPx: number;
   gpuMs: number;
 }
@@ -38,6 +40,8 @@ export interface ProjectState {
   previewRes: PreviewRes;
   activeMap: ActiveMap;
   atlas: AtlasResult | null;
+  /** Last preview composition failure, shown in the status bar; cleared by the next success. */
+  composeError: string | null;
   setPreviewRes(r: PreviewRes): void;
   setActiveMap(m: ActiveMap): void;
   /** Shallow-merges params into a node. */
@@ -45,7 +49,8 @@ export interface ProjectState {
   /** Replaces the layout node params wholesale, so no keys of another mode linger. */
   setLayoutParams(params: NodeParams['layout']): void;
   initGpu(): Promise<void>;
-  importFiles(files: File[]): Promise<void>;
+  /** `folder` names the material when the files share no prefix; defaults to the webkitRelativePath folder. */
+  importFiles(files: File[], folder?: string): Promise<void>;
   setDoc(d: ProjectDoc): void;
   /** Merges settings; re-uploads the GPU textures when files or normal convention change. */
   updateSettings(patch: Partial<MaterialSettings>): Promise<void>;
@@ -97,6 +102,12 @@ async function buildImages(
   return images;
 }
 
+/** First path segment of a folder pick (`webkitRelativePath`), or undefined. */
+function folderOf(files: File[]): string | undefined {
+  const rel = files.find((f) => f.webkitRelativePath)?.webkitRelativePath;
+  return rel ? rel.split('/')[0] : undefined;
+}
+
 function closeAll(m: Map<string, ImageBitmap>): void {
   for (const b of m.values()) b.close();
 }
@@ -124,6 +135,7 @@ export const useProject = create<ProjectState>()((set, get) => ({
   previewRes: 1024,
   activeMap: 'baseColor',
   atlas: null,
+  composeError: null,
 
   setPreviewRes(r) {
     set({ previewRes: r });
@@ -153,7 +165,7 @@ export const useProject = create<ProjectState>()((set, get) => ({
     }
   },
 
-  async importFiles(files) {
+  async importFiles(files, folder) {
     await get().initGpu();
     const { gpu } = get();
     if (!gpu) return;
@@ -174,7 +186,7 @@ export const useProject = create<ProjectState>()((set, get) => ({
       const loaded = await buildImages(chosen, images, new Map(), fresh);
       const rough = chosen.roughness;
       const settings: MaterialSettings = {
-        name: materialNameFromFiles(names),
+        name: resolveMaterialName(names, folder ?? folderOf(files)),
         files: chosen,
         normalConvention,
         roughnessIsGloss: rough ? classifyMapFile(rough)?.isGloss === true : false,
@@ -283,15 +295,7 @@ async function recompose(): Promise<void> {
   if (!doc || !gpuMaterial || !gpu) return;
   let maps: AtlasMaps | null = null;
   try {
-    const layout = resolveLayout(doc);
-    const mat = doc.nodes.find((n) => n.id === 'material')!.params as MaterialSettings;
-    const pl = doc.nodes.find((n) => n.id === 'placement')!.params as NodeParams['placement'];
-    const placements = placeMaterial(layout, mat.period, {
-      variation: pl.variation,
-      seed: pl.seed,
-      materialAllowsRotation: mat.allowRotation,
-      tileSizeM: mat.tileSizeM,
-    });
+    const { layout, placements, issues } = composeInputsFromDoc(doc);
     const t0 = performance.now();
     maps = await composeAtlas(gpu, { layout, material: gpuMaterial, placements, resolutionPx: previewRes });
     await gpu.device.queue.onSubmittedWorkDone();
@@ -302,12 +306,16 @@ async function recompose(): Promise<void> {
     }
     const prev = useProject.getState().atlas;
     useProject.setState({
-      atlas: { maps, layout, issues: checkProportions(layout, mat.period), resolutionPx: previewRes, gpuMs },
+      atlas: { maps, layout, issues, layoutIssues: validateLayout(layout), resolutionPx: previewRes, gpuMs },
+      composeError: null,
     });
     if (prev) destroyMaps(prev.maps);
   } catch (e) {
     if (maps) destroyMaps(maps);
-    if (mine === composeGen) console.error('recompose failed', e);
+    if (mine === composeGen) {
+      console.error('recompose failed', e);
+      useProject.setState({ composeError: es.mapBar.composeFailed(e instanceof Error ? e.message : String(e)) });
+    }
   }
 }
 
