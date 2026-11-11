@@ -18,3 +18,7 @@ export {
   createDefaultDoc, serializeDoc, parseDoc, toStack, resolveLayout, updateNodeParams, DocParseError,
 } from './document';
 export type { NodeType, NodeParams, DocNode, DocEdge, ProjectDoc, StackEntry } from './document';
+export { toHotspotJson, parseHotspotJson } from './export/hotspotJson';
+export { toAnvilTable } from './export/anvilTable';
+export { packMaps } from './export/packing';
+export type { ExportPreset, MapPixels, PackedFile } from './export/packing';
