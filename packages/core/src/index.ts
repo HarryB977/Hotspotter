@@ -6,3 +6,5 @@ export type {
 } from './layout';
 export { CONTINUOUS, snapToPeriod, checkProportions } from './period';
 export type { MaterialPeriod, ProportionIssue } from './period';
+export { PRESET_IDS, presetLayout } from './presets';
+export type { PresetId } from './presets';
