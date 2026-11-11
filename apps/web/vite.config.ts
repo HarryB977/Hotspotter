@@ -51,5 +51,10 @@ function samplesPlugin(): Plugin {
 
 export default defineConfig({
   plugins: [react(), samplesPlugin()],
-  server: { port: 5173, strictPort: true, fs: { allow: ['../..'] } },
+  server: {
+    port: 5173,
+    strictPort: true,
+    fs: { allow: ['../..'] },
+    proxy: { '/api': 'http://127.0.0.1:7420' },
+  },
 });

@@ -4,7 +4,7 @@
   "workspaces": ["packages/*", "apps/*"],
   "overrides": { "vite": "5.4.11" },
   "scripts": {
-    "dev": "npm run dev -w @hotspotter/web",
+    "dev": "concurrently -n server,web \"npm run dev -w @hotspotter/server\" \"npm run dev -w @hotspotter/web\"",
     "e2e": "npm run e2e -w @hotspotter/web",
     "test": "npm run test --workspaces --if-present",
     "build": "npm run build --workspaces --if-present"
