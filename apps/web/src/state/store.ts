@@ -37,7 +37,10 @@ let gpuReady: Promise<GpuContext> | null = null;
 /** Decoded bitmaps of the current material, by file name. */
 let bitmaps = new Map<string, ImageBitmap>();
 
-/** Bumped by every mutating operation; a result from an older generation is discarded. */
+/** Bumped by every import; only the latest import may apply its result. */
+let importGen = 0;
+
+/** Bumped by imports and by settings changes that re-upload; guards re-uploading updates. */
 let generation = 0;
 
 async function decode(file: File): Promise<ImageBitmap> {
@@ -111,11 +114,13 @@ export const useProject = create<ProjectState>()((set, get) => ({
     const names = images.map((f) => f.name);
     const { files: chosen, normalConvention } = chooseMaps(names);
     if (Object.keys(chosen).length === 0) {
+      importGen++;
       generation++;
       set({ importError: es.material.noMaps, importing: false });
       return;
     }
-    const mine = ++generation;
+    const mine = ++importGen;
+    generation++;
     set({ importing: true, importError: null });
     const fresh = new Map<string, ImageBitmap>();
     try {
@@ -133,18 +138,19 @@ export const useProject = create<ProjectState>()((set, get) => ({
       };
       const material: LoadedMaterial = { settings, images: loaded };
       const gpuMaterial = uploadMaterial(gpu, material);
-      if (mine !== generation) {
+      if (mine !== importGen) {
         destroyTextures(gpuMaterial);
         closeAll(fresh);
         return;
       }
+      generation++;
       destroyTextures(get().gpuMaterial);
       closeAll(bitmaps);
       bitmaps = fresh;
       set({ sources: images, material, gpuMaterial, doc: createDefaultDoc(settings), importing: false });
     } catch (e) {
       closeAll(fresh);
-      if (mine === generation) {
+      if (mine === importGen) {
         set({ importError: e instanceof Error ? e.message : String(e), importing: false });
       }
     }
@@ -157,7 +163,6 @@ export const useProject = create<ProjectState>()((set, get) => ({
   async updateSettings(patch) {
     const { material, gpu, doc, sources } = get();
     if (!material || !gpu) return;
-    const mine = ++generation;
     const settings: MaterialSettings = { ...material.settings, ...patch };
     const reupload =
       patch.files !== undefined ||
@@ -166,6 +171,7 @@ export const useProject = create<ProjectState>()((set, get) => ({
       doc: doc ? withMaterialNode(doc, settings) : doc,
     };
     if (reupload) {
+      const mine = ++generation;
       const fresh = new Map<string, ImageBitmap>();
       try {
         const images = await buildImages(settings.files, sources, bitmaps, fresh);

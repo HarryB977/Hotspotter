@@ -46,3 +46,24 @@ test('a folder without recognised maps shows the no-maps message', async ({ page
   await expect(page.getByTestId('import-error')).toHaveText('No se reconocieron mapas en los archivos.');
   await expect(page.getByTestId('webgpu-error')).toHaveCount(0);
 });
+
+test('a settings change during an in-flight import does not strand the import', async ({ page }) => {
+  await page.goto('/');
+  await page.waitForFunction(() => !!window.__hs);
+  const r = await page.evaluate(async () => {
+    const store = window.__hs!.store;
+    const base = '/samples/pbr/bricks%20wall%2013/';
+    const names: string[] = await (await fetch('/samples-index/pbr/bricks%20wall%2013')).json();
+    const files = await Promise.all(
+      names.map(async (n) => new File([await (await fetch(base + encodeURIComponent(n))).blob()], n)),
+    );
+    await store.getState().importFiles(files);
+    const second = store.getState().importFiles(files);
+    await store.getState().updateSettings({ tileSizeM: [2, 2] });
+    await store.getState().updateSettings({ normalConvention: 'dx' });
+    await second;
+    const s = store.getState();
+    return { importing: s.importing, name: s.material?.settings.name, error: s.importError, hasGpu: !!s.gpuMaterial };
+  });
+  expect(r).toEqual({ importing: false, name: 'bricks_wall_13', error: null, hasGpu: true });
+});

@@ -1,5 +1,6 @@
 import * as core from '@hotspotter/core';
 import * as engine from '@hotspotter/engine';
+import { useProject } from '../state/store';
 
 export interface SampleFile {
   name: string;
@@ -25,6 +26,7 @@ export interface HsHarness {
   core: typeof core;
   engine: typeof engine;
   loadSample: typeof loadSample;
+  store: typeof useProject;
 }
 
 declare global {
@@ -34,5 +36,5 @@ declare global {
 }
 
 export function installHarness(): void {
-  window.__hs = { core, engine, loadSample };
+  window.__hs = { core, engine, loadSample, store: useProject };
 }
