@@ -52,4 +52,4 @@ sidecar/ai      servicio Python de IA
 docs/           esta documentación
 ```
 
-Monorepo con pnpm workspaces. Tests: Vitest para la lógica (layouts, matching, exportadores, serialización). Para el motor, tests de imagen "golden" que comparan contra referencias con tolerancia.
+Monorepo con npm workspaces (npm 11 ya viene con Node 22; no hace falta instalar pnpm). Tests: Vitest para la lógica (layouts, matching, exportadores, serialización). Para el motor, tests de imagen "golden" que comparan contra referencias con tolerancia.

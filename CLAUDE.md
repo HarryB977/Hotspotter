@@ -19,7 +19,7 @@ Generador local de texturas **hotspot** (atlas de rectángulos con bisel y desga
 
 ## Stack (ver docs/02-architecture.md)
 
-Monorepo pnpm · TypeScript · React + Vite + Tailwind + shadcn/ui · three.js · React Flow · motor WebGPU/WGSL · servidor Node 22 · sidecar Python (IA).
+Monorepo npm workspaces · TypeScript · React + Vite + Tailwind + shadcn/ui · three.js · React Flow · motor WebGPU/WGSL · servidor Node 22 · sidecar Python (IA).
 
 ## Entorno del autor
 
