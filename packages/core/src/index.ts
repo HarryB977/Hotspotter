@@ -10,3 +10,5 @@ export { PRESET_IDS, presetLayout } from './presets';
 export type { PresetId } from './presets';
 export { autoLayout } from './autoLayout';
 export type { AutoTarget, AutoLayoutOptions } from './autoLayout';
+export { placeMaterial, atlasPxToMaterialM } from './placement';
+export type { RectPlacement, PlacementOptions } from './placement';
