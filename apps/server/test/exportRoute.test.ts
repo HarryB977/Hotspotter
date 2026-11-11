@@ -61,6 +61,13 @@ describe('server', () => {
       { dir, name: '..' },
       { dir, name: '' },
       { dir: 'relative/path', name: 'x.png' },
+      { dir: '\\\\server\\share\\x', name: 'x.png' },
+      { dir: '//server/share/x', name: 'x.png' },
+      { dir: '\\\\?\\C:\\x', name: 'x.png' },
+      { dir, name: 'a.png:evil' },
+      { dir, name: 'CON' },
+      { dir, name: 'nul.png' },
+      { dir, name: 'x.' },
       { dir: `${dir}/../escape`, name: 'x.png' },
       { dir: `${dir}\\..\\escape`, name: 'x.png' },
     ];
@@ -69,5 +76,19 @@ describe('server', () => {
       expect(res.statusCode, JSON.stringify(q)).toBe(400);
       expect(res.json()).toEqual({ error: expect.any(String) });
     }
+  });
+
+  it('rejects non-loopback Host headers with 403', async () => {
+    const strict = buildApp({ allowedPort: 7420 });
+    const ok = await strict.inject({ method: 'GET', url: '/api/health', headers: { host: '127.0.0.1:7420' } });
+    expect(ok.statusCode).toBe(200);
+    for (const host of ['evil.example:7420', 'localhost:9999', '127.0.0.1']) {
+      const res = await strict.inject({ method: 'GET', url: '/api/health', headers: { host } });
+      expect(res.statusCode, host).toBe(403);
+      expect(res.json()).toEqual({ error: expect.any(String) });
+    }
+    await strict.close();
+    const res = await app.inject({ method: 'GET', url: '/api/health', headers: { host: 'evil.example:7420' } });
+    expect(res.statusCode).toBe(403);
   });
 });
