@@ -37,7 +37,7 @@ async function filesFromDrop(dt: DataTransfer): Promise<File[]> {
   return out;
 }
 
-function Row({ label, children, testId }: { label: string; children: React.ReactNode; testId?: string }) {
+export function Row({ label, children, testId }: { label: string; children: React.ReactNode; testId?: string }) {
   return (
     <div className="flex min-h-6 items-center gap-2" data-testid={testId}>
       <span className="w-24 shrink-0 truncate text-zinc-400" title={label}>{label}</span>
@@ -54,7 +54,7 @@ interface NumFieldProps extends Omit<InputHTMLAttributes<HTMLInputElement>, 'val
 }
 
 /** Text field that edits a number locally and commits on blur or Enter. */
-function NumField({ value, onCommit, nullable, className, ...rest }: NumFieldProps) {
+export function NumField({ value, onCommit, nullable, className, ...rest }: NumFieldProps) {
   const [text, setText] = useState(value === null ? '' : String(value));
   useEffect(() => setText(value === null ? '' : String(value)), [value]);
   const commit = () => {
@@ -98,7 +98,7 @@ function Check({ checked, onChange, label, testId }: {
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+export function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section className="border-b border-zinc-800 px-2 py-2">
       <h2 className="mb-1 text-xs uppercase tracking-wide text-zinc-500">{title}</h2>
@@ -315,10 +315,6 @@ export function MaterialPanel() {
           </Section>
         </>
       )}
-
-      <Section title={es.material.layout}>
-        <div className="text-zinc-600">{es.material.layoutPending}</div>
-      </Section>
     </div>
   );
 }

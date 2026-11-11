@@ -67,3 +67,58 @@ test('a settings change during an in-flight import does not strand the import', 
   });
   expect(r).toEqual({ importing: false, name: 'bricks_wall_13', error: null, hasGpu: true });
 });
+
+test.describe('layout, inspector and atlas view', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto('/');
+    await page.getByTestId('folder-input').setInputFiles(SAMPLE_DIR);
+    await expect(page.getByTestId('material-name')).toHaveText('bricks_wall_13');
+  });
+
+  const rectCount = (page: import('@playwright/test').Page) => page.locator('[data-rect-id]').count();
+
+  test('the walls preset composes a non-uniform atlas with one overlay rect per layout rect', async ({ page }) => {
+    await expect(page.getByTestId('atlas-canvas')).toBeVisible();
+    await page.waitForFunction(() => !!window.__hs?.lastAtlas);
+    const distinct = await page.evaluate(async () => {
+      const hs = window.__hs!;
+      const ctx = hs.store.getState().gpu!;
+      const { data } = await hs.engine.readbackRgba8(ctx, hs.lastAtlas!.baseColor);
+      const seen = new Set<number>();
+      for (let i = 0; i < data.length; i += 4 * 97) seen.add(data[i] | (data[i + 1] << 8) | (data[i + 2] << 16));
+      return seen.size;
+    });
+    expect(distinct).toBeGreaterThan(8);
+
+    const expected = await page.evaluate(() => window.__hs!.store.getState().atlas!.layout.rects.length);
+    expect(expected).toBeGreaterThan(0);
+    await expect(page.locator('[data-rect-id]')).toHaveCount(expected);
+    await expect(page.getByTestId('atlas-info')).toHaveText(/^1024² · 128 px\/m · GPU \d+ ms$/);
+  });
+
+  test('auto mode with period Y 0.075 reports no proportion issues, and the seed changes the layout', async ({ page }) => {
+    await page.getByLabel('Periodo (m, vacío = continuo) Y').fill('0.075');
+    await page.getByLabel('Periodo (m, vacío = continuo) Y').blur();
+    await page.getByTestId('layout-mode').click();
+    await page.getByRole('option', { name: 'Automático' }).click();
+    await expect(page.getByTestId('layout-seed')).toBeVisible();
+    await expect(page.getByTestId('proportion-issues')).toHaveText('0');
+
+    const signature = () =>
+      page.evaluate(() =>
+        JSON.stringify(window.__hs!.store.getState().atlas!.layout.rects.map((r) => [r.x, r.y, r.w, r.h])));
+    await expect.poll(rectCount.bind(null, page)).toBeGreaterThan(0);
+    const before = await signature();
+    await page.getByTestId('layout-seed').fill('7');
+    await page.getByTestId('layout-seed').blur();
+    await expect.poll(signature).not.toBe(before);
+    await expect(page.getByTestId('proportion-issues')).toHaveText('0');
+  });
+
+  test('map tabs switch the active map', async ({ page }) => {
+    await page.getByRole('tab', { name: 'IDs rect' }).click();
+    await expect(page.getByRole('tab', { name: 'IDs rect' })).toHaveAttribute('data-state', 'active');
+    await page.getByRole('tab', { name: 'Height' }).click();
+    await expect(page.getByRole('tab', { name: 'Height' })).toHaveAttribute('data-state', 'active');
+  });
+});

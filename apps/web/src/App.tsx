@@ -4,9 +4,12 @@ import { useProject } from './state/store';
 import { MaterialPanel } from './panels/MaterialPanel';
 import { TooltipProvider } from './components/ui/tooltip';
 import { Tabs, TabsList, TabsTrigger } from './components/ui/tabs';
-import type { MapKind } from '@hotspotter/core';
+import { LayoutPanel } from './panels/LayoutPanel';
+import { Inspector } from './panels/Inspector';
+import { AtlasView } from './viewport/AtlasView';
+import type { ActiveMap } from './state/store';
 
-const MAP_TABS: MapKind[] = ['baseColor', 'normal', 'height', 'roughness', 'metallic', 'ao'];
+const MAP_TABS: ActiveMap[] = ['baseColor', 'normal', 'height', 'roughness', 'metallic', 'ao', 'rectId'];
 
 function PanelTitle({ children }: { children: React.ReactNode }) {
   return (
@@ -19,7 +22,9 @@ function PanelTitle({ children }: { children: React.ReactNode }) {
 export function App() {
   const error = useProject((s) => s.error);
   const gpu = useProject((s) => s.gpu);
-  const material = useProject((s) => s.material);
+  const atlas = useProject((s) => s.atlas);
+  const activeMap = useProject((s) => s.activeMap);
+  const setActiveMap = useProject((s) => s.setActiveMap);
 
   useEffect(() => {
     void useProject.getState().initGpu();
@@ -45,27 +50,46 @@ export function App() {
         </header>
         <aside className="overflow-y-auto border-r border-zinc-800 bg-zinc-900" data-testid="left-column">
           <MaterialPanel />
+          <LayoutPanel />
         </aside>
         <main className="flex min-w-0 flex-col bg-zinc-950">
           <PanelTitle>{es.atlas.title}</PanelTitle>
-          <div className="flex flex-1 items-center justify-center text-zinc-600">{es.atlas.empty}</div>
+          {atlas ? (
+            <AtlasView maps={atlas.maps} layout={atlas.layout} activeMap={activeMap} issues={atlas.issues} />
+          ) : (
+            <div className="flex flex-1 items-center justify-center text-zinc-600">{es.atlas.empty}</div>
+          )}
         </main>
         <aside className="flex flex-col border-l border-zinc-800 bg-zinc-900">
           <PanelTitle>{es.inspector.title}</PanelTitle>
-          <div className="p-2 text-zinc-600">{es.inspector.empty}</div>
+          <Inspector />
         </aside>
         <footer className="col-span-3 flex items-stretch justify-between border-t border-zinc-800 bg-zinc-900">
-          <Tabs defaultValue="baseColor" className="h-full">
+          <Tabs value={activeMap} onValueChange={(v) => setActiveMap(v as ActiveMap)} className="h-full">
             <TabsList className="h-full">
               {MAP_TABS.map((k) => (
-                <TabsTrigger key={k} value={k} disabled={!material}>
-                  {es.material.mapKinds[k]}
+                <TabsTrigger key={k} value={k} disabled={!atlas}>
+                  {k === 'rectId' ? es.mapBar.rectId : es.material.mapKinds[k]}
                 </TabsTrigger>
               ))}
             </TabsList>
           </Tabs>
-          <span className="flex items-center px-2 text-zinc-500" data-testid="gpu-info">
-            {gpu ? gpu.adapterInfo : ''}
+          <span className="flex items-center gap-3 px-2 text-zinc-500">
+            {atlas && (
+              <>
+                <span
+                  className={atlas.issues.length > 0 ? 'text-amber-400' : undefined}
+                  title={es.mapBar.issues(atlas.issues.length)}
+                  data-testid="proportion-issues"
+                >
+                  {atlas.issues.length}
+                </span>
+                <span className="tabular-nums" data-testid="atlas-info">
+                  {`${atlas.resolutionPx}² · ${Math.round(atlas.resolutionPx / atlas.layout.worldWidthM)} px/m · GPU ${Math.round(atlas.gpuMs)} ms`}
+                </span>
+              </>
+            )}
+            <span data-testid="gpu-info">{gpu ? gpu.adapterInfo : ''}</span>
           </span>
         </footer>
       </div>

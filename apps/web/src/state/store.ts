@@ -1,11 +1,26 @@
 import { create } from 'zustand';
 import {
-  CONTINUOUS, chooseMaps, classifyMapFile, createDefaultDoc, materialNameFromFiles,
+  CONTINUOUS, checkProportions, chooseMaps, classifyMapFile, createDefaultDoc, materialNameFromFiles,
+  placeMaterial, resolveLayout, updateNodeParams,
 } from '@hotspotter/core';
-import type { MapKind, MaterialSettings, ProjectDoc } from '@hotspotter/core';
-import { initGpu, uploadMaterial, WebGpuUnavailableError } from '@hotspotter/engine';
-import type { GpuContext, GpuMaterial, LoadedMaterial } from '@hotspotter/engine';
+import type {
+  HotspotLayout, MapKind, MaterialSettings, NodeParams, NodeType, ProjectDoc, ProportionIssue,
+} from '@hotspotter/core';
+import { composeAtlas, initGpu, uploadMaterial, WebGpuUnavailableError } from '@hotspotter/engine';
+import type { AtlasMaps, GpuContext, GpuMaterial, LoadedMaterial } from '@hotspotter/engine';
 import { es } from '../i18n/es';
+
+export type PreviewRes = 512 | 1024 | 2048;
+export type ActiveMap = MapKind | 'rectId';
+
+/** A composed atlas with the layout and checks it was composed from. */
+export interface AtlasResult {
+  maps: AtlasMaps;
+  layout: HotspotLayout;
+  issues: ProportionIssue[];
+  resolutionPx: number;
+  gpuMs: number;
+}
 
 export interface ProjectState {
   doc: ProjectDoc | null;
@@ -19,6 +34,16 @@ export interface ProjectState {
   importing: boolean;
   /** Files of the last import, including unrecognised and ignored ones. */
   sources: File[];
+  /** Preview resolution; the export resolution lives in the output node. */
+  previewRes: PreviewRes;
+  activeMap: ActiveMap;
+  atlas: AtlasResult | null;
+  setPreviewRes(r: PreviewRes): void;
+  setActiveMap(m: ActiveMap): void;
+  /** Shallow-merges params into a node. */
+  updateNode<T extends NodeType>(id: string, patch: Partial<NodeParams[T]>): void;
+  /** Replaces the layout node params wholesale, so no keys of another mode linger. */
+  setLayoutParams(params: NodeParams['layout']): void;
   initGpu(): Promise<void>;
   importFiles(files: File[]): Promise<void>;
   setDoc(d: ProjectDoc): void;
@@ -96,6 +121,28 @@ export const useProject = create<ProjectState>()((set, get) => ({
   importError: null,
   importing: false,
   sources: [],
+  previewRes: 1024,
+  activeMap: 'baseColor',
+  atlas: null,
+
+  setPreviewRes(r) {
+    set({ previewRes: r });
+  },
+
+  setActiveMap(m) {
+    set({ activeMap: m });
+  },
+
+  updateNode(id, patch) {
+    const { doc } = get();
+    if (doc) set({ doc: updateNodeParams(doc, id, patch) });
+  },
+
+  setLayoutParams(params) {
+    const { doc } = get();
+    if (!doc) return;
+    set({ doc: { ...doc, nodes: doc.nodes.map((n) => (n.id === 'layout' ? { ...n, params } : n)) } as ProjectDoc });
+  },
 
   async initGpu() {
     try {
@@ -219,3 +266,53 @@ export const useProject = create<ProjectState>()((set, get) => ({
     await get().updateSettings(patch);
   },
 }));
+
+function destroyMaps(m: AtlasMaps): void {
+  for (const t of [m.baseColor, m.normal, m.height, m.roughness, m.metallic, m.ao, m.rectId]) t.destroy();
+}
+
+const RECOMPOSE_DEBOUNCE_MS = 150;
+let composeTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** Bumped by every compose request; only the latest may apply its result. */
+let composeGen = 0;
+
+async function recompose(): Promise<void> {
+  const { doc, gpuMaterial, gpu, previewRes } = useProject.getState();
+  const mine = ++composeGen;
+  if (!doc || !gpuMaterial || !gpu) return;
+  let maps: AtlasMaps | null = null;
+  try {
+    const layout = resolveLayout(doc);
+    const mat = doc.nodes.find((n) => n.id === 'material')!.params as MaterialSettings;
+    const pl = doc.nodes.find((n) => n.id === 'placement')!.params as NodeParams['placement'];
+    const placements = placeMaterial(layout, mat.period, {
+      variation: pl.variation,
+      seed: pl.seed,
+      materialAllowsRotation: mat.allowRotation,
+      tileSizeM: mat.tileSizeM,
+    });
+    const t0 = performance.now();
+    maps = await composeAtlas(gpu, { layout, material: gpuMaterial, placements, resolutionPx: previewRes });
+    await gpu.device.queue.onSubmittedWorkDone();
+    const gpuMs = performance.now() - t0;
+    if (mine !== composeGen) {
+      destroyMaps(maps);
+      return;
+    }
+    const prev = useProject.getState().atlas;
+    useProject.setState({
+      atlas: { maps, layout, issues: checkProportions(layout, mat.period), resolutionPx: previewRes, gpuMs },
+    });
+    if (prev) destroyMaps(prev.maps);
+  } catch (e) {
+    if (maps) destroyMaps(maps);
+    if (mine === composeGen) console.error('recompose failed', e);
+  }
+}
+
+useProject.subscribe((s, prev) => {
+  if (s.doc === prev.doc && s.gpuMaterial === prev.gpuMaterial && s.previewRes === prev.previewRes) return;
+  clearTimeout(composeTimer);
+  composeTimer = setTimeout(() => void recompose(), RECOMPOSE_DEBOUNCE_MS);
+});
