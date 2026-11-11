@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -121,4 +122,45 @@ test.describe('layout, inspector and atlas view', () => {
     await page.getByRole('tab', { name: 'Height' }).click();
     await expect(page.getByRole('tab', { name: 'Height' })).toHaveAttribute('data-state', 'active');
   });
+});
+
+test('exports Unity URP maps, hotspot.json and Anvil csv to a folder, and overwrites on re-export', async ({ page }) => {
+  await page.goto('/');
+  await page.getByTestId('folder-input').setInputFiles(SAMPLE_DIR);
+  await expect(page.getByTestId('material-name')).toHaveText('bricks_wall_13');
+  await page.waitForFunction(() => !!window.__hs?.store.getState().atlas);
+  const rectTotal = await page.evaluate(() => window.__hs!.store.getState().atlas!.layout.rects.length);
+  expect(rectTotal).toBeGreaterThan(0);
+
+  const dir = join(tmpdir(), `hotspotter export ${Date.now()}`, 'out dir');
+  await page.getByTestId('export-open').click();
+  await page.getByTestId('export-dir').fill(dir);
+  await page.getByTestId('export-preset').click();
+  await page.getByRole('option', { name: 'Unity URP' }).click();
+  await page.getByTestId('export-res').click();
+  await page.getByRole('option', { name: '1024' }).click();
+
+  const run = async () => {
+    await page.getByTestId('export-run').click();
+    await expect(page.getByTestId('export-done')).toBeVisible({ timeout: 60_000 });
+  };
+  await run();
+
+  const names = ['BaseColor', 'Normal', 'MetallicSmoothness', 'Occlusion', 'Height'].map(
+    (k) => `bricks_wall_13_${k}.png`,
+  );
+  for (const n of names) {
+    const buf = readFileSync(join(dir, n));
+    expect(buf.subarray(1, 4).toString('latin1')).toBe('PNG');
+    expect([buf.readUInt32BE(16), buf.readUInt32BE(20)]).toEqual([1024, 1024]);
+  }
+  const json = JSON.parse(readFileSync(join(dir, 'bricks_wall_13.hotspot.json'), 'utf8'));
+  expect(json.rects).toHaveLength(rectTotal);
+  expect(json.maps).toEqual(names);
+  expect(existsSync(join(dir, 'bricks_wall_13.anvil.csv'))).toBe(true);
+
+  const listing = readdirSync(dir).sort();
+  expect(listing).toHaveLength(7);
+  await run();
+  expect(readdirSync(dir).sort()).toEqual(listing);
 });

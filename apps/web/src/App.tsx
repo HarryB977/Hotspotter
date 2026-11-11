@@ -7,6 +7,7 @@ import { Tabs, TabsList, TabsTrigger } from './components/ui/tabs';
 import { LayoutPanel } from './panels/LayoutPanel';
 import { Inspector } from './panels/Inspector';
 import { AtlasView } from './viewport/AtlasView';
+import { ExportDialog } from './export/ExportDialog';
 import type { ActiveMap } from './state/store';
 
 const MAP_TABS: ActiveMap[] = ['baseColor', 'normal', 'height', 'roughness', 'metallic', 'ao', 'rectId'];
@@ -47,6 +48,7 @@ export function App() {
         <header className="col-span-3 flex items-center gap-3 border-b border-zinc-800 bg-zinc-900 px-2">
           <span className="font-semibold text-zinc-100">{es.appName}</span>
           <span className="text-zinc-500">{es.topBar.project}</span>
+          <span className="ml-auto"><ExportDialog /></span>
         </header>
         <aside className="overflow-y-auto border-r border-zinc-800 bg-zinc-900" data-testid="left-column">
           <MaterialPanel />
