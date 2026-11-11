@@ -9,6 +9,7 @@ export const es = {
     drop: 'Suelta aquí la carpeta del material',
     pick: 'Elegir carpeta',
     importing: 'Importando…',
+    decodeFailed: (name: string) => `No se pudo leer la imagen ${name}.`,
     noMaps: 'No se reconocieron mapas en los archivos.',
     properties: 'Propiedades',
     periodSection: 'Periodo',

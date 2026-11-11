@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
-import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const SAMPLE_DIR = resolve(fileURLToPath(new URL('.', import.meta.url)), '../../../samples/pbr/bricks wall 13');
@@ -19,5 +19,30 @@ test('loads with title and imports the bricks wall 13 folder', async ({ page }) 
   await expect(page.getByTestId('map-row')).toHaveCount(6);
   await expect(page.getByTestId('normal-convention')).toHaveText('GL');
   await expect(page.getByTestId('ignored-file')).toHaveCount(1);
+  await expect(page.getByTestId('webgpu-error')).toHaveCount(0);
+});
+
+test('an undecodable image shows a panel error and keeps the app shell', async ({ page }, testInfo) => {
+  const dir = testInfo.outputPath('corrupt');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'broken_basecolor_1k.png'), 'not a png');
+
+  await page.goto('/');
+  await page.getByTestId('folder-input').setInputFiles(dir);
+
+  await expect(page.getByTestId('import-error')).toBeVisible();
+  await expect(page.getByTestId('left-column')).toBeVisible();
+  await expect(page.getByTestId('webgpu-error')).toHaveCount(0);
+});
+
+test('a folder without recognised maps shows the no-maps message', async ({ page }, testInfo) => {
+  const dir = testInfo.outputPath('nomaps');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'photo.png'), 'x');
+
+  await page.goto('/');
+  await page.getByTestId('folder-input').setInputFiles(dir);
+
+  await expect(page.getByTestId('import-error')).toHaveText('No se reconocieron mapas en los archivos.');
   await expect(page.getByTestId('webgpu-error')).toHaveCount(0);
 });

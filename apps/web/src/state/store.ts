@@ -12,7 +12,10 @@ export interface ProjectState {
   material: LoadedMaterial | null;
   gpuMaterial: GpuMaterial | null;
   gpu: GpuContext | null;
+  /** WebGPU initialisation failure; shown full screen. */
   error: string | null;
+  /** Import failure; shown in the Material panel. */
+  importError: string | null;
   importing: boolean;
   /** Files of the last import, including unrecognised and ignored ones. */
   sources: File[];
@@ -25,34 +28,49 @@ export interface ProjectState {
   assignMap(filename: string, kind: MapKind | null): Promise<void>;
 }
 
-const IMAGE_EXT = /\.(png|jpe?g|webp|bmp|tga|tiff?)$/i;
+// TGA and TIFF are not listed: createImageBitmap cannot decode them, so they are ignored.
+const IMAGE_EXT = /\.(png|jpe?g|webp|bmp)$/i;
 
-/** Decoded bitmaps of the current import, by file name. */
 /** Shared so a drop before the app-start init finishes waits for the same device. */
 let gpuReady: Promise<GpuContext> | null = null;
 
-const bitmaps = new Map<string, ImageBitmap>();
+/** Decoded bitmaps of the current material, by file name. */
+let bitmaps = new Map<string, ImageBitmap>();
+
+/** Bumped by every mutating operation; a result from an older generation is discarded. */
+let generation = 0;
 
 async function decode(file: File): Promise<ImageBitmap> {
   return createImageBitmap(file, { colorSpaceConversion: 'none', premultiplyAlpha: 'none' });
 }
 
+/** Resolves bitmaps from `cache`, decoding the rest into `fresh` (the caller commits or closes it). */
 async function buildImages(
   files: MaterialSettings['files'],
   sources: File[],
+  cache: Map<string, ImageBitmap>,
+  fresh: Map<string, ImageBitmap>,
 ): Promise<LoadedMaterial['images']> {
   const images: LoadedMaterial['images'] = {};
   for (const [kind, name] of Object.entries(files) as [MapKind, string][]) {
-    let bmp = bitmaps.get(name);
+    let bmp = cache.get(name) ?? fresh.get(name);
     if (!bmp) {
       const src = sources.find((f) => f.name === name);
       if (!src) continue;
-      bmp = await decode(src);
-      bitmaps.set(name, bmp);
+      try {
+        bmp = await decode(src);
+      } catch {
+        throw new Error(es.material.decodeFailed(name));
+      }
+      fresh.set(name, bmp);
     }
     images[kind] = bmp;
   }
   return images;
+}
+
+function closeAll(m: Map<string, ImageBitmap>): void {
+  for (const b of m.values()) b.close();
 }
 
 function withMaterialNode(doc: ProjectDoc, settings: MaterialSettings): ProjectDoc {
@@ -72,6 +90,7 @@ export const useProject = create<ProjectState>()((set, get) => ({
   gpuMaterial: null,
   gpu: null,
   error: null,
+  importError: null,
   importing: false,
   sources: [],
 
@@ -91,11 +110,16 @@ export const useProject = create<ProjectState>()((set, get) => ({
     const images = files.filter((f) => IMAGE_EXT.test(f.name));
     const names = images.map((f) => f.name);
     const { files: chosen, normalConvention } = chooseMaps(names);
-    if (Object.keys(chosen).length === 0) return;
-    set({ importing: true });
+    if (Object.keys(chosen).length === 0) {
+      generation++;
+      set({ importError: es.material.noMaps, importing: false });
+      return;
+    }
+    const mine = ++generation;
+    set({ importing: true, importError: null });
+    const fresh = new Map<string, ImageBitmap>();
     try {
-      bitmaps.clear();
-      const loaded = await buildImages(chosen, images);
+      const loaded = await buildImages(chosen, images, new Map(), fresh);
       const rough = chosen.roughness;
       const settings: MaterialSettings = {
         name: materialNameFromFiles(names),
@@ -108,18 +132,21 @@ export const useProject = create<ProjectState>()((set, get) => ({
         allowRotation: false,
       };
       const material: LoadedMaterial = { settings, images: loaded };
+      const gpuMaterial = uploadMaterial(gpu, material);
+      if (mine !== generation) {
+        destroyTextures(gpuMaterial);
+        closeAll(fresh);
+        return;
+      }
       destroyTextures(get().gpuMaterial);
-      set({
-        sources: images,
-        material,
-        gpuMaterial: uploadMaterial(gpu, material),
-        doc: createDefaultDoc(settings),
-        error: null,
-      });
+      closeAll(bitmaps);
+      bitmaps = fresh;
+      set({ sources: images, material, gpuMaterial, doc: createDefaultDoc(settings), importing: false });
     } catch (e) {
-      set({ error: String(e) });
-    } finally {
-      set({ importing: false });
+      closeAll(fresh);
+      if (mine === generation) {
+        set({ importError: e instanceof Error ? e.message : String(e), importing: false });
+      }
     }
   },
 
@@ -130,6 +157,7 @@ export const useProject = create<ProjectState>()((set, get) => ({
   async updateSettings(patch) {
     const { material, gpu, doc, sources } = get();
     if (!material || !gpu) return;
+    const mine = ++generation;
     const settings: MaterialSettings = { ...material.settings, ...patch };
     const reupload =
       patch.files !== undefined ||
@@ -138,11 +166,26 @@ export const useProject = create<ProjectState>()((set, get) => ({
       doc: doc ? withMaterialNode(doc, settings) : doc,
     };
     if (reupload) {
-      const images = await buildImages(settings.files, sources);
-      const loaded: LoadedMaterial = { settings, images };
-      destroyTextures(get().gpuMaterial);
-      next.material = loaded;
-      next.gpuMaterial = uploadMaterial(gpu, loaded);
+      const fresh = new Map<string, ImageBitmap>();
+      try {
+        const images = await buildImages(settings.files, sources, bitmaps, fresh);
+        const loaded: LoadedMaterial = { settings, images };
+        const gpuMaterial = uploadMaterial(gpu, loaded);
+        if (mine !== generation) {
+          destroyTextures(gpuMaterial);
+          closeAll(fresh);
+          return;
+        }
+        destroyTextures(get().gpuMaterial);
+        for (const [k, b] of fresh) bitmaps.set(k, b);
+        next.material = loaded;
+        next.gpuMaterial = gpuMaterial;
+        next.importError = null;
+      } catch (e) {
+        closeAll(fresh);
+        if (mine === generation) set({ importError: e instanceof Error ? e.message : String(e) });
+        return;
+      }
     } else {
       next.material = { ...material, settings };
       const gm = get().gpuMaterial;

@@ -108,7 +108,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 }
 
 export function MaterialPanel() {
-  const { material, sources, importing, importFiles, updateSettings, assignMap } = useProject();
+  const { material, sources, importing, importError, importFiles, updateSettings, assignMap } = useProject();
   const [dragging, setDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const s = material?.settings;
@@ -159,12 +159,15 @@ export function MaterialPanel() {
           />
         </div>
 
+        {importError && (
+          <div className="text-red-400" data-testid="import-error">{importError}</div>
+        )}
+
         {s && (
           <div className="mt-1 flex flex-col gap-1">
             <div className="truncate text-lg text-zinc-100" data-testid="material-name" title={s.name}>
               {s.name}
             </div>
-            {rows.length === 0 && <div className="text-zinc-500">{es.material.noMaps}</div>}
             {rows.map(([kind, name]) => (
               <div key={name} className="flex items-center gap-1" data-testid="map-row" data-kind={kind}>
                 <Select value={kind} onValueChange={(v) => void assignMap(name, v === NONE ? null : (v as MapKind))}>
