@@ -37,3 +37,5 @@ export { estimatePeriod } from './structure/period';
 export type { PeriodEstimate } from './structure/period';
 export { syntheticBrick, syntheticFbm, syntheticGrain } from './structure/synthetic';
 export type { SyntheticBrickOptions } from './structure/synthetic';
+export { WEAR_FAMILIES, DEFAULT_WEAR, DEFAULT_DIRT, proposeFamily } from './wear/params';
+export type { WearFamily, FamilyShape, WearParams, DirtParams } from './wear/params';

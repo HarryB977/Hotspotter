@@ -10,11 +10,17 @@ import type { RectPlacement } from './placement';
 import { checkProportions } from './period';
 import { DEFAULT_ORIENTATION } from './orientation';
 import type { ProportionIssue } from './period';
+import type { MaterialType } from './structure/analyze';
+import { DEFAULT_WEAR, DEFAULT_DIRT } from './wear/params';
+import type { WearParams, DirtParams } from './wear/params';
 
-export type NodeType = 'material' | 'layout' | 'placement' | 'output';
+export type NodeType = 'material' | 'structure' | 'layout' | 'placement' | 'wear' | 'dirt' | 'output';
 
 export interface NodeParams {
   material: MaterialSettings;
+  structure: { type: MaterialType; threshold: number | null; analyzed: boolean };
+  wear: WearParams;
+  dirt: DirtParams;
   layout: { mode: 'preset'; preset: PresetId } | { mode: 'auto'; target: AutoTarget; seed: number };
   placement: { variation: number; seed: number };
   output: { resolutionPx: number; worldWidthM: number; groove: GrooveSettings };
@@ -32,19 +38,31 @@ export class DocParseError extends Error {
   }
 }
 
+const defaultStructure = (): NodeParams['structure'] => ({ type: 'continuous', threshold: null, analyzed: false });
+const defaultWear = (): WearParams => ({
+  ...DEFAULT_WEAR, mask: { ...DEFAULT_WEAR.mask }, substrate: { ...DEFAULT_WEAR.substrate },
+});
+const defaultDirt = (): DirtParams => ({ ...DEFAULT_DIRT, tint: [...DEFAULT_DIRT.tint] });
+
 export function createDefaultDoc(material: MaterialSettings): ProjectDoc {
   return {
     version: 1,
     nodes: [
       { id: 'material', type: 'material', params: material },
+      { id: 'structure', type: 'structure', params: defaultStructure() },
       { id: 'layout', type: 'layout', params: { mode: 'preset', preset: 'walls' } },
       { id: 'placement', type: 'placement', params: { variation: 0.5, seed: 0 } },
+      { id: 'wear', type: 'wear', params: defaultWear() },
+      { id: 'dirt', type: 'dirt', params: defaultDirt() },
       { id: 'output', type: 'output', params: { resolutionPx: 4096, worldWidthM: 8, groove: { ...DEFAULT_GROOVE } } },
     ],
     edges: [
-      { from: 'material', to: 'layout', port: 'period' },
+      { from: 'material', to: 'structure', port: 'material' },
+      { from: 'structure', to: 'layout', port: 'period' },
       { from: 'layout', to: 'placement', port: 'layout' },
-      { from: 'placement', to: 'output', port: 'placement' },
+      { from: 'placement', to: 'wear', port: 'placement' },
+      { from: 'wear', to: 'dirt', port: 'wear' },
+      { from: 'dirt', to: 'output', port: 'dirt' },
     ],
   };
 }
@@ -83,11 +101,52 @@ export function parseDoc(s: string): ProjectDoc {
     const g = n.type === 'output' ? n.params.groove : undefined;
     if (isObj(g) && typeof g.bevelM !== 'number' && typeof g.widthM === 'number') g.bevelM = g.widthM / 2;
   }
+  migrateV01A(raw as unknown as ProjectDoc);
   return raw as unknown as ProjectDoc;
 }
 
+/** v0.1-A documents lack structure, wear and dirt: insert them once, at their chain position. */
+function migrateV01A(d: ProjectDoc): void {
+  const first = (t: NodeType) => d.nodes.find((n) => n.type === t);
+  const hasAny = (t: NodeType) => d.nodes.some((n) => n.type === t);
+  // Replaces edge a→b with a→mid→...→b; when absent, the chain is left unlinked rather than guessed.
+  const rewire = (a: DocNode, b: DocNode, chain: Array<{ id: string; port: string }>) => {
+    const i = d.edges.findIndex((e) => e.from === a.id && e.to === b.id);
+    if (i < 0) return;
+    const links: DocEdge[] = [];
+    let prev = a.id;
+    for (const c of chain) {
+      links.push({ from: prev, to: c.id, port: c.port });
+      prev = c.id;
+    }
+    links.push({ from: prev, to: b.id, port: d.edges[i].port });
+    d.edges.splice(i, 1, ...links);
+  };
+  const material = first('material');
+  const layout = first('layout');
+  if (!hasAny('structure') && material && layout) {
+    d.nodes.splice(d.nodes.indexOf(layout), 0, { id: 'structure', type: 'structure', params: defaultStructure() });
+    rewire(material, layout, [{ id: 'structure', port: 'material' }]);
+  }
+  const placement = first('placement');
+  const output = first('output');
+  if (!hasAny('wear') && !hasAny('dirt') && placement && output) {
+    d.nodes.splice(d.nodes.indexOf(output), 0,
+      { id: 'wear', type: 'wear', params: defaultWear() },
+      { id: 'dirt', type: 'dirt', params: defaultDirt() });
+    const i = d.edges.findIndex((e) => e.from === placement.id && e.to === output.id);
+    if (i >= 0) {
+      d.edges.splice(i, 1,
+        { from: placement.id, to: 'wear', port: 'placement' },
+        { from: 'wear', to: 'dirt', port: 'wear' },
+        { from: 'dirt', to: output.id, port: 'dirt' });
+    }
+  }
+}
+
 const LABELS: Record<NodeType, string> = {
-  material: 'Material', layout: 'Layout', placement: 'Colocación', output: 'Salida',
+  material: 'Material', structure: 'Estructura', layout: 'Layout', placement: 'Colocación',
+  wear: 'Desgaste', dirt: 'Suciedad', output: 'Salida',
 };
 
 /** Linear chain → ordered entries; any branching or off-chain node → `{ custom: true }`. */
@@ -140,6 +199,9 @@ export interface ComposeInputs {
   material: MaterialSettings;
   issues: ProportionIssue[];
   rotations: Map<string, boolean>;
+  structure: NodeParams['structure'];
+  wear: WearParams;
+  dirt: DirtParams;
 }
 
 /** Layout, placements and proportion checks for composing `d`, shared by preview and export. */
@@ -155,7 +217,10 @@ export function composeInputsFromDoc(d: ProjectDoc, widthPx?: number): ComposeIn
     orientation: material.orientation,
   });
   const rotations = new Map(placements.map((x) => [x.rectId, x.rotate90]));
-  return { layout, placements, material, rotations, issues: checkProportions(layout, material.period, rotations) };
+  const structure = findNode(d, 'structure').params;
+  const wear = findNode(d, 'wear').params;
+  const dirt = findNode(d, 'dirt').params;
+  return { layout, placements, material, rotations, structure, wear, dirt, issues: checkProportions(layout, material.period, rotations) };
 }
 
 export function updateNodeParams<T extends NodeType>(

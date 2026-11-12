@@ -6,6 +6,7 @@ import {
 import { pxPerMetre, rectSizeM } from '../src/layout';
 import type { MaterialSettings } from '../src/material';
 import { checkProportions } from '../src/period';
+import { DEFAULT_WEAR, DEFAULT_DIRT } from '../src/wear/params';
 
 const material: MaterialSettings = {
   name: 'bricks',
@@ -42,9 +43,45 @@ describe('project document', () => {
     expect(() => parseDoc('{"version":1,"nodes":[],"edges":[{"from":"a","to":"b","port":"p"}]}')).toThrow(DocParseError);
   });
 
-  it('projects the default doc to a 4-entry stack', () => {
-    const stack = toStack(createDefaultDoc(material));
-    expect(Array.isArray(stack) && stack.map((e) => e.type)).toEqual(['material', 'layout', 'placement', 'output']);
+  it('projects the default doc to a 7-entry stack', () => {
+    const doc = createDefaultDoc(material);
+    expect(doc.nodes).toHaveLength(7);
+    const stack = toStack(doc);
+    expect(Array.isArray(stack) && stack.map((e) => e.type)).toEqual(
+      ['material', 'structure', 'layout', 'placement', 'wear', 'dirt', 'output'],
+    );
+    expect(Array.isArray(stack) && stack.map((e) => e.label).slice(1, 2)).toEqual(['Estructura']);
+  });
+
+  it('migrates a v0.1-A document (4 nodes) to 7 chained nodes', () => {
+    const old = {
+      version: 1,
+      nodes: [
+        { id: 'material', type: 'material', params: { ...material } },
+        { id: 'layout', type: 'layout', params: { mode: 'preset', preset: 'walls' } },
+        { id: 'placement', type: 'placement', params: { variation: 0.5, seed: 0 } },
+        { id: 'output', type: 'output', params: { resolutionPx: 4096, worldWidthM: 8, groove: { widthM: 0.01, bevelM: 0.005, depthM: 0.002, profile: 'round' } } },
+      ],
+      edges: [
+        { from: 'material', to: 'layout', port: 'period' },
+        { from: 'layout', to: 'placement', port: 'layout' },
+        { from: 'placement', to: 'output', port: 'placement' },
+      ],
+    };
+    const doc = parseDoc(JSON.stringify(old));
+    expect(doc.nodes).toHaveLength(7);
+    const stack = toStack(doc);
+    expect(Array.isArray(stack) && stack.map((e) => e.type)).toEqual(
+      ['material', 'structure', 'layout', 'placement', 'wear', 'dirt', 'output'],
+    );
+    expect(composeInputsFromDoc(doc, 512).wear).toEqual(DEFAULT_WEAR);
+  });
+
+  it('composeInputsFromDoc carries wear, dirt and structure', () => {
+    const r = composeInputsFromDoc(createDefaultDoc(material), 512);
+    expect(r.wear).toEqual(DEFAULT_WEAR);
+    expect(r.dirt).toEqual(DEFAULT_DIRT);
+    expect(r.structure).toEqual({ type: 'continuous', threshold: null, analyzed: false });
   });
 
   it('reports custom when the graph branches', () => {
