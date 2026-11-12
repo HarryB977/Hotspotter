@@ -15,7 +15,7 @@ export interface WearLossInput {
   grainAxis: 'x' | 'y' | null;
   /** User B/N mask over the full atlas UV (red channel), or undefined. */
   mask?: GPUTexture;
-  /** rg32float target: R = loss 0..1, G = target depth in metres. */
+  /** r32uint target: pack2x16float(loss 0..1, target depth in metres). */
   loss: GPUTexture;
 }
 

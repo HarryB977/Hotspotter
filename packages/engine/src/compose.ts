@@ -41,7 +41,10 @@ export interface AtlasMaps {
   pieceId: GPUTexture;
   /** r32float: metres to the nearest material joint, 0 in the groove */
   jointDistM: GPUTexture;
-  /** rg32float: R = material lost 0..1, G = target depth in metres; 0 in the groove and without wear. */
+  /**
+   * r32uint: pack2x16float(material lost 0..1, target depth in metres); 0 in the groove. Without wear it is a 1×1
+   * placeholder (0): a 1×1 loss means no wear, and consumers branch on Wear.enabled instead of reading it.
+   */
   loss: GPUTexture;
   heightRangeM: [number, number];
 }
@@ -191,7 +194,9 @@ export async function composeAtlas(ctx: GpuContext, input: ComposeInput): Promis
   const normal = tex('rgba8unorm');
   const pieceId = tex('r32uint');
   const jointDistM = tex('r32float');
-  const loss = tex('rg32float');
+  const loss = input.wear
+    ? tex('r32uint')
+    : device.createTexture({ size: [1, 1], format: 'r32uint', usage: OUT_USAGE });
 
   const params = paramsBuffer(device, input, outW, outH);
   const rects = rectsBuffer(device, layout, placements);
@@ -267,7 +272,7 @@ export async function composeAtlas(ctx: GpuContext, input: ComposeInput): Promis
     composePass('scalars', scalarLayout, [[3, roughness], [4, metallic], [5, ao]]);
     composePass('structure', structureLayout, [[6, pieceId], [7, jointDistM]]);
 
-    // Wear loss. Without wear the pass is skipped: WebGPU textures start zeroed.
+    // Wear loss. Without wear the pass is skipped and `loss` stays a zeroed 1×1 placeholder.
     if (input.wear) {
       wearResources = encodeWearLoss(device, encoder, {
         wear: input.wear, params, rects, rectId, pieceId, jointDistM, loss,

@@ -32,12 +32,14 @@ Cada capa resta del campo de altura. Una rotura siempre lleva su banda de fractu
 
 ### Pasada de pérdida (dónde se rompe)
 
-El motor decide primero qué píxeles pierden material (`loss`, R = 0/1) y a qué profundidad objetivo (G, en metros). Todo se mide en metros sobre coordenadas locales del rectángulo, con un desplazamiento por rectángulo derivado de la seed, así que la preview y el export coinciden a cualquier resolución.
+El motor decide primero qué píxeles pierden material y a qué profundidad objetivo (en metros). Ambos valores van en el mapa `loss` (r32uint con `pack2x16float(pérdida, profundidad)`). Sin desgaste, `loss` es un marcador de 1×1 a 0: un `loss` de 1×1 significa "sin desgaste". El export no escribe `loss`, `pieceId` ni `jointDistM` y los libera nada más componer.
 
-- El potencial de daño cae con la distancia al borde visible del rectángulo (el borde del fondo de ranura) en un ancho `min(widthM, 0.33 · lado menor)`, para que los trims finos no queden comidos.
+Todo se mide en metros sobre coordenadas locales del rectángulo, así que la preview y el export coinciden a cualquier resolución. A esas coordenadas se suma un desplazamiento por rectángulo, derivado de la seed y del **índice** del rectángulo en el layout: reordenar los rectángulos cambia su desgaste.
+
+- El potencial de daño cae con la distancia al borde visible del rectángulo (el borde del fondo de ranura) en un ancho `wEff = min(widthM, 0.33 · lado menor visible)`. El lado menor visible es el del rectángulo menos el fondo de ranura. Así los trims finos no quedan comidos.
 - La máscara B/N lo modula (gris medio = neutro, decisión 43). Con piezas, `pieceBias` lo concentra a menos de `sizeM` de una junta, con un peso aleatorio por pieza.
-- La forma sale de una mezcla de fBm y celdas Voronoi (`cellMix` de la familia). La celda se parte en cada junta, así que la rotura sigue el contorno de las piezas.
-- Siempre se pierde un borde mínimo irregular de entre `minEdgeM` y `1.6 · minEdgeM`.
+- La forma sale de una mezcla de fBm y celdas Voronoi (`cellMix` de la familia). La celda se parte en cada junta, así que la rotura sigue el contorno de las piezas. Las celdas se estiran (`anisotropy`) a lo largo de la veta del material, o de su eje X si no hay veta, y giran con el rectángulo.
+- Siempre se pierde un borde mínimo irregular. Su ancho base es `min(minEdgeM, 0.5 · wEff)` (en trims finos manda el límite) y el contorno interior llega hasta 1.6 veces ese ancho.
 - `dent` y `edgeOnly` no pierden material; `dent` solo deja una profundidad suave en G.
 - Sin desgaste, `loss` vale 0 en todo el atlas. La ranura siempre vale 0.
 

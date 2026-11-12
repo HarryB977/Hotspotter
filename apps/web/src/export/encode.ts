@@ -43,6 +43,8 @@ export async function exportProject(opts: ExportOptions): Promise<string[]> {
     maps = await composeAtlas(gpu, {
       layout, material: gpuMaterial, placements, resolutionPx: opts.resolutionPx, structure: structure?.gpu,
     });
+    // Not exported: free them before the readbacks, which peak in memory at 8192.
+    for (const t of [maps.loss, maps.pieceId, maps.jointDistM]) t.destroy();
     heightTex = heightToRgba8(gpu, maps);
     // One readback at a time keeps the staging buffers and CPU copies from stacking up at 8192.
     const atlas = maps;
@@ -76,7 +78,7 @@ export async function exportProject(opts: ExportOptions): Promise<string[]> {
     heightTex?.destroy();
     if (maps) {
       const m = maps;
-      for (const t of [m.baseColor, m.normal, m.height, m.roughness, m.metallic, m.ao, m.rectId, m.pieceId, m.jointDistM, m.loss]) {
+      for (const t of [m.baseColor, m.normal, m.height, m.roughness, m.metallic, m.ao, m.rectId]) {
         t.destroy();
       }
     }

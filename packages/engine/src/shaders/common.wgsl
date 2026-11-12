@@ -119,11 +119,11 @@ fn fbm(p: vec2<f32>, octaves: u32, seed: u32) -> f32 {
   return sum / norm;
 }
 
-// Domain warp: displaces p by up to amountM in each axis.
-fn warp(p: vec2<f32>, amountM: f32, seed: u32) -> vec2<f32> {
+// Domain warp: displaces p by up to `amount` (in the units of p) in each axis.
+fn warp(p: vec2<f32>, amount: f32, seed: u32) -> vec2<f32> {
   let dx = valueNoise(p, seed ^ 0x9e3779b9u) - 0.5;
   let dy = valueNoise(p + vec2<f32>(31.7, 11.3), seed ^ 0x85ebca6bu) - 0.5;
-  return p + 2.0 * amountM * vec2<f32>(dx, dy);
+  return p + 2.0 * amount * vec2<f32>(dx, dy);
 }
 
 struct VoronoiHit {
