@@ -52,6 +52,40 @@ export function jointMask(img: GrayImage, threshold?: number): { mask: Uint8Arra
   return { mask, threshold: t };
 }
 
+/**
+ * Hysteresis joint mask (1 = joint): pixels with `value < growBelow` that are 4-connected (with wrap) to a seed
+ * pixel with `value < seedBelow`. Isolated pits are dropped: components smaller than `minComponentPx` whose
+ * bounding box is also shorter than `minExtentPx` on both axes (short dashes of a mortar line are kept).
+ */
+export function hysteresisJointMask(
+  img: GrayImage, seedBelow: number, growBelow: number, minComponentPx: number, minExtentPx: number,
+): Uint8Array {
+  const { width: w, height: h, data } = img;
+  const n = w * h;
+  const root = components(w, h, (i) => data[i] < growBelow);
+  const seeded = new Uint8Array(n);
+  const size = new Int32Array(n);
+  const x0 = new Int32Array(n).fill(w), x1 = new Int32Array(n).fill(-1);
+  const y0 = new Int32Array(n).fill(h), y1 = new Int32Array(n).fill(-1);
+  for (let i = 0; i < n; i++) {
+    const r = root[i];
+    if (r < 0) continue;
+    const x = i % w, y = (i - x) / w;
+    size[r]++;
+    if (data[i] < seedBelow) seeded[r] = 1;
+    x0[r] = Math.min(x0[r], x); x1[r] = Math.max(x1[r], x);
+    y0[r] = Math.min(y0[r], y); y1[r] = Math.max(y1[r], y);
+  }
+  const mask = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    const r = root[i];
+    if (r < 0 || !seeded[r]) continue;
+    const extent = Math.max(x1[r] - x0[r], y1[r] - y0[r]) + 1;
+    if (size[r] >= minComponentPx || extent >= minExtentPx) mask[i] = 1;
+  }
+  return mask;
+}
+
 /** Root index of each `open` pixel's 4-connected, wrapping component (-1 where not open). */
 function components(w: number, h: number, open: (i: number) => boolean): Int32Array {
   const n = w * h;
@@ -91,7 +125,7 @@ function components(w: number, h: number, open: (i: number) => boolean): Int32Ar
  * `minPiecePx` become joint (id 0). Ids 1..count in scan order.
  */
 export function segmentPieces(
-  mask: Uint8Array, w: number, h: number, minPiecePx = 16, splitRadiusPx = 6,
+  mask: Uint8Array, w: number, h: number, minPiecePx = 16, splitRadiusPx = 8,
 ): { pieceId: Uint32Array; count: number } {
   const n = w * h;
   const free = new Uint32Array(n);
@@ -167,12 +201,15 @@ function edt1d(f: Float64Array, n: number, a: number, out: Float64Array, v: Int3
 
 /**
  * Exact Euclidean distance in metres from every pixel to the nearest joint pixel (pieceId 0), wrapping on both
- * axes (EDT on a 3×3 tiled copy, centre crop). 0 on joints; +Infinity everywhere when there are no joints.
+ * axes (EDT on a 3×3 tiled copy, centre crop). 0 on joints. Clamped to the tile's longer side in metres (never
+ * reached by a real wrapped distance, which is at most half the diagonal), so a map without joints holds that
+ * value everywhere instead of +Infinity.
  */
 export function jointDistance(
   pieceId: Uint32Array, w: number, h: number, metresPerPx: [number, number],
 ): Float32Array {
   const ax = metresPerPx[0] ** 2, ay = metresPerPx[1] ** 2;
+  const maxDist = Math.max(w * metresPerPx[0], h * metresPerPx[1]);
   const maxN = 3 * Math.max(w, h);
   const f = new Float64Array(maxN), out = new Float64Array(maxN);
   const v = new Int32Array(maxN), z = new Float64Array(maxN + 1);
@@ -187,7 +224,7 @@ export function jointDistance(
   for (let x = 0; x < w; x++) {
     for (let y = 0; y < 3 * h; y++) f[y] = g[(y % h) * w + x];
     edt1d(f, 3 * h, ay, out, v, z);
-    for (let y = 0; y < h; y++) dist[y * w + x] = Math.sqrt(out[h + y]);
+    for (let y = 0; y < h; y++) dist[y * w + x] = Math.min(maxDist, Math.sqrt(out[h + y]));
   }
   return dist;
 }

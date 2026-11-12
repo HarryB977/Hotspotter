@@ -104,6 +104,14 @@ describe('synthetic brick (1 × 1 m, 64 px courses, 128 px running bond, 6 px jo
     expect(half.pieceCount).toBe(32);
   });
 
+  it('downsamples larger inputs to 512 internally', () => {
+    const big = syntheticBrick({ ...brickOpts, size: 1024, courseH: 128, brickW: 256, joint: 12 });
+    const r = analyzeStructure(big.gray, [1, 1]);
+    expect([r.width, r.height]).toEqual([SIZE, SIZE]);
+    expect(r.pieceId.length).toBe(SIZE * SIZE);
+    expect(r.pieceCount).toBe(32);
+  });
+
   it('runs in under 3 s on 512²', () => {
     const t0 = performance.now();
     analyzeStructure(brick.gray, [1, 1]);
@@ -128,7 +136,15 @@ describe('continuous and directional materials', () => {
     expect(r.pieceCount <= 1 || r.jointFraction < 0.03).toBe(true);
     expect(r.anisotropy).toBeLessThan(0.3);
     expect(r.grainAxis).toBeNull();
-    expect(r.jointDistM.every((d) => d === Infinity)).toBe(true);
+    expect(r.threshold).toBe(0);
+    expect(r.suggestedThreshold).toBeGreaterThan(0);
+    expect(r.suggestedThreshold).toBeLessThan(1);
+  });
+
+  it('without joints, jointDistM is finite everywhere (capped at the longer tile side)', () => {
+    const r = analyzeStructure(syntheticFbm({ size: 128, seed: 2, scale: 4 }), [2, 1.5]);
+    expect(r.jointFraction).toBe(0);
+    expect(r.jointDistM.every((d) => Number.isFinite(d) && d === 2)).toBe(true);
   });
 
   it('horizontal grain (1:12) is directional along x', () => {
@@ -162,8 +178,16 @@ describe.skipIf(!hasSamples)('samples/pbr', () => {
   it('bricks wall 13: pieces with a confident Y period', () => {
     const r = analyzeStructure(loadHeight('bricks wall 13/bricks_wall_13_height_1k.png'), [1, 1]);
     expect(r.type).toBe('pieces');
+    // 16 courses × 8 bricks (matches period y = 1/16, x = 1/8).
+    expect(Math.abs(r.pieceCount - 128)).toBeLessThanOrEqual(15);
     expect(r.period.y).not.toBeNull();
     expect(r.period.confidence).toBeGreaterThan(0.5);
+  });
+
+  it('floor tiles 06: pieces, 6 × 6 tiles', () => {
+    const r = analyzeStructure(loadHeight('floor tiles 06/floor_tiles_06_height_1k.png'), [1, 1]);
+    expect(r.type).toBe('pieces');
+    expect(Math.abs(r.pieceCount - 36)).toBeLessThanOrEqual(4);
   });
 
   it('concrete wall 01: continuous', () => {

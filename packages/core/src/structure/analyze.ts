@@ -1,6 +1,6 @@
 import { estimatePeriod } from './period';
 import type { PeriodEstimate } from './period';
-import { jointDistance, jointMask, otsu, segmentPieces } from './pieces';
+import { hysteresisJointMask, jointDistance, otsu, segmentPieces } from './pieces';
 
 export interface GrayImage {
   width: number;
@@ -15,13 +15,16 @@ export interface StructureResult {
   type: MaterialType;
   period: PeriodEstimate;
   /**
-   * Joint threshold used, on the joint relief (1 = flush with the local surface, 0 = a full height range below
-   * it): pixels below it are joints. 0 = no joints.
+   * Segmentation threshold used, on the joint relief (1 = flush with the local surface, 0 = a full height range
+   * below it): joints are pixels below it that connect to a deeper Otsu seed (or, with a user threshold, all
+   * pixels below it). 0 = no joints.
    */
   threshold: number;
+  /** Segmentation threshold derived from Otsu, reported even when the gates reject joints (UI suggestion). */
+  suggestedThreshold: number;
   /** 0 = joint, ≥ 1 piece; same size as the input, row 0 = top. */
   pieceId: Uint32Array;
-  /** Metres from the nearest joint pixel (wrap-around), 0 on joints, +Infinity when there are no joints. */
+  /** Metres from the nearest joint pixel (wrap-around), 0 on joints, capped at max(tileSizeM) (the value everywhere without joints). */
   jointDistM: Float32Array;
   pieceCount: number;
   jointFraction: number;
@@ -34,11 +37,30 @@ export interface StructureResult {
 
 /**
  * Automatic joints need both a distinct joint level in the relief histogram (Otsu separability; noise and grain
- * sit at 0.69–0.73, bricks wall 13 at 0.77, clean joints at 1) and joints deeper than this fraction of the height
- * range (concrete and fBm: 0.03–0.05). Tuned on samples/pbr and the synthetic materials.
+ * sit at 0.69–0.73, bricks wall 13 at 0.77, clean joints at 1; a loose first filter) and joints deeper than this
+ * fraction of the height range (joints 0.24–0.27, concrete and fBm 0.03–0.05; the discriminating test). Tuned on
+ * samples/pbr and the synthetic materials.
  */
-const MIN_SEPARABILITY = 0.75;
+const MIN_SEPARABILITY = 0.7;
 const MIN_JOINT_DEPTH = 0.1;
+/**
+ * Hysteresis: Otsu keeps only the deep grout core, leaving joints dashed. Joints grow from those seeds into
+ * pixels at least this fraction of the Otsu depth below the surface: t_seg = 1 − (1 − t_otsu) · 0.38.
+ */
+const SEGMENT_DEPTH_RATIO = 0.38;
+/**
+ * Joint components smaller than this fraction of the image, and shorter than MIN_JOINT_EXTENT of the longer side
+ * on both axes, are isolated pits, not joints. The extent rule keeps the dashes of a broken mortar line.
+ */
+const MIN_JOINT_COMPONENT = 0.0025;
+const MIN_JOINT_EXTENT = 0.05;
+/**
+ * Pieces smaller than this fraction of the image (262 px at 512²) are crack slivers and chips, folded into the
+ * joints. 0.2 % starts eating real bricks in bricks wall 13 and 0.3 % halves its X period.
+ */
+const MIN_PIECE = 0.001;
+/** Analysis resolution: larger inputs are downsampled to this longer side. */
+const MAX_ANALYSIS_SIDE = 512;
 /** Closing radius of the joint relief, as a fraction of the longer side (10 px at 512). */
 const RELIEF_RADIUS = 1 / 50;
 /** Anisotropy from which a grain axis is reported. */
@@ -164,23 +186,35 @@ export function proposeMaterialType(r: Omit<StructureResult, 'type'>): MaterialT
 }
 
 /**
- * Structure of a tileable grey map (height, or inverted albedo luma). Runs at the input resolution; callers
- * downsample to ≤ 512 px first. Joints are the pixels of the joint relief (see `jointRelief`) below `threshold`.
- * Without an explicit threshold, Otsu's is used only when the relief has a distinct, deep enough joint level;
- * otherwise the material has no joints (threshold 0).
+ * Structure of a tileable grey map (height, or inverted albedo luma), downsampled to ≤ 512 px when larger (the
+ * result has the analysed size). Joints live on the joint relief (see `jointRelief`). Automatic: Otsu on the
+ * relief decides whether there are joints (separability and depth gates) and seeds them; joints then grow to
+ * the shallower `suggestedThreshold`. An explicit `threshold` is the segmentation threshold itself (no seeds).
+ * Isolated pits (small, short joint components) are dropped either way.
  */
 export function analyzeStructure(
-  img: GrayImage, tileSizeM: [number, number], opts?: { threshold?: number },
+  input: GrayImage, tileSizeM: [number, number], opts?: { threshold?: number },
 ): StructureResult {
+  const img = downsample(input, MAX_ANALYSIS_SIDE);
   const { width: w, height: h } = img;
   const relief = jointRelief(img);
-  let threshold = opts?.threshold;
-  if (threshold === undefined) {
-    const o = otsu(relief);
-    threshold = o.separability >= MIN_SEPARABILITY && 1 - o.threshold >= MIN_JOINT_DEPTH ? o.threshold : 0;
+  const o = otsu(relief);
+  const suggestedThreshold = 1 - (1 - o.threshold) * SEGMENT_DEPTH_RATIO;
+  const minComponentPx = Math.ceil(MIN_JOINT_COMPONENT * w * h);
+  const minExtentPx = Math.ceil(MIN_JOINT_EXTENT * Math.max(w, h));
+  let threshold: number;
+  let mask: Uint8Array;
+  if (opts?.threshold !== undefined) {
+    threshold = opts.threshold;
+    mask = hysteresisJointMask(relief, threshold, threshold, minComponentPx, minExtentPx);
+  } else if (o.separability >= MIN_SEPARABILITY && 1 - o.threshold >= MIN_JOINT_DEPTH) {
+    threshold = suggestedThreshold;
+    mask = hysteresisJointMask(relief, o.threshold, threshold, minComponentPx, minExtentPx);
+  } else {
+    threshold = 0;
+    mask = new Uint8Array(w * h);
   }
-  const { mask } = jointMask(relief, threshold);
-  const { pieceId, count } = segmentPieces(mask, w, h);
+  const { pieceId, count } = segmentPieces(mask, w, h, Math.ceil(MIN_PIECE * w * h));
   // Islands dropped by segmentPieces are joints too: period and fraction use the final joint set.
   let joints = 0;
   const finalMask = new Uint8Array(w * h);
@@ -194,6 +228,7 @@ export function analyzeStructure(
   const rest: Omit<StructureResult, 'type'> = {
     period: estimatePeriod(finalMask, w, h, tileSizeM),
     threshold,
+    suggestedThreshold,
     pieceId,
     jointDistM: jointDistance(pieceId, w, h, [tileSizeM[0] / w, tileSizeM[1] / h]),
     pieceCount: count,
