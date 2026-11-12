@@ -31,7 +31,8 @@ describe('project document', () => {
     g.widthM = 0.01;
     delete g.bevelM;
     const out = parseDoc(JSON.stringify(json));
-    expect(resolveLayout(out).groove.bevelM).toBe(0.005);
+    const migrated = out.nodes.find((n) => n.type === 'output')!.params as { groove: { bevelM: number } };
+    expect(migrated.groove.bevelM).toBe(0.005);
   });
 
   it('rejects bad versions and shapes with DocParseError', () => {
