@@ -16,6 +16,10 @@ Lo encontró el usuario al probar la v0.1-A. Entra en la v0.1 (plan v0.1-B):
 - **Importar archivos sueltos**: botón de selección múltiple además del de carpeta, y elegir entre **añadir** al material actual o **reemplazarlo** (ver [03](03-material-and-layout.md#importar-un-material)).
 - **Orientación del material**: rotación base y regla por rectángulo (fija o seguir el eje largo), con el periodo girado en el arranque en junta y en las comprobaciones (ver [03](03-material-and-layout.md#escala-y-proporciones-regla-dura)). Hace falta para que las tablas casen con jambas y dinteles.
 
+## Para la v0.2 (pedido por el usuario, 2026-11-12)
+
+- **Sesgo por relieve del desgaste**: que la decisión de dónde se rompe tenga en cuenta la altura y la curvatura del material. Lo que sobresale y las aristas convexas se gastan más; lo hundido queda protegido. Un valor 0–1 por material. En la v0.1 el height solo interviene de forma indirecta (juntas y piezas, escultura de la rotura, AO y suciedad).
+
 La exportación para Blender/Maya, Unreal y Source 2 ya estaba prevista en la v0.2. En la v0.1 solo están Unity y Anvil porque son el destino prioritario.
 
 Aunque la vista de nodos llega en la v0.4, el documento es un grafo desde la v0.1 (ver [02-architecture.md](02-architecture.md)). Así la pila nunca hay que reescribirla.
