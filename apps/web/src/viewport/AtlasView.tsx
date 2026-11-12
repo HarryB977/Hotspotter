@@ -1,14 +1,15 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { rectSizeM } from '@hotspotter/core';
-import type { HotspotLayout, MapKind, ProportionIssue } from '@hotspotter/core';
+import type { HotspotLayout, ProportionIssue } from '@hotspotter/core';
 import { heightToRgba8 } from '@hotspotter/engine';
 import type { AtlasMaps } from '@hotspotter/engine';
 import { useProject } from '../state/store';
+import type { ActiveMap } from '../state/store';
 
 export interface AtlasViewProps {
   maps: AtlasMaps | null;
   layout: HotspotLayout;
-  activeMap: MapKind | 'rectId';
+  activeMap: ActiveMap;
   issues: ProportionIssue[];
 }
 
@@ -151,9 +152,11 @@ export function AtlasView({ maps, layout, activeMap, issues }: AtlasViewProps) {
     let temp: GPUTexture | null = null;
     let pipeline = b.color;
     let source: GPUTexture;
-    if (activeMap === 'rectId') {
+    const isId = activeMap === 'rectId' || activeMap === 'pieceId';
+    if (isId) {
+      // Pieces use the same hash colouring as rect ids.
       pipeline = b.id;
-      source = maps.rectId;
+      source = maps[activeMap];
     } else if (activeMap === 'height') {
       temp = heightToRgba8(gpu, maps);
       source = temp;
@@ -165,7 +168,7 @@ export function AtlasView({ maps, layout, activeMap, issues }: AtlasViewProps) {
     const bindGroup = b.device.createBindGroup({
       layout: pipeline.getBindGroupLayout(0),
       entries:
-        activeMap === 'rectId'
+        isId
           ? [{ binding: 0, resource: source.createView() }]
           : [{ binding: 0, resource: source.createView() }, { binding: 1, resource: b.sampler }],
     });

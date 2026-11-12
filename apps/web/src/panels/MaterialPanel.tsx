@@ -149,7 +149,10 @@ export function MaterialPanel() {
   };
 
   const setPeriod = (patch: Partial<MaterialPeriod>) => {
-    if (s) void updateSettings({ period: { ...s.period, ...patch } });
+    if (!s) return;
+    // Editing the period itself (not the cut flags) stops the structure analysis from proposing one.
+    const userSet = s.periodUserSet === true || ['x', 'y', 'phaseX', 'phaseY'].some((k) => k in patch);
+    void updateSettings({ period: { ...s.period, ...patch }, periodUserSet: userSet });
   };
 
   const chosen = new Set(s ? Object.values(s.files) : []);

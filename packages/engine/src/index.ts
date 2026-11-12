@@ -5,5 +5,7 @@ export { uploadMaterial } from './material';
 export type { LoadedMaterial, GpuMaterial } from './material';
 export { composeAtlas, heightToRgba8 } from './compose';
 export type { ComposeInput, AtlasMaps } from './compose';
+export { uploadStructure } from './structure';
+export type { GpuStructure } from './structure';
 export { packParams } from './params';
 export type { ParamsInput } from './params';

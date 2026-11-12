@@ -33,14 +33,16 @@ async function upload(dir: string, name: string, body: Blob | string): Promise<s
 
 /** Composes a fresh atlas at `resolutionPx`, uploads maps, hotspot.json and Anvil csv, returns written paths. */
 export async function exportProject(opts: ExportOptions): Promise<string[]> {
-  const { doc, gpuMaterial, gpu } = useProject.getState();
+  const { doc, gpuMaterial, gpu, structure } = useProject.getState();
   if (!doc || !gpuMaterial || !gpu) throw new Error('No project');
   // Resolved at the export resolution, so hotspot.json and the Anvil csv px match the PNGs.
   const { layout, placements, material: mat } = composeInputsFromDoc(doc, opts.resolutionPx);
   let maps: AtlasMaps | null = null;
   let heightTex: GPUTexture | null = null;
   try {
-    maps = await composeAtlas(gpu, { layout, material: gpuMaterial, placements, resolutionPx: opts.resolutionPx });
+    maps = await composeAtlas(gpu, {
+      layout, material: gpuMaterial, placements, resolutionPx: opts.resolutionPx, structure: structure?.gpu,
+    });
     heightTex = heightToRgba8(gpu, maps);
     // One readback at a time keeps the staging buffers and CPU copies from stacking up at 8192.
     const atlas = maps;
@@ -73,7 +75,8 @@ export async function exportProject(opts: ExportOptions): Promise<string[]> {
   } finally {
     heightTex?.destroy();
     if (maps) {
-      for (const t of [maps.baseColor, maps.normal, maps.height, maps.roughness, maps.metallic, maps.ao, maps.rectId]) {
+      const m = maps;
+      for (const t of [m.baseColor, m.normal, m.height, m.roughness, m.metallic, m.ao, m.rectId, m.pieceId, m.jointDistM]) {
         t.destroy();
       }
     }

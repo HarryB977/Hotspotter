@@ -5,6 +5,7 @@ import type { PreviewRes } from '../state/store';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Slider } from '../components/ui/slider';
 import { NumField, Row, Section } from './MaterialPanel';
+import { StructureSection } from './StructureSection';
 
 const PREVIEW_RES: PreviewRes[] = [512, 1024, 2048];
 const PROFILES: GrooveProfile[] = ['bevel', 'round', 'step', 'none'];
@@ -23,6 +24,7 @@ export function Inspector() {
 
   return (
     <div className="overflow-y-auto">
+      <StructureSection />
       <Section title={es.atlas.title}>
         <Row label={es.inspector.preview}>
           <Select value={String(previewRes)} onValueChange={(v) => setPreviewRes(Number(v) as PreviewRes)}>

@@ -1,5 +1,5 @@
 // Pass 2: per-pixel material sampling at real-world scale plus groove profile.
-// Two entry points share the mapping; they are split only to stay within the
+// Three entry points share the mapping; they are split only to stay within the
 // default limit of 4 storage textures per shader stage.
 
 struct Rect {
@@ -19,6 +19,8 @@ struct Rect {
 @group(0) @binding(7) var tRoughness: texture_2d<f32>;
 @group(0) @binding(8) var tMetallic: texture_2d<f32>;
 @group(0) @binding(9) var tAo: texture_2d<f32>;
+@group(0) @binding(10) var tPieceId: texture_2d<u32>;
+@group(0) @binding(11) var tJointDist: texture_2d<f32>;
 
 // Direct transcription of atlasPxToMaterialM (packages/core/src/placement.ts).
 // px is a continuous reference-resolution coordinate, top-left origin.
@@ -136,4 +138,28 @@ fn scalars(@builtin(global_invocation_id) gid: vec3<u32>) {
   textureStore(outRoughness, c, vec4<f32>(rough, rough, rough, 1.0));
   textureStore(outMetallic, c, vec4<f32>(metal, metal, metal, 1.0));
   textureStore(outAo, c, vec4<f32>(ao, ao, ao, 1.0));
+}
+
+@group(1) @binding(6) var outPieceId: texture_storage_2d<r32uint, write>;
+@group(1) @binding(7) var outJointDist: texture_storage_2d<r32float, write>;
+
+// Nearest texel of a material-space map at uv, wrapping in both axes (no sampler for integer maps).
+fn nearestTexel(dims: vec2<u32>, uv: vec2<f32>) -> vec2<i32> {
+  return min(vec2<i32>(floor(fract(uv) * vec2<f32>(dims))), vec2<i32>(dims) - 1);
+}
+
+@compute @workgroup_size(8, 8)
+fn structure(@builtin(global_invocation_id) gid: vec3<u32>) {
+  if (f32(gid.x) >= P.outSize.x || f32(gid.y) >= P.outSize.y) { return; }
+  let q = pixel(gid.xy);
+  let c = vec2<i32>(gid.xy);
+  var id = 0u;
+  var dist = 0.0;
+  if (q.id != 0u) {
+    // Same uv as `surface`, so piece boundaries line up with the albedo, rotated rects included.
+    id = textureLoad(tPieceId, nearestTexel(textureDimensions(tPieceId), q.uv), 0).r;
+    dist = textureLoad(tJointDist, nearestTexel(textureDimensions(tJointDist), q.uv), 0).r;
+  }
+  textureStore(outPieceId, c, vec4<u32>(id, 0u, 0u, 0u));
+  textureStore(outJointDist, c, vec4<f32>(dist, 0.0, 0.0, 0.0));
 }

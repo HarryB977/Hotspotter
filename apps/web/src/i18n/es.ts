@@ -95,9 +95,22 @@ export const es = {
     grooveProfile: 'Perfil',
     profiles: { bevel: 'Bisel', round: 'Redondo', step: 'Escalón', none: 'Ninguno' },
   },
+  structure: {
+    title: 'Estructura',
+    type: 'Tipo',
+    types: { pieces: 'Piezas', continuous: 'Continuo', directional: 'Direccional' },
+    notAnalyzed: 'Sin analizar',
+    threshold: 'Umbral',
+    thresholdHint: 'Relieve de junta (1 = enrasado). Vacío = automático',
+    pieces: (n: number) => `${n} piezas`,
+    source: { height: 'desde Height', baseColor: 'desde BaseColor (luminancia invertida)' },
+    detect: 'Detectar',
+    failed: (msg: string) => `No se pudo analizar la estructura: ${msg}`,
+  },
   mapBar: {
     empty: 'Sin mapas',
     rectId: 'IDs rect',
+    pieceId: 'Piezas',
     issues: (proportion: number, layout: number) =>
       `${proportion} avisos de proporción · ${layout} problemas de layout (solapes, fuera de límites…)`,
     composeFailed: (msg: string) => `No se pudo componer el atlas: ${msg}`,

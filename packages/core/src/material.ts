@@ -19,6 +19,8 @@ export interface MaterialSettings {
   period: MaterialPeriod;
   allowRotation: boolean;
   orientation: MaterialOrientation;
+  /** True once the user edits the period; the structure analysis then stops proposing one. */
+  periodUserSet?: boolean;
 }
 
 /**

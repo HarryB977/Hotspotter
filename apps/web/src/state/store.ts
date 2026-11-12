@@ -1,18 +1,26 @@
 import { create } from 'zustand';
 import {
-  CONTINUOUS, chooseMaps, classifyMapFile, composeInputsFromDoc, createDefaultDoc, resolveMaterialName,
-  updateNodeParams, validateLayout,
+  CONTINUOUS, analyzeStructure, chooseMaps, classifyMapFile, composeInputsFromDoc, createDefaultDoc, downsample,
+  resolveMaterialName, toGray, updateNodeParams, validateLayout,
 } from '@hotspotter/core';
 import type {
-  HotspotLayout, LayoutIssue, MapKind, MaterialSettings, NodeParams, NodeType, ProjectDoc, ProportionIssue,
-  RectPlacement,
+  DocNode, GrayImage, HotspotLayout, LayoutIssue, MapKind, MaterialSettings, NodeParams, NodeType, ProjectDoc,
+  ProportionIssue, RectPlacement, StructureResult,
 } from '@hotspotter/core';
-import { composeAtlas, initGpu, uploadMaterial, WebGpuUnavailableError } from '@hotspotter/engine';
-import type { AtlasMaps, GpuContext, GpuMaterial, LoadedMaterial } from '@hotspotter/engine';
+import { composeAtlas, initGpu, uploadMaterial, uploadStructure, WebGpuUnavailableError } from '@hotspotter/engine';
+import type { AtlasMaps, GpuContext, GpuMaterial, GpuStructure, LoadedMaterial } from '@hotspotter/engine';
 import { es } from '../i18n/es';
 
 export type PreviewRes = 512 | 1024 | 2048;
-export type ActiveMap = MapKind | 'rectId';
+export type ActiveMap = MapKind | 'rectId' | 'pieceId';
+
+/** Structure analysis of the current material and its GPU maps. */
+export interface StructureState {
+  result: StructureResult;
+  gpu: GpuStructure;
+  /** Map the analysis read: the height, or the albedo (inverted luma) when there is no height. */
+  source: 'height' | 'baseColor';
+}
 
 /** A composed atlas with the layout and checks it was composed from. */
 export interface AtlasResult {
@@ -44,6 +52,9 @@ export interface ProjectState {
   atlas: AtlasResult | null;
   /** Last preview composition failure, shown in the status bar; cleared by the next success. */
   composeError: string | null;
+  structure: StructureState | null;
+  /** Last structure analysis failure, shown in the structure section; cleared by the next success. */
+  structureError: string | null;
   setPreviewRes(r: PreviewRes): void;
   setActiveMap(m: ActiveMap): void;
   /** Shallow-merges params into a node. */
@@ -61,6 +72,13 @@ export interface ProjectState {
   updateSettings(patch: Partial<MaterialSettings>): Promise<void>;
   /** Assigns a source file to a map kind (null = ignore it) and rebuilds `settings.files`. */
   assignMap(filename: string, kind: MapKind | null): Promise<void>;
+  /**
+   * Analyses the material structure (height, else inverted albedo luma, at <= 512 px), uploads it, and sets the
+   * structure node and, unless `periodUserSet`, the proposed period. Discarded if the maps change meanwhile.
+   */
+  analyze(): Promise<void>;
+  /** Stores the segmentation threshold (null = automatic) and re-analyses. */
+  setStructureThreshold(t: number | null): Promise<void>;
 }
 
 // TGA and TIFF are not listed: createImageBitmap cannot decode them, so they are ignored.
@@ -77,6 +95,34 @@ let importGen = 0;
 
 /** Bumped by imports and by settings changes that re-upload; guards re-uploading updates. */
 let generation = 0;
+
+/** Bumped by every analysis request; only the latest may apply its result. */
+let analyzeGen = 0;
+
+/** Longest side read back from a bitmap for the analysis, before the box downsample to ANALYSIS_SIDE. */
+const MAX_READ_SIDE = 2048;
+const ANALYSIS_SIDE = 512;
+
+/** Grey analysis input from the height map, else from the albedo's inverted luma; null without either. */
+function readGray(images: LoadedMaterial['images']): { gray: GrayImage; source: StructureState['source'] } | null {
+  const source = images.height ? 'height' : images.baseColor ? 'baseColor' : null;
+  if (!source) return null;
+  const bmp = images[source]!;
+  const k = Math.min(1, MAX_READ_SIDE / Math.max(bmp.width, bmp.height));
+  const w = Math.max(1, Math.round(bmp.width * k));
+  const h = Math.max(1, Math.round(bmp.height * k));
+  const g = new OffscreenCanvas(w, h).getContext('2d', { willReadFrequently: true });
+  if (!g) throw new Error('2D canvas unavailable');
+  g.drawImage(bmp, 0, 0, w, h);
+  const px = g.getImageData(0, 0, w, h).data;
+  const gray = toGray(new Uint8Array(px.buffer, px.byteOffset, px.byteLength), w, h,
+    source === 'height' ? 'height' : 'invertedLuma');
+  return { gray: downsample(gray, ANALYSIS_SIDE), source };
+}
+
+function structureNode(doc: ProjectDoc): DocNode<'structure'> | undefined {
+  return doc.nodes.find((n): n is DocNode<'structure'> => n.type === 'structure');
+}
 
 async function decode(file: File): Promise<ImageBitmap> {
   return createImageBitmap(file, { colorSpaceConversion: 'none', premultiplyAlpha: 'none' });
@@ -202,6 +248,7 @@ async function addFiles(
       doc: withMaterialNode(doc, settings),
       importing: false,
     });
+    if (kinds.includes('height') || kinds.includes('baseColor')) await get().analyze();
   } catch (e) {
     closeAll(fresh);
     if (mine === importGen) {
@@ -223,6 +270,8 @@ export const useProject = create<ProjectState>()((set, get) => ({
   activeMap: 'baseColor',
   atlas: null,
   composeError: null,
+  structure: null,
+  structureError: null,
 
   setPreviewRes(r) {
     set({ previewRes: r });
@@ -298,7 +347,13 @@ export const useProject = create<ProjectState>()((set, get) => ({
       destroyTextures(get().gpuMaterial);
       closeAll(bitmaps);
       bitmaps = fresh;
-      set({ sources: images, material, gpuMaterial, doc: createDefaultDoc(settings), importing: false });
+      const oldStructure = get().structure;
+      set({
+        sources: images, material, gpuMaterial, doc: createDefaultDoc(settings), importing: false,
+        structure: null, structureError: null,
+      });
+      oldStructure?.gpu.destroy();
+      await get().analyze();
     } catch (e) {
       closeAll(fresh);
       if (mine === importGen) {
@@ -349,6 +404,16 @@ export const useProject = create<ProjectState>()((set, get) => ({
       next.gpuMaterial = gm ? { ...gm, settings } : gm;
     }
     set(next);
+    const images = next.material?.images;
+    const tile = material.settings.tileSizeM;
+    if (
+      images?.height !== material.images.height ||
+      images?.baseColor !== material.images.baseColor ||
+      settings.tileSizeM[0] !== tile[0] ||
+      settings.tileSizeM[1] !== tile[1]
+    ) {
+      await get().analyze();
+    }
   },
 
   async assignMap(filename, kind) {
@@ -369,10 +434,78 @@ export const useProject = create<ProjectState>()((set, get) => ({
     }
     await get().updateSettings(patch);
   },
+
+  async analyze() {
+    const mine = ++analyzeGen;
+    const startImages = get().material?.images;
+    // Let the UI paint before the CPU work; anything committed meanwhile is caught below.
+    await new Promise((r) => setTimeout(r, 0));
+    const { material, gpu, doc } = get();
+    if (mine !== analyzeGen || !material || !gpu || !doc) return;
+    // The maps changed while this request waited; that change requests its own analysis.
+    if (material.images !== startImages) return;
+    const node = structureNode(doc);
+    let result: StructureResult;
+    let source: StructureState['source'];
+    try {
+      const input = readGray(material.images);
+      if (!input) {
+        // Neither height nor albedo left: drop the structure of the removed maps (continuous).
+        const old = get().structure;
+        if (old) {
+          set({ structure: null, doc: node ? updateNodeParams(doc, node.id, { analyzed: false }) : doc });
+          old.gpu.destroy();
+        }
+        return;
+      }
+      source = input.source;
+      const threshold = node?.params.threshold ?? null;
+      result = analyzeStructure(input.gray, material.settings.tileSizeM, threshold === null ? undefined : { threshold });
+    } catch (e) {
+      console.error('structure analysis failed', e);
+      set({ structureError: es.structure.failed(e instanceof Error ? e.message : String(e)) });
+      return;
+    }
+    const gpuStructure = uploadStructure(gpu, result);
+    let settings = material.settings;
+    const p = result.period;
+    const cur = settings.period;
+    if (
+      !settings.periodUserSet &&
+      (cur.x !== p.x || cur.y !== p.y || cur.phaseX !== p.phaseX || cur.phaseY !== p.phaseY)
+    ) {
+      settings = { ...settings, period: { ...cur, x: p.x, y: p.y, phaseX: p.phaseX, phaseY: p.phaseY } };
+    }
+    let nextDoc = settings === material.settings ? doc : withMaterialNode(doc, settings);
+    if (node) nextDoc = updateNodeParams(nextDoc, node.id, { type: result.type, analyzed: true });
+    const prev = get().structure;
+    const next: Partial<ProjectState> = {
+      structure: { result, gpu: gpuStructure, source },
+      structureError: null,
+      doc: nextDoc,
+    };
+    if (settings !== material.settings) {
+      next.material = { ...material, settings };
+      const gm = get().gpuMaterial;
+      next.gpuMaterial = gm ? { ...gm, settings } : gm;
+    }
+    set(next);
+    prev?.gpu.destroy();
+  },
+
+  async setStructureThreshold(t) {
+    const { doc } = get();
+    const node = doc && structureNode(doc);
+    if (!doc || !node) return;
+    set({ doc: updateNodeParams(doc, node.id, { threshold: t }) });
+    await get().analyze();
+  },
 }));
 
 function destroyMaps(m: AtlasMaps): void {
-  for (const t of [m.baseColor, m.normal, m.height, m.roughness, m.metallic, m.ao, m.rectId]) t.destroy();
+  for (const t of [m.baseColor, m.normal, m.height, m.roughness, m.metallic, m.ao, m.rectId, m.pieceId, m.jointDistM]) {
+    t.destroy();
+  }
 }
 
 const RECOMPOSE_DEBOUNCE_MS = 150;
@@ -382,14 +515,17 @@ let composeTimer: ReturnType<typeof setTimeout> | undefined;
 let composeGen = 0;
 
 async function recompose(): Promise<void> {
-  const { doc, gpuMaterial, gpu, previewRes } = useProject.getState();
+  const { doc, gpuMaterial, gpu, previewRes, structure } = useProject.getState();
   const mine = ++composeGen;
   if (!doc || !gpuMaterial || !gpu) return;
   let maps: AtlasMaps | null = null;
   try {
     const { layout, placements, issues } = composeInputsFromDoc(doc);
     const t0 = performance.now();
-    maps = await composeAtlas(gpu, { layout, material: gpuMaterial, placements, resolutionPx: previewRes });
+    // composeAtlas binds the structure textures before its first await, so a later replacement may destroy them.
+    maps = await composeAtlas(gpu, {
+      layout, material: gpuMaterial, placements, resolutionPx: previewRes, structure: structure?.gpu,
+    });
     await gpu.device.queue.onSubmittedWorkDone();
     const gpuMs = performance.now() - t0;
     if (mine !== composeGen) {
@@ -412,7 +548,12 @@ async function recompose(): Promise<void> {
 }
 
 useProject.subscribe((s, prev) => {
-  if (s.doc === prev.doc && s.gpuMaterial === prev.gpuMaterial && s.previewRes === prev.previewRes) return;
+  if (
+    s.doc === prev.doc && s.gpuMaterial === prev.gpuMaterial && s.previewRes === prev.previewRes &&
+    s.structure === prev.structure
+  ) {
+    return;
+  }
   clearTimeout(composeTimer);
   composeTimer = setTimeout(() => void recompose(), RECOMPOSE_DEBOUNCE_MS);
 });

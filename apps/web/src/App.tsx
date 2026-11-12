@@ -10,7 +10,13 @@ import { AtlasView } from './viewport/AtlasView';
 import { ExportDialog } from './export/ExportDialog';
 import type { ActiveMap } from './state/store';
 
-const MAP_TABS: ActiveMap[] = ['baseColor', 'normal', 'height', 'roughness', 'metallic', 'ao', 'rectId'];
+const MAP_TABS: ActiveMap[] = ['baseColor', 'normal', 'height', 'roughness', 'metallic', 'ao', 'rectId', 'pieceId'];
+
+function tabLabel(k: ActiveMap): string {
+  if (k === 'rectId') return es.mapBar.rectId;
+  if (k === 'pieceId') return es.mapBar.pieceId;
+  return es.material.mapKinds[k];
+}
 
 function PanelTitle({ children }: { children: React.ReactNode }) {
   return (
@@ -72,7 +78,7 @@ export function App() {
             <TabsList className="h-full">
               {MAP_TABS.map((k) => (
                 <TabsTrigger key={k} value={k} disabled={!atlas}>
-                  {k === 'rectId' ? es.mapBar.rectId : es.material.mapKinds[k]}
+                  {tabLabel(k)}
                 </TabsTrigger>
               ))}
             </TabsList>

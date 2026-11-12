@@ -2,6 +2,8 @@ import { pxPerMetre } from '@hotspotter/core';
 import type { HotspotLayout, RectPlacement } from '@hotspotter/core';
 import type { GpuContext } from './gpu';
 import type { GpuMaterial } from './material';
+import { continuousStructure } from './structure';
+import type { GpuStructure } from './structure';
 import { PARAMS_BYTES, packParams, withCommon } from './params';
 import rectIdWgsl from './shaders/rectId.wgsl?raw';
 import composeWgsl from './shaders/compose.wgsl?raw';
@@ -14,6 +16,8 @@ export interface ComposeInput {
   material: GpuMaterial;
   placements: RectPlacement[];
   resolutionPx: number;
+  /** Material structure; without it the material is one continuous piece. */
+  structure?: GpuStructure;
 }
 
 export interface AtlasMaps {
@@ -26,6 +30,10 @@ export interface AtlasMaps {
   ao: GPUTexture;
   /** r32uint: rect index + 1, 0 = groove / empty */
   rectId: GPUTexture;
+  /** r32uint: material piece id at each pixel, 0 on joints and in the groove */
+  pieceId: GPUTexture;
+  /** r32float: metres to the nearest material joint, 0 in the groove */
+  jointDistM: GPUTexture;
   heightRangeM: [number, number];
 }
 
@@ -172,6 +180,10 @@ export async function composeAtlas(ctx: GpuContext, input: ComposeInput): Promis
   const metallic = tex('rgba8unorm');
   const ao = tex('rgba8unorm');
   const normal = tex('rgba8unorm');
+  const pieceId = tex('r32uint');
+  const jointDistM = tex('r32float');
+  const ownStructure = input.structure ? null : continuousStructure(ctx);
+  const structure = input.structure ?? ownStructure!;
 
   const params = paramsBuffer(device, input, outW, outH);
   const rects = rectsBuffer(device, layout, placements);
@@ -189,6 +201,8 @@ export async function composeAtlas(ctx: GpuContext, input: ComposeInput): Promis
       { binding: 2, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'uint' } },
       { binding: 3, visibility: GPUShaderStage.COMPUTE, sampler: { type: 'filtering' } },
       ...[4, 5, 6, 7, 8, 9].map((binding) => ({ binding, visibility: GPUShaderStage.COMPUTE, texture: tx })),
+      { binding: 10, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'uint' } },
+      { binding: 11, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
     ],
   });
   const t = material.textures;
@@ -207,6 +221,8 @@ export async function composeAtlas(ctx: GpuContext, input: ComposeInput): Promis
       ...[t.baseColor, t.normal, t.height, t.roughness, t.metallic, t.ao].map((m, i) => ({
         binding: 4 + i, resource: m.createView(),
       })),
+      { binding: 10, resource: structure.pieceId.createView() },
+      { binding: 11, resource: structure.jointDistM.createView() },
     ],
   });
   const composeModule = device.createShaderModule({ code: withCommon(composeWgsl) });
@@ -215,6 +231,9 @@ export async function composeAtlas(ctx: GpuContext, input: ComposeInput): Promis
   });
   const scalarLayout = device.createBindGroupLayout({
     entries: [storageEntry(3, 'rgba8unorm'), storageEntry(4, 'rgba8unorm'), storageEntry(5, 'rgba8unorm')],
+  });
+  const structureLayout = device.createBindGroupLayout({
+    entries: [storageEntry(6, 'r32uint'), storageEntry(7, 'r32float')],
   });
   const composePass = (entryPoint: string, outLayout: GPUBindGroupLayout, outs: [number, GPUTexture][]) => {
     const pipeline = device.createComputePipeline({
@@ -234,6 +253,7 @@ export async function composeAtlas(ctx: GpuContext, input: ComposeInput): Promis
   };
   composePass('surface', surfaceLayout, [[0, baseColor], [1, matNormal], [2, height]]);
   composePass('scalars', scalarLayout, [[3, roughness], [4, metallic], [5, ao]]);
+  composePass('structure', structureLayout, [[6, pieceId], [7, jointDistM]]);
 
   // Pass 3: normal from height combined with the material normal.
   const normalPipeline = device.createComputePipeline({
@@ -256,12 +276,13 @@ export async function composeAtlas(ctx: GpuContext, input: ComposeInput): Promis
   normalPass.end();
 
   device.queue.submit([encoder.finish()]);
+  ownStructure?.destroy();
   const heightRangeM = await reduceHeightRange(ctx, height);
   params.destroy();
   rects.destroy();
   matNormal.destroy();
 
-  return { baseColor, normal, height, roughness, metallic, ao, rectId, heightRangeM };
+  return { baseColor, normal, height, roughness, metallic, ao, rectId, pieceId, jointDistM, heightRangeM };
 }
 
 /** Height normalized by heightRangeM into rgba8unorm (grey, A = 255), for export and preview. */
