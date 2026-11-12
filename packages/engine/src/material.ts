@@ -15,6 +15,11 @@ export interface GpuMaterial {
   settings: MaterialSettings;
   /** True when a normal map was uploaded (not the flat default); the normal pass then skips material relief. */
   hasNormalMap: boolean;
+  /**
+   * Which maps were uploaded; false where a 1×1 MAP_DEFAULTS constant stands in. With a real AO map the height AO
+   * leaves the material relief out (R33): the baked AO already holds it.
+   */
+  hasMap: Record<MapKind, boolean>;
 }
 
 const KINDS: MapKind[] = ['baseColor', 'normal', 'height', 'roughness', 'metallic', 'ao', 'opacity'];
@@ -72,5 +77,6 @@ export function uploadMaterial(ctx: GpuContext, m: LoadedMaterial): GpuMaterial 
     const tex = uploadRgba8(ctx, bmp, { srgb: false });
     textures[kind] = kind === 'normal' && m.settings.normalConvention === 'dx' ? flipGreen(ctx, tex) : tex;
   }
-  return { textures, settings: m.settings, hasNormalMap: m.images.normal !== undefined };
+  const hasMap = Object.fromEntries(KINDS.map((k) => [k, m.images[k] !== undefined])) as Record<MapKind, boolean>;
+  return { textures, settings: m.settings, hasNormalMap: hasMap.normal, hasMap };
 }

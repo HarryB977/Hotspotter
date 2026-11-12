@@ -250,7 +250,10 @@ async function addFiles(
     set({
       sources: [...sources.filter((f) => !replaced.has(f.name)), ...images],
       material: { settings, images: { ...material.images, ...loaded } },
-      gpuMaterial: { textures, settings, hasNormalMap: settings.files.normal !== undefined },
+      gpuMaterial: {
+        textures, settings, hasNormalMap: settings.files.normal !== undefined,
+        hasMap: Object.fromEntries((['baseColor', 'normal', 'height', 'roughness', 'metallic', 'ao', 'opacity'] as const).map((k) => [k, settings.files[k] !== undefined])) as Record<MapKind, boolean>,
+      },
       doc: withMaterialNode(doc, settings),
       importing: false,
     });
