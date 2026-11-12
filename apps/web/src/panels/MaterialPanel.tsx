@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { InputHTMLAttributes } from 'react';
 import { classifyMapFile, sanitizeMaterialName } from '@hotspotter/core';
 import type { MapKind, MaterialPeriod } from '@hotspotter/core';
-import { FolderOpen } from 'lucide-react';
+import { FileImage, FolderOpen } from 'lucide-react';
 import { es } from '../i18n/es';
 import { useProject } from '../state/store';
 import { Button } from '../components/ui/button';
@@ -10,6 +10,7 @@ import { Input } from '../components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Slider } from '../components/ui/slider';
 import { cn } from '../lib/utils';
+import { ImportChoiceDialog } from '../import/ImportChoiceDialog';
 
 const KINDS: MapKind[] = ['baseColor', 'normal', 'height', 'roughness', 'metallic', 'ao', 'opacity'];
 const NONE = 'none';
@@ -135,8 +136,17 @@ export function Section({ title, children }: { title: string; children: React.Re
 export function MaterialPanel() {
   const { material, sources, importing, importError, importFiles, updateSettings, assignMap } = useProject();
   const [dragging, setDragging] = useState(false);
+  const [pending, setPending] = useState<{ files: File[]; folder?: string } | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const filesRef = useRef<HTMLInputElement>(null);
+  const fallback = useProject((st) => st.atlas?.layout.warnings?.includes('orientation-fallback') === true);
   const s = material?.settings;
+
+  /** With a material loaded the user chooses between adding and replacing. */
+  const incoming = (files: File[], folder?: string) => {
+    if (material && files.length > 0) setPending({ files, folder });
+    else void importFiles(files, folder);
+  };
 
   const setPeriod = (patch: Partial<MaterialPeriod>) => {
     if (s) void updateSettings({ period: { ...s.period, ...patch } });
@@ -160,14 +170,33 @@ export function MaterialPanel() {
           onDrop={(e) => {
             e.preventDefault();
             setDragging(false);
-            void filesFromDrop(e.dataTransfer).then(({ files, folder }) => importFiles(files, folder));
+            void filesFromDrop(e.dataTransfer).then(({ files, folder }) => incoming(files, folder));
           }}
         >
           <span>{importing ? es.material.importing : es.material.drop}</span>
-          <Button size="sm" onClick={() => inputRef.current?.click()}>
-            <FolderOpen className="h-3 w-3" />
-            {es.material.pick}
-          </Button>
+          <div className="flex gap-1">
+            <Button size="sm" onClick={() => inputRef.current?.click()}>
+              <FolderOpen className="h-3 w-3" />
+              {es.material.pick}
+            </Button>
+            <Button size="sm" onClick={() => filesRef.current?.click()}>
+              <FileImage className="h-3 w-3" />
+              {es.material.pickFiles}
+            </Button>
+          </div>
+          <input
+            ref={filesRef}
+            type="file"
+            multiple
+            hidden
+            accept="image/*"
+            data-testid="import-files"
+            onChange={(e) => {
+              const list = Array.from(e.target.files ?? []);
+              e.target.value = '';
+              incoming(list);
+            }}
+          />
           <input
             ref={inputRef}
             type="file"
@@ -179,10 +208,20 @@ export function MaterialPanel() {
             onChange={(e) => {
               const list = Array.from(e.target.files ?? []);
               e.target.value = '';
-              void importFiles(list);
+              incoming(list);
             }}
           />
         </div>
+
+        <ImportChoiceDialog
+          open={pending !== null}
+          onCancel={() => setPending(null)}
+          onChoose={(mode) => {
+            const p = pending;
+            setPending(null);
+            if (p) void importFiles(p.files, p.folder, mode);
+          }}
+        />
 
         {importError && (
           <div className="text-red-400" data-testid="import-error">{importError}</div>
@@ -287,6 +326,37 @@ export function MaterialPanel() {
               checked={s.roughnessIsGloss}
               onChange={(v) => void updateSettings({ roughnessIsGloss: v })}
             />
+          </Section>
+
+          <Section title={es.material.orientationSection}>
+            <Row label={es.material.baseRotation}>
+              <Select
+                value={String(s.orientation.baseRotation)}
+                onValueChange={(v) =>
+                  void updateSettings({ orientation: { ...s.orientation, baseRotation: v === '90' ? 90 : 0 } })}
+              >
+                <SelectTrigger data-testid="base-rotation"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="0">0°</SelectItem>
+                  <SelectItem value="90">90°</SelectItem>
+                </SelectContent>
+              </Select>
+            </Row>
+            <Row label={es.material.orientationRule}>
+              <Select
+                value={s.orientation.rule}
+                onValueChange={(v) => void updateSettings({ orientation: { ...s.orientation, rule: v as 'fixed' | 'longAxis' } })}
+              >
+                <SelectTrigger data-testid="orientation-rule"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="fixed">{es.material.ruleFixed}</SelectItem>
+                  <SelectItem value="longAxis">{es.material.ruleLongAxis}</SelectItem>
+                </SelectContent>
+              </Select>
+            </Row>
+            {fallback && (
+              <div className="text-amber-400" data-testid="orientation-fallback">{es.material.orientationFallback}</div>
+            )}
           </Section>
 
           <Section title={es.material.periodSection}>

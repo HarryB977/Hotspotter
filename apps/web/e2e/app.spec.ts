@@ -224,3 +224,77 @@ test('exports Unity URP maps, hotspot.json and Anvil csv to a folder, and overwr
   await run();
   expect(readdirSync(dir).sort()).toEqual(listing);
 });
+
+const WOOD_DIR = resolve(fileURLToPath(new URL('.', import.meta.url)), '../../../samples/pbr/wood planks 12');
+
+test.describe('loose files and orientation (wood planks 12)', () => {
+  test.skip(!existsSync(WOOD_DIR), 'samples/pbr/wood planks 12 not present');
+  const wood = (n: string) => join(WOOD_DIR, `wood_planks_12_${n}_1k.png`);
+  const mapCount = (page: import('@playwright/test').Page) => page.getByTestId('map-row').count();
+
+  test('loose files create a material, add keeps the document, replace resets it', async ({ page }) => {
+    await page.goto('/');
+    await page.getByTestId('import-files').setInputFiles([wood('color'), wood('normal_gl')]);
+    await expect(page.getByTestId('material-name')).toHaveValue('wood_planks_12');
+    await expect(page.getByTestId('map-row')).toHaveCount(2);
+
+    await page.waitForFunction(() => !!window.__hs?.store.getState().doc);
+    await page.getByTestId('layout-preset').click();
+    await page.getByRole('option', { name: 'Marcos' }).click();
+    await page.evaluate(() => window.__hs!.store.getState().updateNode<'placement'>('placement', { variation: 0.8 }));
+    const snapshot = () =>
+      page.evaluate(() => {
+        const d = window.__hs!.store.getState().doc!;
+        const n = (id: string) => d.nodes.find((x) => x.id === id)!.params as Record<string, unknown>;
+        return { preset: n('layout').preset, variation: n('placement').variation };
+      });
+    expect(await snapshot()).toEqual({ preset: 'frames', variation: 0.8 });
+
+    await page.getByTestId('import-files').setInputFiles([wood('roughness')]);
+    await page.getByTestId('import-add').click();
+    await expect.poll(() => mapCount(page)).toBe(3);
+    expect(await snapshot()).toEqual({ preset: 'frames', variation: 0.8 });
+    await expect(page.getByTestId('import-error')).toHaveCount(0);
+
+    await page.getByTestId('import-files').setInputFiles([wood('color'), wood('normal_gl')]);
+    await page.getByTestId('import-replace').click();
+    await expect.poll(() => mapCount(page)).toBe(2);
+    expect(await snapshot()).not.toEqual({ preset: 'frames', variation: 0.8 });
+  });
+
+  test('cancelling the choice dialog changes nothing', async ({ page }) => {
+    await page.goto('/');
+    await page.getByTestId('import-files').setInputFiles([wood('color')]);
+    await expect(page.getByTestId('map-row')).toHaveCount(1);
+    await page.getByTestId('import-files').setInputFiles([wood('roughness')]);
+    await expect(page.getByTestId('import-add')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.getByTestId('import-add')).toHaveCount(0);
+    await expect(page.getByTestId('map-row')).toHaveCount(1);
+  });
+
+  test('longAxis orientation rotates only the tall rects of a frames layout', async ({ page }) => {
+    await page.goto('/');
+    await page.getByTestId('folder-input').setInputFiles(WOOD_DIR);
+    await expect(page.getByTestId('material-name')).toHaveValue('wood_planks_12');
+    await page.getByTestId('layout-preset').click();
+    await page.getByRole('option', { name: 'Marcos' }).click();
+    await page.getByTestId('orientation-rule').click();
+    await page.getByRole('option', { name: 'Seguir el eje largo' }).click();
+
+    await expect
+      .poll(() =>
+        page.evaluate(() => {
+          const a = window.__hs!.store.getState().atlas;
+          if (!a) return null;
+          const rot = new Map(a.placements.map((p) => [p.rectId, p.rotate90]));
+          const tall = a.layout.rects.filter((r) => r.h > r.w);
+          const wide = a.layout.rects.filter((r) => r.w > r.h);
+          return {
+            tall: tall.length > 0 && tall.every((r) => rot.get(r.id) === true),
+            wide: wide.every((r) => rot.get(r.id) === false),
+          };
+        }))
+      .toEqual({ tall: true, wide: true });
+  });
+});

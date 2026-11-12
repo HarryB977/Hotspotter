@@ -5,6 +5,7 @@ import {
 } from '@hotspotter/core';
 import type {
   HotspotLayout, LayoutIssue, MapKind, MaterialSettings, NodeParams, NodeType, ProjectDoc, ProportionIssue,
+  RectPlacement,
 } from '@hotspotter/core';
 import { composeAtlas, initGpu, uploadMaterial, WebGpuUnavailableError } from '@hotspotter/engine';
 import type { AtlasMaps, GpuContext, GpuMaterial, LoadedMaterial } from '@hotspotter/engine';
@@ -17,6 +18,7 @@ export type ActiveMap = MapKind | 'rectId';
 export interface AtlasResult {
   maps: AtlasMaps;
   layout: HotspotLayout;
+  placements: RectPlacement[];
   issues: ProportionIssue[];
   /** Structural problems (overlap, out of bounds…) from validateLayout. */
   layoutIssues: LayoutIssue[];
@@ -49,8 +51,11 @@ export interface ProjectState {
   /** Replaces the layout node params wholesale, so no keys of another mode linger. */
   setLayoutParams(params: NodeParams['layout']): void;
   initGpu(): Promise<void>;
-  /** `folder` names the material when the files share no prefix; defaults to the webkitRelativePath folder. */
-  importFiles(files: File[], folder?: string): Promise<void>;
+  /**
+   * `folder` names the material when the files share no prefix; defaults to the webkitRelativePath folder.
+   * 'add' keeps the document and replaces only the map kinds the new files provide.
+   */
+  importFiles(files: File[], folder?: string, mode?: 'replace' | 'add'): Promise<void>;
   setDoc(d: ProjectDoc): void;
   /** Merges settings; re-uploads the GPU textures when files or normal convention change. */
   updateSettings(patch: Partial<MaterialSettings>): Promise<void>;
@@ -123,6 +128,84 @@ function destroyTextures(m: GpuMaterial | null): void {
   if (m) for (const t of Object.values(m.textures)) t.destroy();
 }
 
+type StoreSet = (partial: Partial<ProjectState>) => void;
+
+/** Add mode of importFiles: re-uploads only the map kinds the new files provide and keeps the document. */
+async function addFiles(
+  gpu: GpuContext,
+  images: File[],
+  set: StoreSet,
+  get: () => ProjectState,
+): Promise<void> {
+  const { files: chosen, normalConvention } = chooseMaps(images.map((f) => f.name));
+  const kinds = Object.keys(chosen) as MapKind[];
+  if (kinds.length === 0) {
+    importGen++;
+    generation++;
+    set({ importError: es.material.noMaps, importing: false });
+    return;
+  }
+  const mine = ++importGen;
+  generation++;
+  set({ importing: true, importError: null });
+  const fresh = new Map<string, ImageBitmap>();
+  try {
+    const current = get().material!.settings;
+    const patch: Partial<MaterialSettings> = { files: { ...current.files, ...chosen } };
+    if (chosen.normal) patch.normalConvention = normalConvention;
+    if (chosen.roughness) patch.roughnessIsGloss = classifyMapFile(chosen.roughness)?.isGloss === true;
+    // Decode only the new files; a same-named cached bitmap would be stale.
+    const loaded = await buildImages(chosen, images, new Map(), fresh);
+    const partial = uploadMaterial(gpu, { settings: { ...current, ...patch }, images: loaded });
+    if (mine !== importGen) {
+      destroyTextures(partial);
+      closeAll(fresh);
+      return;
+    }
+    generation++;
+    const { material, gpuMaterial, doc, sources } = get();
+    if (!material || !gpuMaterial || !doc) {
+      destroyTextures(partial);
+      closeAll(fresh);
+      return;
+    }
+    const settings: MaterialSettings = { ...material.settings, ...patch };
+    const textures = { ...gpuMaterial.textures };
+    for (const [kind, tex] of Object.entries(partial.textures) as [MapKind, GPUTexture][]) {
+      if (kinds.includes(kind)) {
+        textures[kind].destroy();
+        textures[kind] = tex;
+      } else {
+        tex.destroy();
+      }
+    }
+    const replaced = new Set(images.map((f) => f.name));
+    for (const k of kinds) {
+      const old = material.settings.files[k];
+      if (old && !Object.values(settings.files).includes(old)) {
+        bitmaps.get(old)?.close();
+        bitmaps.delete(old);
+      }
+    }
+    for (const [name, bmp] of fresh) {
+      bitmaps.get(name)?.close();
+      bitmaps.set(name, bmp);
+    }
+    set({
+      sources: [...sources.filter((f) => !replaced.has(f.name)), ...images],
+      material: { settings, images: { ...material.images, ...loaded } },
+      gpuMaterial: { textures, settings, hasNormalMap: settings.files.normal !== undefined },
+      doc: withMaterialNode(doc, settings),
+      importing: false,
+    });
+  } catch (e) {
+    closeAll(fresh);
+    if (mine === importGen) {
+      set({ importError: e instanceof Error ? e.message : String(e), importing: false });
+    }
+  }
+}
+
 export const useProject = create<ProjectState>()((set, get) => ({
   doc: null,
   material: null,
@@ -165,11 +248,15 @@ export const useProject = create<ProjectState>()((set, get) => ({
     }
   },
 
-  async importFiles(files, folder) {
+  async importFiles(files, folder, mode = 'replace') {
     await get().initGpu();
     const { gpu } = get();
     if (!gpu) return;
     const images = files.filter((f) => IMAGE_EXT.test(f.name));
+    if (mode === 'add' && get().material && get().doc) {
+      await addFiles(gpu, images, set, get);
+      return;
+    }
     const names = images.map((f) => f.name);
     const { files: chosen, normalConvention } = chooseMaps(names);
     if (Object.keys(chosen).length === 0) {
@@ -307,7 +394,7 @@ async function recompose(): Promise<void> {
     }
     const prev = useProject.getState().atlas;
     useProject.setState({
-      atlas: { maps, layout, issues, layoutIssues: validateLayout(layout), resolutionPx: previewRes, gpuMs },
+      atlas: { maps, layout, placements, issues, layoutIssues: validateLayout(layout), resolutionPx: previewRes, gpuMs },
       composeError: null,
     });
     if (prev) destroyMaps(prev.maps);
