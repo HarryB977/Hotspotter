@@ -47,8 +47,10 @@ export interface AtlasMaps {
   /** r32float: metres to the nearest material joint, 0 in the groove */
   jointDistM: GPUTexture;
   /**
-   * r32uint: pack2x16float(material lost 0..1, target depth in metres); 0 in the groove. Without wear it is a 1×1
-   * placeholder (0): a 1×1 loss means no wear, and consumers branch on Wear.enabled instead of reading it.
+   * r32uint: pack2x16float(material lost 0..1, target depth in metres); 0 in the empty area (rect id 0). The groove
+   * floor inside a rect (outside its visible edge) holds lossR = −1, a "never worn" marker (R31, R32a): every reader
+   * must treat lossR < 0 as 0. Without wear it is a 1×1 placeholder (0): a 1×1 loss means no wear, and consumers
+   * branch on Wear.enabled instead of reading it.
    */
   loss: GPUTexture;
   /**
@@ -300,7 +302,7 @@ export async function composeAtlas(ctx: GpuContext, input: ComposeInput): Promis
         wear, params, rects, rectId, pieceId, jointDistM, loss, mask: input.mask,
       }));
       const metresPerPx = layout.widthPx / (pxPerMetre(layout) * resolutionPx);
-      wearResources.push(encodeBorder(device, encoder, { loss, border, bandM: wearUniforms.bandM, metresPerPx }));
+      wearResources.push(encodeBorder(device, encoder, { loss, rectId, border, bandM: wearUniforms.bandM, metresPerPx }));
       encodeWearComposite(device, encoder, { params, rects, wear, rectId, loss, border, height, macroHeight, wearMask });
     }
 

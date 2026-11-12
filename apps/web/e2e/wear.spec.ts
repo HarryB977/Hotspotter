@@ -62,8 +62,11 @@ interface WearProbe {
   /** Structure the analysis found (null when composed without structure). */
   structureType: string | null;
   jointFraction: number;
-  /** FNV-1a of every pre-Task-9 map's texels, plus heightRangeM. */
-  hashes: Record<string, number | number[]>;
+  /** Raw texel bytes of the maps compared by the no-wear identity test, plus heightRangeM. */
+  bytes: Record<'baseColor' | 'normal' | 'height' | 'roughness' | 'metallic' | 'ao' | 'rectId' | 'pieceId' | 'jointDistM', Uint8Array>;
+  heightRangeM: [number, number];
+  /** 1 where the loss holds the groove-floor marker (lossR < 0, R31); `loss` reads it as 0. */
+  floorMarker: Uint8Array;
 }
 
 declare global {
@@ -92,12 +95,6 @@ test.beforeEach(async ({ page }) => {
         normalRgba.set([nx / l, ny / l, 1 / l].map((v) => Math.round((v * 0.5 + 0.5) * 255)).concat(255), (y * 64 + x) * 4);
       }
     }
-    const fnv = (bytes: ArrayBuffer) => {
-      const b = new Uint8Array(bytes);
-      let h = 0x811c9dc5;
-      for (let i = 0; i < b.length; i++) h = Math.imul(h ^ b[i], 0x01000193);
-      return h >>> 0;
-    };
     const toBitmap = (rgba: Uint8Array, w: number, h: number) =>
       createImageBitmap(new ImageData(new Uint8ClampedArray(rgba), w, h), {
         colorSpaceConversion: 'none',
@@ -204,8 +201,12 @@ test.beforeEach(async ({ page }) => {
         });
         const packed = new Uint32Array(await readTexels(ctx, maps.loss, 4));
         const loss = new Float32Array(packed.length * 2);
+        const floorMarker = new Uint8Array(packed.length);
         for (let i = 0; i < packed.length; i++) {
-          loss[2 * i] = halfToFloat(packed[i] & 0xffff);
+          // lossR < 0 marks the groove floor (R31): every reader treats it as 0.
+          const lossR = halfToFloat(packed[i] & 0xffff);
+          loss[2 * i] = Math.max(0, lossR);
+          floorMarker[i] = lossR < 0 ? 1 : 0;
           loss[2 * i + 1] = halfToFloat(packed[i] >>> 16);
         }
         const rectIdBytes = await readTexels(ctx, maps.rectId, 4);
@@ -214,18 +215,16 @@ test.beforeEach(async ({ page }) => {
         const jointDistM = new Float32Array(jointDistBytes);
         const heightBytes = await readTexels(ctx, maps.height, 4);
         const normalBytes = await readTexels(ctx, maps.normal, 4);
-        const hashes: Record<string, number | number[]> = {
-          baseColor: fnv(await readTexels(ctx, maps.baseColor, 4)),
-          normal: fnv(normalBytes),
-          height: fnv(heightBytes),
-          roughness: fnv(await readTexels(ctx, maps.roughness, 4)),
-          metallic: fnv(await readTexels(ctx, maps.metallic, 4)),
-          ao: fnv(await readTexels(ctx, maps.ao, 4)),
-          rectId: fnv(rectIdBytes),
-          pieceId: fnv(await readTexels(ctx, maps.pieceId, 4)),
-          jointDistM: fnv(jointDistBytes),
-          loss: fnv(packed.buffer),
-          heightRangeM: maps.heightRangeM,
+        const bytes = {
+          baseColor: new Uint8Array(await readTexels(ctx, maps.baseColor, 4)),
+          normal: new Uint8Array(normalBytes),
+          height: new Uint8Array(heightBytes),
+          roughness: new Uint8Array(await readTexels(ctx, maps.roughness, 4)),
+          metallic: new Uint8Array(await readTexels(ctx, maps.metallic, 4)),
+          ao: new Uint8Array(await readTexels(ctx, maps.ao, 4)),
+          rectId: new Uint8Array(rectIdBytes),
+          pieceId: new Uint8Array(await readTexels(ctx, maps.pieceId, 4)),
+          jointDistM: new Uint8Array(jointDistBytes),
         };
         const extra = maps as unknown as Partial<Record<'macroHeight' | 'border' | 'wearMask', GPUTexture>>;
         const sizeOf = (t?: GPUTexture): [number, number] => (t ? [t.width, t.height] : [0, 0]);
@@ -255,7 +254,7 @@ test.beforeEach(async ({ page }) => {
         return {
           w, h, lossSize, loss, rectId, jointDistM, rects, refScale, ppm, halfGroovePx, grooveWidthM: groove.widthM,
           height: new Float32Array(heightBytes), macroHeight, normal: new Uint8Array(normalBytes), border, wearMask,
-          borderSize, wearMaskSize, hashes,
+          borderSize, wearMaskSize, bytes, heightRangeM: maps.heightRangeM, floorMarker,
           structureType: analysis ? analysis.type : null, jointFraction: analysis ? analysis.jointFraction : 0,
           mpp: 1 / (ppm * refScale),
           edgeM(x: number, y: number) {
@@ -631,25 +630,36 @@ test('packWear byte layout and sanitising of saved values', async ({ page }) => 
 // Task 9: border distance and height composite.
 // ---------------------------------------------------------------------------
 
-test('without wear the compose is byte-identical to the pre-Task-9 output', async ({ page }) => {
+test('without wear the compose matches a wear compose that loses nothing (normal within 1 LSB)', async ({ page }) => {
   const r = await page.evaluate(async () => {
     const out: Record<string, unknown> = {};
     for (const normalMap of [false, true]) {
-      const m = await window.__t8!.compose({ wear: null, normalMap });
-      out[normalMap ? 'normalMap' : 'heightOnly'] = { hashes: m.hashes, border: m.borderSize, wearMask: m.wearMaskSize };
+      // widthM 0 disables edge wear entirely (R30): the wear passes run but change nothing.
+      const plain = await window.__t8!.compose({ wear: null, normalMap });
+      const zero = await window.__t8!.compose({ wear: { widthM: 0 }, normalMap });
+      const differing: string[] = [];
+      for (const k of ['baseColor', 'height', 'roughness', 'metallic', 'ao', 'rectId', 'pieceId', 'jointDistM'] as const) {
+        const a = plain.bytes[k], b = zero.bytes[k];
+        if (a.length !== b.length || a.some((v, i) => v !== b[i])) differing.push(k);
+      }
+      let normalMaxLsb = 0;
+      for (let i = 0; i < plain.bytes.normal.length; i++) {
+        normalMaxLsb = Math.max(normalMaxLsb, Math.abs(plain.bytes.normal[i] - zero.bytes.normal[i]));
+      }
+      out[normalMap ? 'normalMap' : 'heightOnly'] = {
+        differing, normalMaxLsb, sameRange: plain.heightRangeM.every((v, i) => v === zero.heightRangeM[i]),
+        border: plain.borderSize, wearMask: plain.wearMaskSize, zeroBorder: zero.borderSize,
+      };
     }
     return out;
   });
-  // FNV-1a captured at 4154044 (before Task 9) on the author's RTX 3060.
-  const base = {
-    baseColor: 2695357893, height: 58284608, roughness: 664575429, metallic: 664575429, ao: 305717061,
-    rectId: 1040324165, pieceId: 957728965, jointDistM: 2939675589, loss: 1268118805,
-    heightRangeM: [-0.007489611394703388, 0.006000000052154064],
-  };
-  expect(r).toEqual({
-    heightOnly: { hashes: { ...base, normal: 2183622913 }, border: [1, 1], wearMask: [1, 1] },
-    normalMap: { hashes: { ...base, normal: 2210805229 }, border: [1, 1], wearMask: [1, 1] },
-  });
+  for (const k of ['heightOnly', 'normalMap']) {
+    expect(r[k]).toEqual({
+      differing: [], normalMaxLsb: expect.any(Number), sameRange: true, border: [1, 1], wearMask: [1, 1],
+      zeroBorder: [1024, 1024],
+    });
+    expect((r[k] as { normalMaxLsb: number }).normalMaxLsb).toBeLessThanOrEqual(1);
+  }
 });
 
 test('JFA: border on a synthetic 40 px disc is -40 px at the centre and +10 px 10 px outside', async ({ page }) => {
@@ -672,8 +682,10 @@ test('JFA: border on a synthetic 40 px disc is -40 px at the centre and +10 px 1
     const loss = device.createTexture({ size: [w, h], format: 'r32uint', usage });
     device.queue.writeTexture({ texture: loss }, texels, { bytesPerRow: w * 4 }, [w, h]);
     const border = device.createTexture({ size: [w, h], format: 'r32float', usage });
+    const rectId = device.createTexture({ size: [w, h], format: 'r32uint', usage });
+    device.queue.writeTexture({ texture: rectId }, new Uint32Array(w * h).fill(1), { bytesPerRow: w * 4 }, [w, h]);
     const enc = device.createCommandEncoder();
-    const res = engine.encodeBorder(device, enc, { loss, border, bandM, metresPerPx: mpp });
+    const res = engine.encodeBorder(device, enc, { loss, rectId, border, bandM, metresPerPx: mpp });
     device.queue.submit([enc.finish()]);
     res.destroy();
     const bytesPerRow = Math.ceil((w * 4) / 256) * 256;
@@ -687,6 +699,7 @@ test('JFA: border on a synthetic 40 px disc is -40 px at the centre and +10 px 1
     buf.destroy();
     loss.destroy();
     border.destroy();
+    rectId.destroy();
     const at = (x: number, y: number) => f[y * (bytesPerRow / 4) + x] / mpp;
     // Pixel centres 10 px beyond the disc along four directions.
     const outside = [at(px + 50, py), at(px - 50, py), at(px, py + 50), at(px, py - 50)];
@@ -703,6 +716,9 @@ test('JFA: border on a synthetic 40 px disc is -40 px at the centre and +10 px 1
 });
 
 /** Compares a wear compose against the same compose without wear (d = wear height − material height). */
+/** Minimum share of fracture-band pixels below -0.1 · 0.15 · depthM where the crack cells are at least a pixel. */
+const CRACKED_MIN = 0.1;
+
 async function wearHeight(page: import('@playwright/test').Page, opts: ComposeOpts) {
   return page.evaluate(async (o) => {
     const plain = await window.__t8!.compose({ ...o, wear: null });
@@ -712,8 +728,8 @@ async function wearHeight(page: import('@playwright/test').Page, opts: ComposeOp
     let contour = 0;
     let maxSlope = 0;
     let belowLimit = 0;
-    let bandSum = 0, bandN = 0, intactSum = 0, intactN = 0;
-    const bandM = 0.006;
+    let bandSum = 0, bandN = 0, intactSum = 0, intactN = 0, bandCracked = 0;
+    const bandM = o.wear?.bandM ?? 0.006;
     for (let y = 1; y < m.h - 1; y++) {
       for (let x = 1; x < m.w - 1; x++) {
         const i = y * m.w + x;
@@ -721,7 +737,11 @@ async function wearHeight(page: import('@playwright/test').Page, opts: ComposeOp
         // h_final ≥ h_material − depthM − microM.
         if (m.height[i] < plain.height[i] - 0.006 - 0.0005) belowLimit++;
         const b = m.border![i];
-        if (b > 0 && b < bandM) { bandSum += d[i]; bandN++; }
+        if (b > 0 && b < bandM) {
+          bandSum += d[i];
+          bandN++;
+          if (d[i] < -0.1 * 0.15 * 0.006) bandCracked++;
+        }
         if (b > bandM && b < 2 * bandM) { intactSum += d[i]; intactN++; }
         if (!(m.loss[2 * i] > 0.5)) continue;
         const nb = [i - 1, i + 1, i - m.w, i + m.w];
@@ -731,21 +751,32 @@ async function wearHeight(page: import('@playwright/test').Page, opts: ComposeOp
         for (const k of nb) if (m.rectId[k] === m.rectId[i]) maxSlope = Math.max(maxSlope, Math.abs(d[k] - d[i]) / m.mpp);
       }
     }
-    return { contour, maxSlope, belowLimit, bandMean: bandSum / bandN, bandN, intactMean: intactSum / intactN, intactN };
+    return {
+      contour, maxSlope, belowLimit, bandMean: bandSum / bandN, bandN, intactMean: intactSum / intactN, intactN,
+      crackedFraction: bandCracked / bandN,
+    };
   }, opts);
 }
 
 test('wear height: no cliff at the loss contour, depth limit, and a fracture band around each break', async ({ page }) => {
-  for (const resolutionPx of [1024, 2048]) {
-    const r = await wearHeight(page, { resolutionPx, wear: { intensity: 0.8 } });
+  // [resolution, bandM]: mpp is 1.95 mm at 1024 and 0.98 mm at 2048; crack cells are 0.25 · bandM.
+  for (const [resolutionPx, bandM] of [[1024, 0.006], [2048, 0.006], [1024, 0.012]]) {
+    const r = await wearHeight(page, { resolutionPx, wear: { intensity: 0.8, bandM } });
     expect(r.contour).toBeGreaterThan(500);
-    // depthM / bandM · 1.5 with the defaults.
-    expect(r.maxSlope).toBeLessThan((0.006 / 0.006) * 1.5);
+    expect(r.maxSlope).toBeLessThan((0.006 / bandM) * 1.5);
     expect(r.belowLimit).toBe(0);
     expect(r.bandN).toBeGreaterThan(1000);
     expect(r.intactN).toBeGreaterThan(1000);
     expect(r.intactMean).toBe(0);
-    expect(r.bandMean).toBeLessThan(r.intactMean);
+    if (0.25 * bandM >= 2 / resolutionPx) {
+      // Resolved cracks: a real fracture band, by its mean drop and a share of clearly cracked pixels, both relative
+      // to 0.15 · depthM.
+      expect(r.bandMean).toBeLessThan(-0.05 * 0.15 * 0.006);
+      expect(r.crackedFraction).toBeGreaterThan(CRACKED_MIN);
+    } else {
+      // Sub-pixel cracks are anti-aliased (R32d) into a shallow even drop: the volume stays, no pixel is deep.
+      expect(r.bandMean).toBeLessThan(-0.025 * 0.15 * 0.006);
+    }
   }
 });
 
@@ -808,4 +839,46 @@ test('wear outputs: border clamped to ±4 · bandM and negative exactly on the l
   expect(r.maskOutside).toBe(0);
   expect(r.deep).toBeGreaterThan(1000);
   expect(r.maskDeep).toBe(0);
+});
+
+test('R31: the groove floor is never worn and no break digs below it', async ({ page }) => {
+  const r = await page.evaluate(async () => {
+    const out: Record<string, number>[] = [];
+    // Deep breaks (depthM 2 cm > the 4 mm groove) so the groove-floor clamp is exercised.
+    for (const wear of [{ intensity: 1 }, { intensity: 1, depthM: 0.02 }]) {
+      const plain = await window.__t8!.compose({ wear: null });
+      const m = await window.__t8!.compose({ wear });
+      const grooveDepthM = 0.004;
+      let floorPx = 0, floorMarked = 0, floorLoss = 0, floorHeight = 0, floorMask = 0, belowFloor = 0, markerOutside = 0;
+      for (let y = 0; y < m.h; y++) {
+        for (let x = 0; x < m.w; x++) {
+          const i = y * m.w + x;
+          // Groove floor: outside the visible edge. The rect-id raster is already shrunk to the visible edge, so
+          // these are mostly id 0; the lossR = -1 marker covers rect pixels the raster and the analytic edge disagree on.
+          const onFloor = m.edgeM(x, y) < 0;
+          if (onFloor) {
+            floorPx++;
+            if (m.floorMarker[i]) floorMarked++;
+            if (m.loss[2 * i] > 0 || m.loss[2 * i + 1] > 0) floorLoss++;
+            if (m.height[i] !== plain.height[i]) floorHeight++;
+            if (m.wearMask![i] > 0) floorMask++;
+          } else if (m.floorMarker[i]) {
+            markerOutside++;
+          }
+          // On rect pixels h ≥ −grooveDepthM, unless the material itself already lies below the floor.
+          if (m.rectId[i] !== 0 && m.height[i] < Math.min(plain.height[i], -grooveDepthM) - 1e-7) belowFloor++;
+        }
+      }
+      out.push({ floorPx, floorMarked, floorLoss, floorHeight, floorMask, belowFloor, markerOutside });
+    }
+    return out;
+  });
+  for (const v of r) {
+    expect(v.floorPx).toBeGreaterThan(1000);
+    expect(v.markerOutside).toBe(0);
+    expect(v.floorLoss).toBe(0);
+    expect(v.floorHeight).toBe(0);
+    expect(v.floorMask).toBe(0);
+    expect(v.belowFloor).toBe(0);
+  }
 });

@@ -1,6 +1,6 @@
 import { DEFAULT_DIRT, WEAR_FAMILIES } from '@hotspotter/core';
 import type { WearParams } from '@hotspotter/core';
-import { WEAR_BYTES, packWear, withCommon } from './params';
+import { WEAR_BYTES, WEAR_F_BANDM, packWear, withCommon } from './params';
 import type { WearExtra } from './params';
 import wearLossWgsl from './shaders/wearLoss.wgsl?raw';
 import jfaWgsl from './shaders/jfa.wgsl?raw';
@@ -19,7 +19,7 @@ export function createWearUniforms(device: GPUDevice, wear: WearParams | undefin
     : new ArrayBuffer(WEAR_BYTES);
   const buffer = device.createBuffer({ size: WEAR_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   device.queue.writeBuffer(buffer, 0, data);
-  return { buffer, bandM: new Float32Array(data)[6] };
+  return { buffer, bandM: new Float32Array(data)[WEAR_F_BANDM] };
 }
 
 export interface WearLossInput {
@@ -82,12 +82,14 @@ export function encodeWearLoss(device: GPUDevice, encoder: GPUCommandEncoder, in
   };
 }
 
-/** bandM floor shared with wearComposite.wgsl, so a zero band stays a valid smoothstep range. */
+/** bandM floor, injected into wearComposite.wgsl (override MIN_BAND_M), so a zero band stays a valid smoothstep range. */
 export const MIN_BAND_M = 1e-5;
 
 export interface BorderInput {
-  /** r32uint pack2x16float(loss, depth); a pixel is lost when loss > 0.5. */
+  /** r32uint pack2x16float(loss, depth); a pixel is lost when loss > 0.5, groove floor when loss < 0. */
   loss: GPUTexture;
+  /** r32uint rect ids; contours only form between pixels of the same rect. */
+  rectId: GPUTexture;
   /** r32float target, same size: signed metres to the loss contour, negative inside, clamped to ±4 · bandM. */
   border: GPUTexture;
   bandM: number;
@@ -107,6 +109,8 @@ function nextPow2(n: number): number {
  */
 export function encodeBorder(device: GPUDevice, encoder: GPUCommandEncoder, input: BorderInput): { destroy(): void } {
   const { width: w, height: h } = input.loss;
+  // Seeds pack half-pixel coordinates (up to 2 · size) in 16 bits each.
+  if (Math.max(w, h) > 32767) throw new Error(`encodeBorder: ${w}×${h} exceeds 32767 px`);
   const clampM = 4 * Math.max(input.bandM, MIN_BAND_M);
   const rangePx = Math.ceil(clampM / input.metresPerPx);
   const first = Math.min(nextPow2(rangePx + 1), Math.max(1, nextPow2(Math.max(w, h)) / 2));
@@ -136,6 +140,7 @@ export function encodeBorder(device: GPUDevice, encoder: GPUCommandEncoder, inpu
     entries: [
       { binding: 1, resource: input.loss.createView() },
       { binding: 3, resource: seeds[0].createView() },
+      { binding: 5, resource: input.rectId.createView() },
     ],
   }), w, h);
 
@@ -191,7 +196,11 @@ export interface WearCompositeInput {
 export function encodeWearComposite(device: GPUDevice, encoder: GPUCommandEncoder, input: WearCompositeInput): void {
   const pipeline = device.createComputePipeline({
     layout: 'auto',
-    compute: { module: device.createShaderModule({ code: withCommon(wearCompositeWgsl) }), entryPoint: 'main' },
+    compute: {
+      module: device.createShaderModule({ code: withCommon(wearCompositeWgsl) }),
+      entryPoint: 'main',
+      constants: { MIN_BAND_M },
+    },
   });
   const group = device.createBindGroup({
     layout: pipeline.getBindGroupLayout(0),

@@ -6,11 +6,11 @@
 //   in the loss (b < 0):        h = hMat − depth · s + microM · (fbm(local / 0.002) − 0.5) · s,  s = smoothstep(0, bandM, −b)
 //   fracture band (0 < b < bandM): h −= 0.15 · depth · crack · envelope   (fine voronoi cracks around each break)
 //   no layer loss (dent):        h −= depth
-//   limit:                       h ≥ hMat − depthM
+//   limits:                      h ≥ hMat − depthM − 0.5 · microM (R32c), and never below the groove floor (R32b)
 //   macro = hGroove + (h − hMat), wearMask = s
 //
 // The micro term and the crack envelope fade to 0 at the contour and at the band edge, so neither leaves a one-pixel
-// step.
+// step. The groove floor (id 0, or lossR < 0 inside a rect, R31) is never touched.
 
 @group(0) @binding(0) var<uniform> P: Params;
 @group(0) @binding(1) var<storage, read> rects: array<Rect>;
@@ -25,6 +25,9 @@
 const S_MICRO = 0x2545f491u;
 const S_CRACK = 0x9e3779b1u;
 
+// bandM floor, injected from MIN_BAND_M (wear.ts) so a zero band stays a valid smoothstep range.
+override MIN_BAND_M: f32;
+
 @compute @workgroup_size(8, 8)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   if (f32(gid.x) >= P.outSize.x || f32(gid.y) >= P.outSize.y) { return; }
@@ -32,16 +35,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   if (W.enabled == 0u) { return; }
   let c = vec2<i32>(gid.xy);
   let id = textureLoad(rectIdTex, c, 0).r;
-  if (id == 0u) {
+  let ld = unpack2x16float(textureLoad(lossTex, c, 0).r);
+  if (id == 0u || ld.x < 0.0) {
     textureStore(outWearMask, c, vec4<f32>(0.0, 0.0, 0.0, 1.0));
     return;
   }
   let pl = rects[id - 1u];
   let px = (vec2<f32>(gid.xy) + 0.5) / P.refScale;
   let local = wearLocalM(id, pl.rect, px, P.ppmRef, P.seed);
-  let depth = unpack2x16float(textureLoad(lossTex, c, 0).r).y;
+  let depth = ld.y;
   let b = textureLoad(borderTex, c, 0).r;
-  let bandM = max(W.bandM, 1e-5);
+  let bandM = max(W.bandM, MIN_BAND_M);
   let hMat = textureLoad(heightTex, c).r;
 
   var h = hMat;
@@ -51,8 +55,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     h = hMat - depth * s + W.microM * (fbm(local / 0.002, 4u, P.seed ^ S_MICRO) - 0.5) * s;
   } else {
     if (b < bandM) {
-      let v = voronoi(local / (0.25 * bandM), 1.0, P.seed ^ S_CRACK);
-      let crack = 1.0 - smoothstep(0.0, 0.15, v.d2 - v.d1);
+      let cellM = 0.25 * bandM;
+      let v = voronoi(local / cellM, 1.0, P.seed ^ S_CRACK);
+      // Anti-aliased: the crack is at least one pixel wide, with its amplitude scaled down to keep its volume (R32d).
+      let width = max(0.15, 1.0 / (P.ppmRef * P.refScale * cellM));
+      let crack = (1.0 - smoothstep(0.0, width, v.d2 - v.d1)) * (0.15 / width);
       let t = b / bandM;
       let envelope = smoothstep(0.0, 0.15, t) * (1.0 - smoothstep(0.5, 1.0, t));
       h -= 0.15 * depth * crack * envelope;
@@ -60,7 +67,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Families without layer loss (dent) only press the surface down by their soft depth.
     if (W.loses == 0u) { h -= depth; }
   }
-  h = max(h, hMat - W.depthM);
+  h = max(h, hMat - W.depthM - 0.5 * W.microM);
+  // A break never digs below the groove floor; material already below it stays as it is.
+  h = max(h, min(hMat, -P.grooveDepthM));
 
   let macroH = textureLoad(macroTex, c).r + (h - hMat);
   textureStore(heightTex, c, vec4<f32>(h, 0.0, 0.0, 1.0));

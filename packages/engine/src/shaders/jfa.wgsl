@@ -2,7 +2,8 @@
 // clamped to ±J.clampM. Standalone module (no common prelude).
 //
 // Seeds are the midpoints between 4-neighbour pixels on opposite sides of the contour, in half-pixel units, so the
-// distance is measured to the contour itself rather than to the nearest boundary pixel. A seed packs x | y << 16;
+// distance is measured to the contour itself rather than to the nearest boundary pixel. Only pairs in the same rect
+// where neither pixel is groove floor (lossR < 0, R32a) seed, so contours never leak across rects or the groove. A seed packs x | y << 16;
 // half-pixel coordinates reach 2 · size, which fits 16 bits for any texture up to 32767 px.
 
 struct Jfa {
@@ -17,11 +18,16 @@ struct Jfa {
 @group(0) @binding(2) var seedIn: texture_2d<u32>;
 @group(0) @binding(3) var seedOut: texture_storage_2d<r32uint, write>;
 @group(0) @binding(4) var borderOut: texture_storage_2d<r32float, write>;
+@group(0) @binding(5) var rectIdTex: texture_2d<u32>;
 
 const NONE = 0xffffffffu;
 
+fn lossR(p: vec2<i32>) -> f32 {
+  return unpack2x16float(textureLoad(lossTex, p, 0).r).x;
+}
+
 fn isLost(p: vec2<i32>) -> bool {
-  return unpack2x16float(textureLoad(lossTex, p, 0).r).x > 0.5;
+  return lossR(p) > 0.5;
 }
 
 fn inside(p: vec2<i32>, dims: vec2<i32>) -> bool {
@@ -40,11 +46,13 @@ fn seed(@builtin(global_invocation_id) gid: vec3<u32>) {
   let p = vec2<i32>(gid.xy);
   if (!inside(p, dims)) { return; }
   let me = isLost(p);
+  let id = textureLoad(rectIdTex, p, 0).r;
+  let onFloor = lossR(p) < 0.0;
   var s = NONE;
   var dirs = array<vec2<i32>, 4>(vec2<i32>(1, 0), vec2<i32>(-1, 0), vec2<i32>(0, 1), vec2<i32>(0, -1));
   for (var k = 0; k < 4; k++) {
     let q = p + dirs[k];
-    if (inside(q, dims) && isLost(q) != me) {
+    if (!onFloor && inside(q, dims) && lossR(q) >= 0.0 && textureLoad(rectIdTex, q, 0).r == id && isLost(q) != me) {
       // Midpoint of the two centres: (2p + 1 + 2q + 1) / 2 = p + q + 1.
       let m = vec2<u32>(p + q + 1);
       s = m.x | (m.y << 16u);

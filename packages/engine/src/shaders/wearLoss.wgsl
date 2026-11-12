@@ -37,8 +37,16 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let ppm = P.ppmRef;
   let px = (vec2<f32>(gid.xy) + 0.5) / P.refScale;
 
-  // Distance to the visible (groove-shrunk) edge and damage potential.
-  let e = max(visibleEdgePx(r, px, 0.5 * P.grooveWidthM * ppm), 0.0) / ppm;
+  // Groove floor (outside the visible, groove-shrunk rect): never worn (R31). lossR = -1 marks it as "don't care" for
+  // the border pass (R32a); every reader treats lossR < 0 as 0.
+  let ve = visibleEdgePx(r, px, 0.5 * P.grooveWidthM * ppm);
+  if (ve < 0.0) {
+    textureStore(outLoss, c, vec4<u32>(pack2x16float(vec2<f32>(-1.0, 0.0)), 0u, 0u, 0u));
+    return;
+  }
+
+  // Distance to the visible edge and damage potential.
+  let e = ve / ppm;
   // Thin-trim cap on the visible rect (the rect minus the groove floor).
   let visibleMinM = max(min(r.z, r.w) / ppm - P.grooveWidthM, 0.0);
   let wEff = min(W.widthM, 0.33 * visibleMinM);

@@ -72,6 +72,9 @@ export function packParams(p: ParamsInput): ArrayBuffer {
 
 export const WEAR_BYTES = 128;
 
+/** Float index of bandM in the packed Wear buffer (byte 24). */
+export const WEAR_F_BANDM = 6;
+
 export interface WearExtra {
   /** The structure has joints; without them pieceId / jointDistM carry no information. */
   hasPieces: boolean;
@@ -127,7 +130,7 @@ export function packWear(w: WearParams, d: DirtParams, shape: FamilyShape, extra
   // sizeM divides the noise coordinates.
   f[4] = num(w.sizeM, W.sizeM, 1e-4);
   f[5] = num(w.depthM, W.depthM, 0);
-  f[6] = num(w.bandM, W.bandM, 0);
+  f[WEAR_F_BANDM] = num(w.bandM, W.bandM, 0);
   f[7] = num(w.microM, W.microM, 0);
   f[8] = num(w.pieceBias, W.pieceBias, 0, 1);
   f[9] = num(w.edgeTone, W.edgeTone, 0, 1);

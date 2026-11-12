@@ -47,16 +47,17 @@ Todo se mide en metros sobre coordenadas locales del rectángulo, así que la pr
 
 Con la pérdida ya decidida, el motor esculpe el daño en el campo de altura único. Sin desgaste esta pasada no se ejecuta y la salida es idéntica byte a byte a la de la v0.1-A.
 
-1. **Distancia al contorno (`border`, r32float).** Es la distancia con signo, en metros, al contorno de la pérdida: negativa dentro y limitada a ±4·`bandM`. Se calcula con jump flooding desde los puntos medios entre píxeles vecinos a ambos lados del contorno. Como la distancia está limitada, el primer salto es `nextPow2(⌈4·bandM·ppm⌉ + 1)` y no la mitad de la textura, y al final se repite un salto de 1. Las semillas van en dos texturas r32uint (x | y << 16 en medios píxeles), la mitad de memoria que rg32sint, y se liberan nada más terminar.
+1. **Distancia al contorno (`border`, r32float).** Es la distancia con signo, en metros, al contorno de la pérdida: negativa dentro y limitada a ±4·`bandM`. Se calcula con jump flooding desde los puntos medios entre píxeles vecinos a ambos lados del contorno, del mismo rectángulo y fuera del fondo de ranura. Como la distancia está limitada, el primer salto es `nextPow2(⌈4·bandM·ppm⌉ + 1)` y no la mitad de la textura, y al final se repite un salto de 1. Las semillas van en dos texturas r32uint (x | y << 16 en medios píxeles), la mitad de memoria que rg32sint, y se liberan nada más terminar.
 2. **Altura.** `s = smoothstep(0, bandM, −b)`:
    - En la pérdida (`b < 0`): `h = hMat − depth·s + microM·(fbm(local / 2 mm) − 0.5)·s`. La rugosidad de la rotura entra con el mismo perfil, así que el contorno no tiene escalón.
    - En la banda de fractura (`0 < b < bandM`): `h −= 0.15·depth·crack·envolvente`, con `crack = 1 − smoothstep(0, 0.15, d2 − d1)` de un Voronoi de celda `0.25·bandM`. La envolvente vale 0 en el contorno y en el final de la banda, de modo que las grietas finas rodean cada rotura sin dejar saltos de un píxel.
    - Las familias sin pérdida de capa (`dent`) solo hunden la superficie con su profundidad suave.
-   - Límite: `h ≥ hMat − depthM`.
+   - Límites: `h ≥ hMat − depthM − 0.5·microM` (el fondo de la rotura conserva rugosidad micro), y una rotura nunca baja del fondo de ranura: `h ≥ min(hMat, −grooveDepthM)`.
+   - Las grietas tienen al menos un píxel de ancho: el ancho del smoothstep es `max(0.15, mpp / (0.25·bandM))` y la amplitud se escala por `0.15 / ancho`.
 3. **Altura macro** (`macroHeight`, r32float) = ranura y bisel + `(h − hMat)`, es decir, todo salvo el relieve del material intacto. Si el material trae normal map, la normal sale del Sobel de esta altura y la normal de detalle del material se desvanece hacia (0,0,1) según `wearMask`: lo que se rompe se lleva su relieve.
 4. **`wearMask`** (rgba8unorm, gris) = `s`. Es la pérdida suavizada con el mismo perfil que la altura: 0 en el contorno y fuera de la pérdida, y 1 a partir de `bandM` hacia dentro. Se puede exportar.
 
-Los píxeles del fondo de ranura que caen dentro de un rectángulo cuentan como pérdida (el borde mínimo empieza en el borde visible), así que ese fondo también baja con el desgaste.
+**El fondo de ranura nunca se desgasta** (R31). Sus píxeles dentro de un rectángulo (fuera del borde visible) llevan en `loss` la marca `lossR = −1`, que todo lector trata como 0. No reciben pérdida, profundidad, cambio de altura ni `wearMask`, y no siembran contorno. El contorno solo se forma entre píxeles del mismo rectángulo, así que no se cuela de un rectángulo a otro. El desgaste empieza en el borde visible hacia dentro, bisel incluido. La ranura sigue siendo el separador limpio que detecta Anvil.
 
 ### Qué queda debajo ("sustrato")
 
