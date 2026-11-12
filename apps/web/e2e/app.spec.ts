@@ -298,3 +298,47 @@ test.describe('loose files and orientation (wood planks 12)', () => {
       .toEqual({ tall: true, wide: true });
   });
 });
+
+test.describe('add mode races and texture bookkeeping (wood planks 12)', () => {
+  test.skip(!existsSync(WOOD_DIR), 'samples/pbr/wood planks 12 not present');
+
+  test('add keeps the normal flag and untouched textures, and drops itself when a reassignment commits meanwhile', async ({ page }) => {
+    const w = (n: string) => join(WOOD_DIR, `wood_planks_12_${n}_1k.png`);
+    await page.goto('/');
+    await page.getByTestId('import-files').setInputFiles([w('color'), w('normal_gl'), w('height')]);
+    await expect(page.getByTestId('map-row')).toHaveCount(3);
+
+    // Add roughness: normal flag stays, color texture object is untouched.
+    await page.evaluate(() => {
+      const gm = window.__hs!.store.getState().gpuMaterial!;
+      (window as unknown as Record<string, unknown>).__before = gm.textures.baseColor;
+    });
+    await page.getByTestId('import-files').setInputFiles([w('roughness')]);
+    await page.getByTestId('import-add').click();
+    await expect(page.getByTestId('map-row')).toHaveCount(4);
+    const kept = await page.evaluate(() => {
+      const gm = window.__hs!.store.getState().gpuMaterial!;
+      return { normal: gm.hasNormalMap, same: gm.textures.baseColor === (window as unknown as Record<string, unknown>).__before };
+    });
+    expect(kept).toEqual({ normal: true, same: true });
+
+    // Race: an add (decoding) and a reassignment that commits first.
+    const r = await page.evaluate(async (names) => {
+      const store = window.__hs!.store;
+      const files = await Promise.all(names.map(async (n) => {
+        const res = await fetch(`/samples/pbr/wood%20planks%2012/${encodeURIComponent(n)}`);
+        return new File([await res.blob()], n);
+      }));
+      const add = store.getState().importFiles(files, undefined, 'add');
+      await new Promise((res) => setTimeout(res, 0));
+      await store.getState().assignMap('wood_planks_12_height_1k.png', null);
+      await add;
+      const s = store.getState();
+      return { files: Object.keys(s.material!.settings.files).sort(), importing: s.importing, error: s.importError };
+    }, ['wood_planks_12_ambient_occlusion_1k.png']);
+    expect(r.error).toBeNull();
+    expect(r.importing).toBe(false);
+    // The add started first but the reassignment committed during its decode, so the add is dropped.
+    expect(r.files).toEqual(['baseColor', 'normal', 'roughness']);
+  });
+});

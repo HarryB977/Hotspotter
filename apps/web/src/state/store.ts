@@ -150,7 +150,9 @@ async function addFiles(
   set({ importing: true, importError: null });
   const fresh = new Map<string, ImageBitmap>();
   try {
-    const current = get().material!.settings;
+    const startMaterial = get().material!;
+    const startGpuMaterial = get().gpuMaterial;
+    const current = startMaterial.settings;
     const patch: Partial<MaterialSettings> = { files: { ...current.files, ...chosen } };
     if (chosen.normal) patch.normalConvention = normalConvention;
     if (chosen.roughness) patch.roughnessIsGloss = classifyMapFile(chosen.roughness)?.isGloss === true;
@@ -162,13 +164,15 @@ async function addFiles(
       closeAll(fresh);
       return;
     }
-    generation++;
     const { material, gpuMaterial, doc, sources } = get();
-    if (!material || !gpuMaterial || !doc) {
+    // A settings change committed during the decode would be overwritten by this add; drop the add instead.
+    if (!material || !gpuMaterial || !doc || material !== startMaterial || gpuMaterial !== startGpuMaterial) {
       destroyTextures(partial);
       closeAll(fresh);
+      set({ importing: false });
       return;
     }
+    generation++;
     const settings: MaterialSettings = { ...material.settings, ...patch };
     const textures = { ...gpuMaterial.textures };
     for (const [kind, tex] of Object.entries(partial.textures) as [MapKind, GPUTexture][]) {
