@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import type { WearParams } from '@hotspotter/core';
+import type { DirtParams, WearParams } from '@hotspotter/core';
 
 // ---------------------------------------------------------------------------
 // Wear loss pass (Task 8).
@@ -10,7 +10,8 @@ import type { WearParams } from '@hotspotter/core';
 // ---------------------------------------------------------------------------
 
 interface ComposeOpts {
-  material?: 'brick' | 'albedo';
+  /** 'flat' is a uniform mid-grey albedo with no other map (and no structure). */
+  material?: 'brick' | 'albedo' | 'flat';
   /** Structure analysis input: the height map, the inverted albedo luma, or none. Default: height for brick. */
   structure?: 'height' | 'invertedLuma' | false;
   /** 'trim' is 4 × 0.06 m (500 px/m); 'trim12' is 1 × 0.012 m (1000 px/m). */
@@ -27,6 +28,12 @@ interface ComposeOpts {
   normalMap?: boolean;
   /** Use syntheticBrick({ colour: true }) as albedo (red bricks, light joints). */
   colour?: boolean;
+  /** Merged over DEFAULT_DIRT; omitted composes without dirt. */
+  dirt?: Partial<DirtParams>;
+  /** Second PBR set bound as substrateMaterial: pure red, or a 4 × 4 red / blue checker (256 px). */
+  substrate?: 'red' | 'checker';
+  /** tileSizeM of the substrate set (square), default 1. */
+  substrateTileM?: number;
 }
 
 interface WearProbe {
@@ -67,6 +74,9 @@ interface WearProbe {
   heightRangeM: [number, number];
   /** 1 where the loss holds the groove-floor marker (lossR < 0, R31); `loss` reads it as 0. */
   floorMarker: Uint8Array;
+  /** Placement origin (material metres) of each rect, and whether it is rotated. */
+  originM: [number, number][];
+  rotate90: boolean[];
 }
 
 declare global {
@@ -141,14 +151,22 @@ test.beforeEach(async ({ page }) => {
       ctx.device.queue.writeTexture({ texture: tex }, bytes, { bytesPerRow: n * 4 }, [n, n]);
       return tex;
     };
+    const flatGrey = new Uint8Array(16 * 16 * 4).fill(128);
+    const red = new Uint8Array(16 * 16 * 4);
+    for (let i = 0; i < 16 * 16; i++) red.set([255, 0, 0, 255], i * 4);
+    // 4 × 4 cells of 64 px: red where (cx + cy) is even (image rows from the top), blue otherwise.
+    const checker = new Uint8Array(256 * 256 * 4);
+    for (let y = 0; y < 256; y++) {
+      for (let x = 0; x < 256; x++) checker.set(((x >> 6) + (y >> 6)) % 2 ? [0, 0, 255, 255] : [255, 0, 0, 255], (y * 256 + x) * 4);
+    }
     window.__t8 = {
       async compose({
         material = 'brick', structure, layout: kind = 'pair', resolutionPx = 1024, wear = {}, mask, grainAxis = null, rotate,
-        normalMap = false, colour = false,
+        normalMap = false, colour = false, dirt, substrate, substrateTileM = 1,
       }) {
         const ctx = await (ctxP ??= engine.initGpu());
         const groove = core.DEFAULT_GROOVE;
-        const structureFrom = structure ?? (material === 'brick' ? 'height' : false);
+        const structureFrom = material === 'flat' ? false : structure ?? (material === 'brick' ? 'height' : false);
         const layout = kind === 'pair'
           ? {
             version: 1 as const, widthPx: 512, heightPx: 512, worldWidthM: 2, groove,
@@ -175,10 +193,18 @@ test.beforeEach(async ({ page }) => {
         const albedo = colour ? colourBrick.rgba : brick.rgba;
         const bmp = await toBitmap(brick.rgba, 256, 256);
         const albedoBmp = colour ? await toBitmap(albedo, 256, 256) : bmp;
-        const images: Partial<Record<'baseColor' | 'height' | 'normal', ImageBitmap>> = { baseColor: albedoBmp };
+        const images: Partial<Record<'baseColor' | 'height' | 'normal', ImageBitmap>> = {
+          baseColor: material === 'flat' ? await toBitmap(flatGrey, 16, 16) : albedoBmp,
+        };
         if (material === 'brick') images.height = bmp;
         if (normalMap) images.normal = await toBitmap(normalRgba, 64, 64);
         const gpuMaterial = engine.uploadMaterial(ctx, { settings, images });
+        const substrateMaterial = substrate
+          ? engine.uploadMaterial(ctx, {
+            settings: { ...settings, name: 'sub', tileSizeM: [substrateTileM, substrateTileM] },
+            images: { baseColor: substrate === 'red' ? await toBitmap(red, 16, 16) : await toBitmap(checker, 256, 256) },
+          })
+          : undefined;
         const analysis = structureFrom === 'height'
           ? core.analyzeStructure(brick.gray, tileSizeM)
           : structureFrom === 'invertedLuma'
@@ -197,7 +223,8 @@ test.beforeEach(async ({ page }) => {
         };
         const maps = await engine.composeAtlas(ctx, {
           layout, material: gpuMaterial, placements, resolutionPx, structure: gpuStructure,
-          wear: wearParams, mask: maskTex, grainAxis,
+          wear: wearParams, mask: maskTex, grainAxis, substrateMaterial,
+          dirt: dirt ? { ...core.DEFAULT_DIRT, ...dirt } : undefined,
         });
         const packed = new Uint32Array(await readTexels(ctx, maps.loss, 4));
         const loss = new Float32Array(packed.length * 2);
@@ -249,12 +276,14 @@ test.beforeEach(async ({ page }) => {
         }
         for (const t of [extra.macroHeight, extra.border, extra.wearMask]) t?.destroy();
         for (const t of Object.values(gpuMaterial.textures)) t.destroy();
+        for (const t of Object.values(substrateMaterial?.textures ?? {})) t.destroy();
         gpuStructure?.destroy();
         maskTex?.destroy();
         return {
           w, h, lossSize, loss, rectId, jointDistM, rects, refScale, ppm, halfGroovePx, grooveWidthM: groove.widthM,
           height: new Float32Array(heightBytes), macroHeight, normal: new Uint8Array(normalBytes), border, wearMask,
           borderSize, wearMaskSize, bytes, heightRangeM: maps.heightRangeM, floorMarker,
+          originM: placements.map((p) => p.originM), rotate90: placements.map((p) => p.rotate90),
           structureType: analysis ? analysis.type : null, jointFraction: analysis ? analysis.jointFraction : 0,
           mpp: 1 / (ppm * refScale),
           edgeM(x: number, y: number) {
@@ -591,7 +620,10 @@ test('packWear byte layout and sanitising of saved values', async ({ page }) => 
       mask: { enabled: true, strength: 0.75, invert: true },
     };
     const d = { cavity: 0.5, runoff: 0.25, runoffLengthM: 0.625, tint: [0.25, 0.5, 0.75] as [number, number, number] };
-    const buf = engine.packWear({ ...w, family: 'dent' }, d, core.WEAR_FAMILIES.chipping, { hasPieces: true, grainAxis: 'y', maskBound: true });
+    const sub = { source: 'secondSet' as const, hueShift: 30, satMul: 0.5, valMul: 0.25, roughAdd: 0.125 };
+    const buf = engine.packWear({ ...w, family: 'dent', substrate: sub }, d, core.WEAR_FAMILIES.chipping, {
+      hasPieces: true, grainAxis: 'y', maskBound: true, substrate: { tileSizeM: [0.5, 0.75], roughnessIsGloss: true },
+    });
     const dv = new DataView(buf);
     const f = (o: number) => dv.getFloat32(o, true);
     const u = (o: number) => dv.getUint32(o, true);
@@ -600,27 +632,35 @@ test('packWear byte layout and sanitising of saved values', async ({ page }) => 
       depthM: f(20), bandM: f(24), microM: f(28), pieceBias: f(32), edgeTone: f(36), maskStrength: f(40),
       maskEnabled: u(44), maskInvert: u(48), hasPieces: u(52), grainAxis: u(56), cellMix: f(60), anisotropy: f(64),
       steps: u(68), loses: u(72), polish: f(76), cavity: f(80), runoff: f(84), runoffLengthM: f(88),
-      tint: [f(92), f(96), f(100)], family: u(104),
+      tint: [f(92), f(96), f(100)], family: u(104), substrateSource: u(108), hueShift: f(112), satMul: f(116),
+      valMul: f(120), roughAdd: f(124), substrateTileM: [f(128), f(132)], substrateGloss: u(136),
     };
     const bad = engine.packWear(
       { ...core.DEFAULT_WEAR, intensity: Number.NaN, widthM: -1, sizeM: Infinity, pieceBias: 3, mask: { enabled: false, strength: 2, invert: false } },
       core.DEFAULT_DIRT, core.WEAR_FAMILIES.brittle, { hasPieces: false, grainAxis: null, maskBound: false },
     );
     const bv = new DataView(bad);
+    // secondSet without a bound substrate set falls back to the interior.
+    const unbound = new DataView(engine.packWear(
+      { ...core.DEFAULT_WEAR, substrate: sub }, core.DEFAULT_DIRT, core.WEAR_FAMILIES.brittle,
+      { hasPieces: false, grainAxis: null, maskBound: false },
+    )).getUint32(108, true);
     const sanitized = {
       intensity: bv.getFloat32(4, true), widthM: bv.getFloat32(8, true), sizeM: bv.getFloat32(16, true),
       pieceBias: bv.getFloat32(32, true), maskStrength: bv.getFloat32(40, true), maskEnabled: bv.getUint32(44, true),
     };
-    return { layout, sanitized };
+    return { layout, sanitized, unbound };
   });
   expect(r.layout).toEqual({
-    bytes: 128, enabled: 1, intensity: 0.25, widthM: expect.closeTo(0.05, 7), minEdgeM: expect.closeTo(0.003, 7),
+    bytes: 144, enabled: 1, intensity: 0.25, widthM: expect.closeTo(0.05, 7), minEdgeM: expect.closeTo(0.003, 7),
     sizeM: expect.closeTo(0.02, 7), depthM: expect.closeTo(0.007, 7), bandM: expect.closeTo(0.008, 7),
     microM: expect.closeTo(0.001, 7), pieceBias: 0.5, edgeTone: 0.375, maskStrength: 0.75, maskEnabled: 1,
     maskInvert: 1, hasPieces: 1, grainAxis: 2, cellMix: expect.closeTo(0.6, 6), anisotropy: 1, steps: 2, loses: 1,
     polish: expect.closeTo(0.1, 6), cavity: 0.5, runoff: 0.25, runoffLengthM: 0.625,
-    tint: [0.25, 0.5, 0.75], family: 4,
+    tint: [0.25, 0.5, 0.75], family: 4, substrateSource: 1, hueShift: 30, satMul: 0.5, valMul: 0.25, roughAdd: 0.125,
+    substrateTileM: [0.5, 0.75], substrateGloss: 1,
   });
+  expect(r.unbound).toBe(0);
   expect(r.sanitized).toEqual({
     intensity: 0.5, widthM: 0, sizeM: expect.closeTo(0.03, 7), pieceBias: 1, maskStrength: 1, maskEnabled: 0,
   });
@@ -630,13 +670,15 @@ test('packWear byte layout and sanitising of saved values', async ({ page }) => 
 // Task 9: border distance and height composite.
 // ---------------------------------------------------------------------------
 
-test('without wear the compose matches a wear compose that loses nothing (normal within 1 LSB)', async ({ page }) => {
+test('without wear the compose matches a wear compose that loses nothing (normal within 1 LSB), with and without dirt', async ({ page }) => {
   const r = await page.evaluate(async () => {
     const out: Record<string, unknown> = {};
-    for (const normalMap of [false, true]) {
-      // widthM 0 disables edge wear entirely (R30): the wear passes run but change nothing.
-      const plain = await window.__t8!.compose({ wear: null, normalMap });
-      const zero = await window.__t8!.compose({ wear: { widthM: 0 }, normalMap });
+    const cases = { heightOnly: { normalMap: false }, normalMap: { normalMap: true }, dirt: { normalMap: false, dirt: { runoff: 1 } } };
+    for (const [name, opts] of Object.entries(cases)) {
+      // widthM 0 disables edge wear entirely (R30): the wear passes run but change nothing, edge tone included. Height
+      // AO and dirt run in both paths.
+      const plain = await window.__t8!.compose({ ...opts, wear: null });
+      const zero = await window.__t8!.compose({ ...opts, wear: { widthM: 0 } });
       const differing: string[] = [];
       for (const k of ['baseColor', 'height', 'roughness', 'metallic', 'ao', 'rectId', 'pieceId', 'jointDistM'] as const) {
         const a = plain.bytes[k], b = zero.bytes[k];
@@ -646,14 +688,14 @@ test('without wear the compose matches a wear compose that loses nothing (normal
       for (let i = 0; i < plain.bytes.normal.length; i++) {
         normalMaxLsb = Math.max(normalMaxLsb, Math.abs(plain.bytes.normal[i] - zero.bytes.normal[i]));
       }
-      out[normalMap ? 'normalMap' : 'heightOnly'] = {
+      out[name] = {
         differing, normalMaxLsb, sameRange: plain.heightRangeM.every((v, i) => v === zero.heightRangeM[i]),
         border: plain.borderSize, wearMask: plain.wearMaskSize, zeroBorder: zero.borderSize,
       };
     }
     return out;
   });
-  for (const k of ['heightOnly', 'normalMap']) {
+  for (const k of ['heightOnly', 'normalMap', 'dirt']) {
     expect(r[k]).toEqual({
       differing: [], normalMaxLsb: expect.any(Number), sameRange: true, border: [1, 1], wearMask: [1, 1],
       zeroBorder: [1024, 1024],
@@ -841,14 +883,14 @@ test('wear outputs: border clamped to ±4 · bandM and negative exactly on the l
   expect(r.maskDeep).toBe(0);
 });
 
-test('R31: the groove floor is never worn and no break digs below it', async ({ page }) => {
+test('R31: the groove floor is never worn and no break digs below it', async ({ page }, testInfo) => {
   const r = await page.evaluate(async () => {
     const out: Record<string, number>[] = [];
     // Deep breaks (depthM 2 cm > the 4 mm groove) so the groove-floor clamp is exercised.
     for (const wear of [{ intensity: 1 }, { intensity: 1, depthM: 0.02 }]) {
       const plain = await window.__t8!.compose({ wear: null });
       const m = await window.__t8!.compose({ wear });
-      const grooveDepthM = 0.004;
+      const grooveDepthM = window.__hs!.core.DEFAULT_GROOVE.depthM;
       let floorPx = 0, floorMarked = 0, floorLoss = 0, floorHeight = 0, floorMask = 0, belowFloor = 0, markerOutside = 0;
       for (let y = 0; y < m.h; y++) {
         for (let x = 0; x < m.w; x++) {
@@ -874,6 +916,9 @@ test('R31: the groove floor is never worn and no break digs below it', async ({ 
     return out;
   });
   for (const v of r) {
+    // The rect-id raster already excludes the floor, so the marker only covers raster / analytic-edge disagreements.
+    testInfo.annotations.push({ type: 'floorMarked', description: `${v.floorMarked} of ${v.floorPx} floor pixels` });
+    expect(v.floorMarked).toBeLessThanOrEqual(v.floorPx);
     expect(v.floorPx).toBeGreaterThan(1000);
     expect(v.markerOutside).toBe(0);
     expect(v.floorLoss).toBe(0);
@@ -881,4 +926,209 @@ test('R31: the groove floor is never worn and no break digs below it', async ({ 
     expect(v.floorMask).toBe(0);
     expect(v.belowFloor).toBe(0);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Task 10: colour composite (substrate, edge tone), height AO, cavity dirt and runoff.
+// ---------------------------------------------------------------------------
+
+const BAND_M = 0.006;
+const BEVEL_M = 0.003;
+
+test('interior substrate with valMul 0.5 darkens the lost pixels against their intact neighbours', async ({ page }) => {
+  const r = await page.evaluate(async ({ bandM, bevelM }) => {
+    const { core } = window.__hs!;
+    const m = await window.__t8!.compose({
+      wear: { intensity: 0.8, substrate: { ...core.DEFAULT_WEAR.substrate, satMul: 1, valMul: 0.5, roughAdd: 0 } },
+    });
+    const value = (i: number) => Math.max(m.bytes.baseColor[4 * i], m.bytes.baseColor[4 * i + 1], m.bytes.baseColor[4 * i + 2]);
+    let lostSum = 0, lostN = 0, nearSum = 0, nearN = 0;
+    for (let y = 0; y < m.h; y++) {
+      for (let x = 0; x < m.w; x++) {
+        const i = y * m.w + x;
+        if (m.rectId[i] === 0 || m.edgeM(x, y) < bevelM + m.mpp) continue;
+        const b = m.border![i];
+        if (m.wearMask![i] >= 250) { lostSum += value(i); lostN++; } else if (b > bandM && b < 3 * bandM) { nearSum += value(i); nearN++; }
+      }
+    }
+    return { lost: lostSum / lostN, lostN, near: nearSum / nearN, nearN };
+  }, { bandM: BAND_M, bevelM: BEVEL_M });
+  expect(r.lostN).toBeGreaterThan(1000);
+  expect(r.nearN).toBeGreaterThan(1000);
+  expect(r.lost).toBeLessThan(0.75 * r.near);
+});
+
+test('a pure red second set shows red in the loss and leaves intact pixels as without wear', async ({ page }) => {
+  const r = await page.evaluate(async ({ bandM, bevelM }) => {
+    const { core } = window.__hs!;
+    const plain = await window.__t8!.compose({ wear: null });
+    const m = await window.__t8!.compose({
+      substrate: 'red', wear: { intensity: 0.8, substrate: { ...core.DEFAULT_WEAR.substrate, source: 'secondSet' } },
+    });
+    const c = m.bytes.baseColor;
+    let lostN = 0, notRed = 0, intactN = 0, changed = 0;
+    for (let y = 0; y < m.h; y++) {
+      for (let x = 0; x < m.w; x++) {
+        const i = y * m.w + x;
+        if (m.rectId[i] === 0) continue;
+        if (m.wearMask![i] >= 250) {
+          lostN++;
+          if (!(c[4 * i] > c[4 * i + 1] + c[4 * i + 2])) notRed++;
+        } else if (m.border![i] >= bandM && m.edgeM(x, y) > bevelM + m.mpp) {
+          intactN++;
+          for (let k = 0; k < 4; k++) if (c[4 * i + k] !== plain.bytes.baseColor[4 * i + k]) { changed++; break; }
+        }
+      }
+    }
+    return { lostN, notRed, intactN, changed };
+  }, { bandM: BAND_M, bevelM: BEVEL_M });
+  expect(r.lostN).toBeGreaterThan(1000);
+  expect(r.notRed).toBe(0);
+  expect(r.intactN).toBeGreaterThan(100000);
+  expect(r.changed).toBe(0);
+});
+
+test('a 4 × 4 checker second set at tileSize 0.5 keeps its 0.125 m period in the loss, rotated rects included', async ({ page }) => {
+  const r = await page.evaluate(async () => {
+    const { core } = window.__hs!;
+    const m = await window.__t8!.compose({
+      substrate: 'checker', substrateTileM: 0.5, rotate: [false, true],
+      wear: { intensity: 1, widthM: 0.2, pieceBias: 0, substrate: { ...core.DEFAULT_WEAR.substrate, source: 'secondSet' } },
+    });
+    const frac = (v: number) => v - Math.floor(v);
+    // Margin from a cell boundary: one substrate texel (0.5 m / 256) for the bilinear blend plus one output pixel.
+    const margin = 0.5 / 256 + m.mpp;
+    const out = [0, 0].map(() => ({ n: 0, mismatch: 0 }));
+    for (let y = 0; y < m.h; y++) {
+      for (let x = 0; x < m.w; x++) {
+        const i = y * m.w + x;
+        const id = m.rectId[i];
+        if (id === 0 || m.wearMask![i] < 250) continue;
+        // Material metres, as atlasPxToMaterialM (core placement.ts).
+        const rect = m.rects[id - 1];
+        const px = (x + 0.5) / m.refScale, py = (y + 0.5) / m.refScale;
+        let lx = (px - rect.x) / m.ppm, ly = (rect.y + rect.h - py) / m.ppm;
+        if (m.rotate90[id - 1]) [lx, ly] = [ly, -lx];
+        const mx = m.originM[id - 1][0] + lx, my = m.originM[id - 1][1] + ly;
+        const nearLine = (v: number) => { const f = frac(v / 0.125); return Math.min(f, 1 - f) * 0.125 < margin; };
+        if (nearLine(mx) || nearLine(my)) continue;
+        const ix = Math.floor(frac(mx / 0.5) * 256), iy = Math.floor(frac(1 - my / 0.5) * 256);
+        const expectRed = ((ix >> 6) + (iy >> 6)) % 2 === 0;
+        const isRed = m.bytes.baseColor[4 * i] > m.bytes.baseColor[4 * i + 2];
+        out[id - 1].n++;
+        if (isRed !== expectRed) out[id - 1].mismatch++;
+      }
+    }
+    return out;
+  });
+  for (const v of r) {
+    expect(v.n).toBeGreaterThan(5000);
+    expect(v.mismatch / v.n).toBeLessThan(0.005);
+  }
+});
+
+test('height AO is lower on the groove floor than at the rect centre', async ({ page }) => {
+  const r = await page.evaluate(async () => {
+    const m = await window.__t8!.compose({ material: 'flat', wear: null });
+    const ao = (x: number, y: number) => m.bytes.ao[4 * (y * m.w + x)];
+    // The groove between rects a and b is centred on x = 512 at 1024 px.
+    return { groove: ao(511, 512), grooveId: m.rectId[512 * m.w + 511], centre: ao(256, 512) };
+  });
+  expect(r.grooveId).toBe(0);
+  expect(r.centre).toBe(255);
+  expect(r.groove).toBeLessThan(0.8 * r.centre);
+});
+
+test('runoff darkens a strip below the top edge, never the groove above it', async ({ page }) => {
+  const r = await page.evaluate(async () => {
+    const dirt = { cavity: 0 };
+    const clean = await window.__t8!.compose({ material: 'flat', wear: null, dirt: { ...dirt, runoff: 0 } });
+    const m = await window.__t8!.compose({ material: 'flat', wear: null, dirt: { ...dirt, runoff: 1 } });
+    const luma = (c: Uint8Array, i: number) => 0.2126 * c[4 * i] + 0.7152 * c[4 * i + 1] + 0.0722 * c[4 * i + 2];
+    let topSum = 0, topN = 0, midSum = 0, midN = 0, grooveChanged = 0, grooveN = 0;
+    for (let y = 0; y < m.h; y++) {
+      for (let x = 0; x < m.w; x++) {
+        const i = y * m.w + x;
+        if (m.rectId[i] === 0) {
+          grooveN++;
+          for (let k = 0; k < 4; k++) if (m.bytes.baseColor[4 * i + k] !== clean.bytes.baseColor[4 * i + k]) { grooveChanged++; break; }
+          continue;
+        }
+        // Metres below the visible top edge.
+        const rect = m.rects[m.rectId[i] - 1];
+        const dTop = ((y + 0.5) / m.refScale - (rect.y + m.halfGroovePx)) / m.ppm;
+        if (dTop < 0.05) { topSum += luma(m.bytes.baseColor, i); topN++; }
+        if (Math.abs(dTop - 1) < 0.025) { midSum += luma(m.bytes.baseColor, i); midN++; }
+      }
+    }
+    // Row 0 is the groove above the top edge of both rects.
+    const row0 = Array.from({ length: m.w }, (_, x) => m.rectId[x]).every((id) => id === 0);
+    return { top: topSum / topN, topN, mid: midSum / midN, midN, grooveChanged, grooveN, row0 };
+  });
+  expect(r.topN).toBeGreaterThan(1000);
+  expect(r.midN).toBeGreaterThan(1000);
+  expect(r.top).toBeLessThan(r.mid - 5);
+  expect(r.row0).toBe(true);
+  expect(r.grooveN).toBeGreaterThan(1000);
+  expect(r.grooveChanged).toBe(0);
+});
+
+test('runoff also starts below each loss and never appears above its origin', async ({ page }) => {
+  const r = await page.evaluate(async () => {
+    const L = 0.4;
+    const wear = { intensity: 1, widthM: 0.2, pieceBias: 0 };
+    const clean = await window.__t8!.compose({ material: 'flat', wear, dirt: { cavity: 0, runoff: 0 } });
+    const m = await window.__t8!.compose({ material: 'flat', wear, dirt: { cavity: 0, runoff: 1, runoffLengthM: L } });
+    let near = 0, nearChanged = 0, far = 0, farChanged = 0;
+    for (let x = 0; x < m.w; x++) {
+      let id = 0;
+      // Row of the latest lost pixel above in this column and rect, or -1.
+      let lastLoss = -1;
+      for (let y = 0; y < m.h; y++) {
+        const i = y * m.w + x;
+        if (m.rectId[i] !== id) { id = m.rectId[i]; lastLoss = -1; }
+        if (id === 0) continue;
+        if (m.loss[2 * i] > 0.5) lastLoss = y;
+        const rect = m.rects[id - 1];
+        const dTop = ((y + 0.5) / m.refScale - (rect.y + m.halfGroovePx)) / m.ppm;
+        // Beyond the reach of the top-edge runoff only the losses can tint.
+        if (dTop < L + m.mpp) continue;
+        let changed = false;
+        for (let k = 0; k < 4; k++) if (m.bytes.baseColor[4 * i + k] !== clean.bytes.baseColor[4 * i + k]) changed = true;
+        const dLoss = lastLoss < 0 ? Infinity : (y - lastLoss) * m.mpp;
+        if (dLoss < 0.5 * L) { near++; if (changed) nearChanged++; } else if (dLoss > L + m.mpp) { far++; if (changed) farChanged++; }
+      }
+    }
+    return { near, nearChanged, far, farChanged };
+  });
+  // Within half the reach of a loss above, the streak tints almost every pixel; beyond the reach (or above every loss
+  // of the column) nothing changes.
+  expect(r.near).toBeGreaterThan(1000);
+  expect(r.nearChanged).toBeGreaterThan(0.9 * r.near);
+  expect(r.far).toBeGreaterThan(1000);
+  expect(r.farChanged).toBe(0);
+});
+
+test('edgeOnly reveals no substrate (wearMask 0) and polishes the edge: lower roughness than the centre', async ({ page }) => {
+  const r = await page.evaluate(async ({ bevelM }) => {
+    // At 2048 px (0.98 mm) the 3 mm bevel spans three pixels.
+    const m = await window.__t8!.compose({ material: 'flat', resolutionPx: 2048, wear: { family: 'edgeOnly' } });
+    let edgeSum = 0, edgeN = 0, centreSum = 0, centreN = 0;
+    for (let y = 0; y < m.h; y++) {
+      for (let x = 0; x < m.w; x++) {
+        const i = y * m.w + x;
+        const e = m.edgeM(x, y);
+        if (m.rectId[i] === 0 || e < 0) continue;
+        if (e < bevelM) { edgeSum += m.bytes.roughness[4 * i]; edgeN++; } else if (e > 0.1) { centreSum += m.bytes.roughness[4 * i]; centreN++; }
+      }
+    }
+    return {
+      maskMax: m.wearMask!.reduce((a, v) => Math.max(a, v), 0), maskSize: m.wearMaskSize,
+      edge: edgeSum / edgeN, edgeN, centre: centreSum / centreN,
+    };
+  }, { bevelM: BEVEL_M });
+  expect(r.maskSize).toEqual([2048, 2048]);
+  expect(r.maskMax).toBe(0);
+  expect(r.edgeN).toBeGreaterThan(1000);
+  expect(r.edge).toBeLessThan(r.centre - 5);
 });

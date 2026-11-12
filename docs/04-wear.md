@@ -45,7 +45,7 @@ Todo se mide en metros sobre coordenadas locales del rectángulo, así que la pr
 
 ### Pasada de altura (cómo se rompe)
 
-Con la pérdida ya decidida, el motor esculpe el daño en el campo de altura único. Sin desgaste esta pasada no se ejecuta y la salida es idéntica byte a byte a la de la v0.1-A.
+Con la pérdida ya decidida, el motor esculpe el daño en el campo de altura único. Sin desgaste esta pasada no se ejecuta. Un test compara en la misma ejecución una composición sin desgaste con otra con desgaste que no pierde nada (`widthM` 0): todos los mapas coinciden exactamente y la normal difiere como mucho en 1 LSB.
 
 1. **Distancia al contorno (`border`, r32float).** Es la distancia con signo, en metros, al contorno de la pérdida: negativa dentro y limitada a ±4·`bandM`. Se calcula con jump flooding desde los puntos medios entre píxeles vecinos a ambos lados del contorno, del mismo rectángulo y fuera del fondo de ranura. Como la distancia está limitada, el primer salto es `nextPow2(⌈4·bandM·ppm⌉ + 1)` y no la mitad de la textura, y al final se repite un salto de 1. Las semillas van en dos texturas r32uint (x | y << 16 en medios píxeles), la mitad de memoria que rg32sint, y se liberan nada más terminar.
 2. **Altura.** `s = smoothstep(0, bandM, −b)`:
@@ -58,6 +58,20 @@ Con la pérdida ya decidida, el motor esculpe el daño en el campo de altura ún
 4. **`wearMask`** (rgba8unorm, gris) = `s`. Es la pérdida suavizada con el mismo perfil que la altura: 0 en el contorno y fuera de la pérdida, y 1 a partir de `bandM` hacia dentro. Se puede exportar.
 
 **El fondo de ranura nunca se desgasta** (R31). Sus píxeles dentro de un rectángulo (fuera del borde visible) llevan en `loss` la marca `lossR = −1`, que todo lector trata como 0. No reciben pérdida, profundidad, cambio de altura ni `wearMask`, y no siembran contorno. El contorno solo se forma entre píxeles del mismo rectángulo, así que no se cuela de un rectángulo a otro. El desgaste empieza en el borde visible hacia dentro, bisel incluido. La ranura sigue siendo el separador limpio que detecta Anvil.
+
+### Pasada de color (color, rugosidad, metálico y AO)
+
+Corre siempre, con desgaste y sin él, cuando la altura ya es la final. El color y la rugosidad se componen aquí y nunca entran en la normal (CLAUDE.md, regla 2). Todo se mide en metros.
+
+- **Sustrato**, solo en familias con pérdida de capa, mezclado por `wearMask`:
+  - **Interior**: HSV del color del material con `h += hueShift` (en grados), `s *= satMul` y `v *= valMul`, multiplicado por `0.9 + 0.2·fbm(local / 4 mm)`. La rugosidad suma `roughAdd`.
+  - **Segundo set** (`substrate.source = 'secondSet'` con un material de sustrato cargado): se muestrea en las mismas coordenadas de material que el set superior (colocación y giro incluidos), con su propio `tileSizeM` y sin estirar. Aporta color, rugosidad, metálico y AO. Si se pide sin set cargado, se usa el interior.
+- **Tono de canto**: `canto = max(perfil del bisel, 1 − smoothstep(0, bandM, |border|))`. El valor sube hacia 1 (`v = mix(v, 1, edgeTone·polish·canto)`) y la rugosidad baja `0.3·edgeTone·polish·canto`. Con `widthM` 0 no hay tono de canto (R30). `edgeOnly` y `dent` no tienen sustrato, solo canto.
+- **AO** = AO del material × AO de altura. `AO_altura = 1 − clamp(0.7 · Σ_r max(0, media de 8 taps a radio r − h) / r)`, con r = 5, 20 y 60 mm y lectura bilineal de la altura. Sustituye al `1 − 0.5·prof` de la v0.1-A: una ranura de 4 mm con bisel de 3 mm queda cerca de 0.5 en el fondo.
+- **Suciedad de cavidad**: `k = cavity · (1 − AO_altura)`; `color = mix(color, tint·color, k)` y la rugosidad suma `0.1·k`.
+- **Escorrentía**: nace en el borde superior visible de cada rectángulo y debajo de cada pérdida del mismo rectángulo, y baja hasta `runoffLengthM`: `cantidad = runoff · (1 − smoothstep(0, L, distancia bajo el origen)) · fbm(local.x / 1 cm, local.y / L)`, con `color = mix(color, tint·color, cantidad)`. Nunca aparece por encima de su origen. Para conocer la última pérdida de encima, cada invocación recorre de arriba abajo un tramo de una columna, después de releer `runoffLengthM` por encima del tramo (solo `rectId` y `loss`).
+- La ranura y el fondo de ranura no llevan sustrato, tono de canto ni escorrentía. El AO de altura y la suciedad de cavidad se aplican en todo el atlas.
+- Sin `dirt` en la composición no hay suciedad (cavidad y escorrentía a 0). La suciedad funciona igual con el desgaste apagado.
 
 ### Qué queda debajo ("sustrato")
 
@@ -85,7 +99,7 @@ Se combinan y se ponderan. El tipo de material propone una mezcla por defecto:
 
 ### Más allá del borde
 
-Son capas opcionales que se aplican después del daño: suciedad en cavidades, escorrentía vertical (respeta la orientación "arriba" del rectángulo), manchas de humedad, polvo en superficies horizontales del relieve y variación de tono por pieza.
+Son capas opcionales que se aplican después del daño: suciedad en cavidades, escorrentía vertical, manchas de humedad, polvo en superficies horizontales del relieve y variación de tono por pieza. La v0.1 trae la suciedad de cavidad y la escorrentía (ver "Pasada de color"). La escorrentía baja hacia abajo en el atlas: los rectángulos no tienen todavía una orientación "arriba" propia.
 
 ## Estilos de daño
 

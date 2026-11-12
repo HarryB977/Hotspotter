@@ -57,7 +57,10 @@ function flipGreen(ctx: GpuContext, src: GPUTexture): GPUTexture {
   return dst;
 }
 
-/** Uploads every map as raw rgba8unorm bytes (no sRGB decode). DX normals are converted to GL. */
+/**
+ * Uploads every map as raw rgba8unorm bytes (no sRGB decode). DX normals are converted to GL. The second PBR set
+ * (ComposeInput.substrateMaterial) goes through the same path, with its own settings (tileSizeM, roughnessIsGloss).
+ */
 export function uploadMaterial(ctx: GpuContext, m: LoadedMaterial): GpuMaterial {
   const textures = {} as Record<MapKind, GPUTexture>;
   for (const kind of KINDS) {

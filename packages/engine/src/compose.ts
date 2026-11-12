@@ -1,11 +1,11 @@
 import { pxPerMetre } from '@hotspotter/core';
-import type { HotspotLayout, RectPlacement, WearParams } from '@hotspotter/core';
+import type { DirtParams, HotspotLayout, RectPlacement, WearParams } from '@hotspotter/core';
 import type { GpuContext } from './gpu';
 import type { GpuMaterial } from './material';
 import { continuousStructure } from './structure';
 import type { GpuStructure } from './structure';
 import { PARAMS_BYTES, packParams, withCommon } from './params';
-import { createWearUniforms, encodeBorder, encodeWearComposite, encodeWearLoss } from './wear';
+import { createWearUniforms, encodeBorder, encodeColorComposite, encodeWearComposite, encodeWearLoss } from './wear';
 import rectIdWgsl from './shaders/rectId.wgsl?raw';
 import composeWgsl from './shaders/compose.wgsl?raw';
 import normalFromHeightWgsl from './shaders/normalFromHeight.wgsl?raw';
@@ -25,6 +25,13 @@ export interface ComposeInput {
   mask?: GPUTexture;
   /** Material grain axis (structure analysis); voronoi cells stretch along it. */
   grainAxis?: 'x' | 'y' | null;
+  /** Cavity dirt and runoff; they apply with and without wear. Without it there is no dirt. */
+  dirt?: DirtParams;
+  /**
+   * Second PBR set revealed in the loss when `wear.substrate.source` is 'secondSet' (uploadMaterial, like the top
+   * material). Sampled at the same material metres as the top material, with its own tileSizeM, never stretched.
+   */
+  substrateMaterial?: GpuMaterial;
 }
 
 export interface AtlasMaps {
@@ -219,9 +226,12 @@ export async function composeAtlas(ctx: GpuContext, input: ComposeInput): Promis
   const rects = rectsBuffer(device, layout, placements);
   const ownStructure = input.structure ? null : continuousStructure(ctx);
   const structure = input.structure ?? ownStructure!;
-  const wearUniforms = createWearUniforms(device, input.wear, {
+  const sub = input.substrateMaterial;
+  const wearUniforms = createWearUniforms(device, input.wear, input.dirt, {
     hasPieces: structure.hasPieces, grainAxis: input.grainAxis ?? null, maskBound: !!input.mask,
+    substrate: sub ? { tileSizeM: sub.settings.tileSizeM, roughnessIsGloss: sub.settings.roughnessIsGloss } : undefined,
   });
+  const metresPerPx = layout.widthPx / (pxPerMetre(layout) * resolutionPx);
   const wearResources: { destroy(): void }[] = [];
   try {
     const encoder = device.createCommandEncoder();
@@ -229,7 +239,7 @@ export async function composeAtlas(ctx: GpuContext, input: ComposeInput): Promis
     // Pass 1: rect ids.
     renderRectIds(device, encoder, rectId, params, rects, layout.rects.length);
 
-    // Pass 2: material sampling and groove profile.
+    // Pass 2: material surface (normal, height) and structure; colour and scalars come after the wear (pass 3).
     const tx = { sampleType: 'float' as const };
     const inputLayout = device.createBindGroupLayout({
       entries: [
@@ -237,7 +247,7 @@ export async function composeAtlas(ctx: GpuContext, input: ComposeInput): Promis
         { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
         { binding: 2, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'uint' } },
         { binding: 3, visibility: GPUShaderStage.COMPUTE, sampler: { type: 'filtering' } },
-        ...[4, 5, 6, 7, 8, 9].map((binding) => ({ binding, visibility: GPUShaderStage.COMPUTE, texture: tx })),
+        ...[5, 6].map((binding) => ({ binding, visibility: GPUShaderStage.COMPUTE, texture: tx })),
         { binding: 10, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'uint' } },
         { binding: 11, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
       ],
@@ -255,9 +265,8 @@ export async function composeAtlas(ctx: GpuContext, input: ComposeInput): Promis
             addressModeU: 'repeat', addressModeV: 'repeat', magFilter: 'linear', minFilter: 'linear',
           }),
         },
-        ...[t.baseColor, t.normal, t.height, t.roughness, t.metallic, t.ao].map((m, i) => ({
-          binding: 4 + i, resource: m.createView(),
-        })),
+        { binding: 5, resource: t.normal.createView() },
+        { binding: 6, resource: t.height.createView() },
         { binding: 10, resource: structure.pieceId.createView() },
         { binding: 11, resource: structure.jointDistM.createView() },
       ],
@@ -265,11 +274,8 @@ export async function composeAtlas(ctx: GpuContext, input: ComposeInput): Promis
     const composeModule = device.createShaderModule({ code: withCommon(composeWgsl) });
     const surfaceLayout = device.createBindGroupLayout({
       entries: [
-        storageEntry(0, 'rgba8unorm'), storageEntry(1, 'rgba16float'), storageEntry(2, 'r32float'), storageEntry(8, 'r32float'),
+        storageEntry(1, 'rgba16float'), storageEntry(2, 'r32float'), storageEntry(8, 'r32float'),
       ],
-    });
-    const scalarLayout = device.createBindGroupLayout({
-      entries: [storageEntry(3, 'rgba8unorm'), storageEntry(4, 'rgba8unorm'), storageEntry(5, 'rgba8unorm')],
     });
     const structureLayout = device.createBindGroupLayout({
       entries: [storageEntry(6, 'r32uint'), storageEntry(7, 'r32float')],
@@ -290,8 +296,7 @@ export async function composeAtlas(ctx: GpuContext, input: ComposeInput): Promis
       pass.dispatchWorkgroups(workgroups(outW), workgroups(outH));
       pass.end();
     };
-    composePass('surface', surfaceLayout, [[0, baseColor], [1, matNormal], [2, height], [8, macroHeight]]);
-    composePass('scalars', scalarLayout, [[3, roughness], [4, metallic], [5, ao]]);
+    composePass('surface', surfaceLayout, [[1, matNormal], [2, height], [8, macroHeight]]);
     composePass('structure', structureLayout, [[6, pieceId], [7, jointDistM]]);
 
     // Wear: loss, border distance and the height composite. Without wear every pass is skipped; `height` and
@@ -301,12 +306,18 @@ export async function composeAtlas(ctx: GpuContext, input: ComposeInput): Promis
       wearResources.push(encodeWearLoss(device, encoder, {
         wear, params, rects, rectId, pieceId, jointDistM, loss, mask: input.mask,
       }));
-      const metresPerPx = layout.widthPx / (pxPerMetre(layout) * resolutionPx);
       wearResources.push(encodeBorder(device, encoder, { loss, rectId, border, bandM: wearUniforms.bandM, metresPerPx }));
       encodeWearComposite(device, encoder, { params, rects, wear, rectId, loss, border, height, macroHeight, wearMask });
     }
 
-    // Pass 3: normal from height combined with the material normal.
+    // Pass 3: colour composite (substrate, edge tone, height AO, dirt) on the final height, with and without wear.
+    encodeColorComposite(device, encoder, {
+      params, rects, wear: wearUniforms.buffer, rectId, height, loss, border, wearMask,
+      material: t, substrate: sub?.textures, lossRunoffM: wearUniforms.lossRunoffM, metresPerPx,
+      out: { baseColor, roughness, metallic, ao },
+    });
+
+    // Pass 4: normal from height combined with the material normal.
     const normalPipeline = device.createComputePipeline({
       layout: 'auto',
       compute: { module: device.createShaderModule({ code: withCommon(normalFromHeightWgsl) }), entryPoint: 'main' },

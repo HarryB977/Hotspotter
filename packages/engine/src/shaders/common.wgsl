@@ -48,11 +48,14 @@ struct Wear {
   tintG: f32,
   tintB: f32,
   family: u32,             // FAMILY_CODE (params.ts)
+  substrateSource: u32,    // 0 interior, 1 second set (bound as substrateMaterial)
+  hueShift: f32,           // interior substrate, degrees
+  satMul: f32,
+  valMul: f32,
+  roughAdd: f32,
+  substrateTileM: vec2<f32>,  // second set tileSizeM (offset 128, 8-aligned)
+  substrateGloss: u32,     // 1: the second set's roughness map is gloss
   pad1: u32,
-  pad2: u32,
-  pad3: u32,
-  pad4: u32,
-  pad5: u32,
 }
 
 struct Rect {
@@ -69,6 +72,35 @@ fn visibleEdgePx(r: vec4<f32>, px: vec2<f32>, halfGroovePx: f32) -> f32 {
     min(px.x - (r.x + halfGroovePx), (r.x + r.z - halfGroovePx) - px.x),
     min(px.y - (r.y + halfGroovePx), (r.y + r.w - halfGroovePx) - px.y),
   );
+}
+
+// Material metres at reference px `px` of rect r, a direct transcription of atlasPxToMaterialM
+// (packages/core/src/placement.ts). ppm is reference px per metre.
+fn atlasPxToMaterialM(r: vec4<f32>, originM: vec2<f32>, rotate90: u32, px: vec2<f32>, ppm: f32) -> vec2<f32> {
+  var lx = (px.x - r.x) / ppm;
+  var ly = (r.y + r.w - px.y) / ppm;
+  if (rotate90 != 0u) {
+    let t = lx;
+    lx = ly;
+    ly = -t;
+  }
+  return originM + vec2<f32>(lx, ly);
+}
+
+// Material uv of material metres m for a set of tile size tileSizeM. The material origin is the image's bottom-left
+// texel, so v is flipped.
+fn materialUv(m: vec2<f32>, tileSizeM: vec2<f32>) -> vec2<f32> {
+  return vec2<f32>(m.x / tileSizeM.x, 1.0 - m.y / tileSizeM.y);
+}
+
+// Groove depth fraction for profile code `code` (Params.profile): 1 at the groove, 0 at d >= 1.
+fn grooveProfile(code: u32, d: f32) -> f32 {
+  switch code {
+    case 0u: { return 1.0 - d; }
+    case 1u: { return 1.0 - smoothstep(0.0, 1.0, d); }
+    case 2u: { return select(0.0, 1.0, d < 0.5); }
+    default: { return 0.0; }
+  }
 }
 
 // ---- Noise and hash utilities. Coordinates are world/atlas metres (or any float lattice); there is no wrap. ----

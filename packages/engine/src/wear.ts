@@ -1,25 +1,36 @@
-import { DEFAULT_DIRT, WEAR_FAMILIES } from '@hotspotter/core';
-import type { WearParams } from '@hotspotter/core';
-import { WEAR_BYTES, WEAR_F_BANDM, packWear, withCommon } from './params';
+import { WEAR_FAMILIES } from '@hotspotter/core';
+import type { DirtParams, WearParams } from '@hotspotter/core';
+import {
+  NO_DIRT, WEAR_BYTES, WEAR_F_BANDM, WEAR_F_RUNOFF, WEAR_F_RUNOFF_LENGTH, WEAR_U_LOSES, packNoWear, packWear, withCommon,
+} from './params';
 import type { WearExtra } from './params';
 import wearLossWgsl from './shaders/wearLoss.wgsl?raw';
 import jfaWgsl from './shaders/jfa.wgsl?raw';
 import wearCompositeWgsl from './shaders/wearComposite.wgsl?raw';
+import colorCompositeWgsl from './shaders/colorComposite.wgsl?raw';
 
 export interface WearUniforms {
   buffer: GPUBuffer;
   /** Sanitised bandM as packed (0 without wear). */
   bandM: number;
+  /** How far below a loss its runoff reaches, metres: runoffLengthM when losses can tint (wear, a family that loses, runoff > 0), else 0. */
+  lossRunoffM: number;
 }
 
-/** The Wear uniform buffer (R17). Without wear it is all zeros, so `W.enabled` is 0 for every consumer. */
-export function createWearUniforms(device: GPUDevice, wear: WearParams | undefined, extra: WearExtra): WearUniforms {
-  const data = wear
-    ? packWear(wear, DEFAULT_DIRT, WEAR_FAMILIES[wear.family] ?? WEAR_FAMILIES.brittle, extra)
-    : new ArrayBuffer(WEAR_BYTES);
+/**
+ * The Wear uniform buffer (R17). Without wear `W.enabled` is 0 for every consumer and only the dirt fields are set:
+ * dirt applies with and without wear. Without `dirt` there is none (cavity and runoff 0).
+ */
+export function createWearUniforms(
+  device: GPUDevice, wear: WearParams | undefined, dirt: DirtParams | undefined, extra: WearExtra,
+): WearUniforms {
+  const d = dirt ?? NO_DIRT;
+  const data = wear ? packWear(wear, d, WEAR_FAMILIES[wear.family] ?? WEAR_FAMILIES.brittle, extra) : packNoWear(d);
   const buffer = device.createBuffer({ size: WEAR_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   device.queue.writeBuffer(buffer, 0, data);
-  return { buffer, bandM: new Float32Array(data)[WEAR_F_BANDM] };
+  const f = new Float32Array(data);
+  const losesAndRuns = !!wear && new Uint32Array(data)[WEAR_U_LOSES] !== 0 && f[WEAR_F_RUNOFF] > 0;
+  return { buffer, bandM: f[WEAR_F_BANDM], lossRunoffM: losesAndRuns ? f[WEAR_F_RUNOFF_LENGTH] : 0 };
 }
 
 export interface WearLossInput {
@@ -217,4 +228,84 @@ export function encodeWearComposite(device: GPUDevice, encoder: GPUCommandEncode
     ],
   });
   dispatch(encoder, pipeline, group, input.height.width, input.height.height);
+}
+
+/** Material maps the colour composite samples: the top material, or the second set (substrate). */
+export interface ColorMaps {
+  baseColor: GPUTexture;
+  roughness: GPUTexture;
+  metallic: GPUTexture;
+  ao: GPUTexture;
+}
+
+export interface ColorCompositeInput {
+  params: GPUBuffer;
+  rects: GPUBuffer;
+  wear: GPUBuffer;
+  rectId: GPUTexture;
+  /** Final height (r32float). */
+  height: GPUTexture;
+  /** 1 × 1 placeholders without wear, never read then. */
+  loss: GPUTexture;
+  border: GPUTexture;
+  wearMask: GPUTexture;
+  material: ColorMaps;
+  /** The second set; without it the material's own maps are bound (and unused: substrateSource is 0). */
+  substrate?: ColorMaps;
+  /** Metres below a loss its runoff reaches (WearUniforms.lossRunoffM); 0 skips the walk above each chunk. */
+  lossRunoffM: number;
+  metresPerPx: number;
+  /** rgba8unorm targets. */
+  out: ColorMaps;
+}
+
+/**
+ * Encodes the colour composite (colorComposite.wgsl): final baseColor, roughness, metallic and AO. Each invocation
+ * walks a chunk of one column top to bottom, so it knows the latest loss above it; chunks are half the runoff reach
+ * (at least 32 rows) and first walk that reach above themselves, so the extra reads stay near 2× the light loss and
+ * rect-id loads, and a tall atlas still splits into many invocations.
+ */
+export function encodeColorComposite(device: GPUDevice, encoder: GPUCommandEncoder, input: ColorCompositeInput): void {
+  const { width: w, height: h } = input.height;
+  const lookback = input.lossRunoffM > 0 ? Math.ceil(input.lossRunoffM / input.metresPerPx) : 0;
+  const chunk = lookback > 0 ? Math.max(32, Math.ceil(lookback / 2)) : 8;
+  const pipeline = device.createComputePipeline({
+    layout: 'auto',
+    compute: {
+      module: device.createShaderModule({ code: withCommon(colorCompositeWgsl) }),
+      entryPoint: 'main',
+      constants: { MIN_BAND_M, CHUNK_ROWS: chunk, LOOKBACK_ROWS: lookback },
+    },
+  });
+  const sub = input.substrate ?? input.material;
+  const maps = (base: number, m: ColorMaps) => [m.baseColor, m.roughness, m.metallic, m.ao].map((t, i) => ({
+    binding: base + i, resource: t.createView(),
+  }));
+  const group = device.createBindGroup({
+    layout: pipeline.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: input.params } },
+      { binding: 1, resource: { buffer: input.rects } },
+      { binding: 2, resource: input.rectId.createView() },
+      {
+        binding: 3,
+        resource: device.createSampler({
+          addressModeU: 'repeat', addressModeV: 'repeat', magFilter: 'linear', minFilter: 'linear',
+        }),
+      },
+      { binding: 4, resource: { buffer: input.wear } },
+      { binding: 5, resource: input.height.createView() },
+      { binding: 6, resource: input.loss.createView() },
+      { binding: 7, resource: input.border.createView() },
+      { binding: 8, resource: input.wearMask.createView() },
+      ...maps(9, input.material),
+      ...maps(13, sub),
+      ...maps(17, input.out),
+    ],
+  });
+  const pass = encoder.beginComputePass();
+  pass.setPipeline(pipeline);
+  pass.setBindGroup(0, group);
+  pass.dispatchWorkgroups(Math.ceil(w / 64), Math.ceil(h / chunk));
+  pass.end();
 }

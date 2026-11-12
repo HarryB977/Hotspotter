@@ -70,10 +70,13 @@ export function packParams(p: ParamsInput): ArrayBuffer {
   return data;
 }
 
-export const WEAR_BYTES = 128;
+export const WEAR_BYTES = 144;
 
-/** Float index of bandM in the packed Wear buffer (byte 24). */
+/** Indices into the packed Wear buffer read back on the CPU: bandM (byte 24), loses (u32, 72), runoff (84), runoffLengthM (88). */
 export const WEAR_F_BANDM = 6;
+export const WEAR_U_LOSES = 18;
+export const WEAR_F_RUNOFF = 21;
+export const WEAR_F_RUNOFF_LENGTH = 22;
 
 export interface WearExtra {
   /** The structure has joints; without them pieceId / jointDistM carry no information. */
@@ -82,6 +85,8 @@ export interface WearExtra {
   grainAxis: 'x' | 'y' | null;
   /** A mask texture is bound; the mask applies only when this and `mask.enabled` are both set. */
   maskBound: boolean;
+  /** The second PBR set bound as substrate (ComposeInput.substrateMaterial); `secondSet` falls back to the interior without it. */
+  substrate?: { tileSizeM: [number, number]; roughnessIsGloss: boolean };
 }
 
 const GRAIN_CODE = { x: 1, y: 2 } as const;
@@ -97,7 +102,7 @@ function num(v: unknown, fallback: number, lo = -Infinity, hi = Infinity): numbe
 
 /**
  * Single source of the Wear byte layout (R17). Mirrors `struct Wear` in shaders/common.wgsl; keep both in sync.
- * Every field is a 4-byte scalar, so byte = index * 4. Unused trailing slots are reserved for the substrate fields.
+ * Every field is a 4-byte scalar (substrateTileM is two), so byte = index * 4.
  *
  *   byte  field                 byte  field
  *      0  enabled (u32)           52  hasPieces (u32)
@@ -112,13 +117,19 @@ function num(v: unknown, fallback: number, lo = -Infinity, hi = Infinity): numbe
  *     36  edgeTone                88  runoffLengthM
  *     40  maskStrength            92  tint r, g, b (96, 100)
  *     44  maskEnabled (u32)      104  family (u32, FAMILY_CODE)
- *     48  maskInvert (u32)       108  reserved … 127
+ *     48  maskInvert (u32)       108  substrateSource (u32: 0 interior, 1 second set)
+ *                                112  hueShift (degrees)
+ *                                116  satMul
+ *                                120  valMul
+ *                                124  roughAdd
+ *                                128  substrateTileM x, y (132)
+ *                                136  substrateGloss (u32)
+ *                                140  pad
  *
  * Out-of-range or non-finite values fall back to DEFAULT_WEAR / DEFAULT_DIRT; the seed goes in Params.
  */
 export function packWear(w: WearParams, d: DirtParams, shape: FamilyShape, extra: WearExtra): ArrayBuffer {
   const W = DEFAULT_WEAR;
-  const D = DEFAULT_DIRT;
   const data = new ArrayBuffer(WEAR_BYTES);
   const f = new Float32Array(data);
   const u = new Uint32Array(data);
@@ -142,12 +153,40 @@ export function packWear(w: WearParams, d: DirtParams, shape: FamilyShape, extra
   f[15] = num(shape.cellMix, 0, 0, 1);
   f[16] = num(shape.anisotropy, 1, 1);
   u[17] = Math.round(num(shape.steps, 0, 0, 255));
-  u[18] = shape.loses ? 1 : 0;
+  u[WEAR_U_LOSES] = shape.loses ? 1 : 0;
   f[19] = num(shape.polish, 0, 0, 1);
-  f[20] = num(d.cavity, D.cavity, 0, 1);
-  f[21] = num(d.runoff, D.runoff, 0, 1);
-  f[22] = num(d.runoffLengthM, D.runoffLengthM, 0);
-  for (let i = 0; i < 3; i++) f[23 + i] = num(d.tint?.[i], D.tint[i], 0, 1);
+  writeDirt(f, d);
   u[26] = FAMILY_CODE[w.family] ?? FAMILY_CODE[W.family];
+  const sub = { ...W.substrate, ...(w.substrate ?? {}) };
+  const second = sub.source === 'secondSet' && extra.substrate !== undefined;
+  u[27] = second ? 1 : 0;
+  f[28] = num(sub.hueShift, W.substrate.hueShift, -360, 360);
+  f[29] = num(sub.satMul, W.substrate.satMul, 0);
+  f[30] = num(sub.valMul, W.substrate.valMul, 0);
+  f[31] = num(sub.roughAdd, W.substrate.roughAdd, -1, 1);
+  // A zero tile size would divide by zero; 1 m is harmless when the set is not bound (substrateSource 0).
+  const tile = extra.substrate?.tileSizeM ?? [1, 1];
+  f[32] = num(tile[0], 1, 1e-4);
+  f[33] = num(tile[1], 1, 1e-4);
+  u[34] = extra.substrate?.roughnessIsGloss ? 1 : 0;
+  return data;
+}
+
+/** Packs the dirt fields of the Wear block (bytes 80–103). Dirt applies with and without wear. */
+function writeDirt(f: Float32Array, d: DirtParams): void {
+  const D = DEFAULT_DIRT;
+  f[20] = num(d.cavity, D.cavity, 0, 1);
+  f[WEAR_F_RUNOFF] = num(d.runoff, D.runoff, 0, 1);
+  f[WEAR_F_RUNOFF_LENGTH] = num(d.runoffLengthM, D.runoffLengthM, 0);
+  for (let i = 0; i < 3; i++) f[23 + i] = num(d.tint?.[i], D.tint[i], 0, 1);
+}
+
+/** No dirt: cavity and runoff 0. */
+export const NO_DIRT: DirtParams = { ...DEFAULT_DIRT, cavity: 0, runoff: 0 };
+
+/** The Wear block without wear (enabled 0): only the dirt fields are set. */
+export function packNoWear(d: DirtParams): ArrayBuffer {
+  const data = new ArrayBuffer(WEAR_BYTES);
+  writeDirt(new Float32Array(data), d);
   return data;
 }
