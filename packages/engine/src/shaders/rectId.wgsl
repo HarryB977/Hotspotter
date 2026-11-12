@@ -1,13 +1,6 @@
 // Pass 1: one quad per rect, shrunk by half the groove width on every side.
 // Writes id = rect index + 1; the clear value 0 marks groove / empty pixels.
 
-struct Rect {
-  rect: vec4<f32>,         // x, y, w, h in reference px, top-left origin
-  originM: vec2<f32>,
-  rotate90: u32,
-  pad: u32,
-}
-
 @group(0) @binding(0) var<uniform> P: Params;
 @group(0) @binding(1) var<storage, read> rects: array<Rect>;
 

@@ -30,6 +30,17 @@ El daño se construye por capas de escala, todas en unidades del mundo:
 
 Cada capa resta del campo de altura. Una rotura siempre lleva su banda de fractura, para que nunca haya un corte limpio sin contexto. La profundidad tiene un límite físico: no se puede perder más de lo que mide la pieza.
 
+### Pasada de pérdida (dónde se rompe)
+
+El motor decide primero qué píxeles pierden material (`loss`, R = 0/1) y a qué profundidad objetivo (G, en metros). Todo se mide en metros sobre coordenadas locales del rectángulo, con un desplazamiento por rectángulo derivado de la seed, así que la preview y el export coinciden a cualquier resolución.
+
+- El potencial de daño cae con la distancia al borde visible del rectángulo (el borde del fondo de ranura) en un ancho `min(widthM, 0.33 · lado menor)`, para que los trims finos no queden comidos.
+- La máscara B/N lo modula (gris medio = neutro, decisión 43). Con piezas, `pieceBias` lo concentra a menos de `sizeM` de una junta, con un peso aleatorio por pieza.
+- La forma sale de una mezcla de fBm y celdas Voronoi (`cellMix` de la familia). La celda se parte en cada junta, así que la rotura sigue el contorno de las piezas.
+- Siempre se pierde un borde mínimo irregular de entre `minEdgeM` y `1.6 · minEdgeM`.
+- `dent` y `edgeOnly` no pierden material; `dent` solo deja una profundidad suave en G.
+- Sin desgaste, `loss` vale 0 en todo el atlas. La ranura siempre vale 0.
+
 ### Qué queda debajo ("sustrato")
 
 Lo que aparece donde se pierde material sale de una de estas fuentes:

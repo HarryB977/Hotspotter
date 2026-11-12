@@ -1,5 +1,6 @@
 // Shared prelude, prepended to every module with withCommon(). The only
-// declaration of Params; its byte layout is packed by packParams (params.ts).
+// declaration of Params, Wear and Rect; their byte layouts are packed by
+// packParams, packWear and rectsBuffer (params.ts, compose.ts).
 
 struct Params {
   outSize: vec2<f32>,      // output texture size, px
@@ -16,6 +17,58 @@ struct Params {
   bevelM: f32,             // bevel width inside each rect, metres
   seed: u32,               // wear seed
   pad0: u32,
+}
+
+// Wear and dirt uniforms (R17), packed by packWear (params.ts). Scalars only, so offsets are index * 4.
+struct Wear {
+  enabled: u32,            // 0: no wear, the wear passes are skipped
+  intensity: f32,
+  widthM: f32,
+  minEdgeM: f32,
+  sizeM: f32,
+  depthM: f32,
+  bandM: f32,
+  microM: f32,
+  pieceBias: f32,
+  edgeTone: f32,
+  maskStrength: f32,
+  maskEnabled: u32,        // 1: a mask texture is bound and enabled
+  maskInvert: u32,
+  hasPieces: u32,          // 1: the structure has joints (pieceId / jointDistM are meaningful)
+  grainAxis: u32,          // material grain: 0 none, 1 x, 2 y
+  cellMix: f32,            // family shape (WEAR_FAMILIES)
+  anisotropy: f32,
+  steps: u32,
+  loses: u32,
+  polish: f32,
+  cavity: f32,             // dirt
+  runoff: f32,
+  runoffLengthM: f32,
+  tintR: f32,
+  tintG: f32,
+  tintB: f32,
+  family: u32,             // FAMILY_CODE (params.ts)
+  pad1: u32,
+  pad2: u32,
+  pad3: u32,
+  pad4: u32,
+  pad5: u32,
+}
+
+struct Rect {
+  rect: vec4<f32>,         // x, y, w, h in reference px, top-left origin
+  originM: vec2<f32>,
+  rotate90: u32,
+  pad: u32,
+}
+
+// Distance in reference px from px to the visible edge of rect r, the edge shrunk by halfGroovePx (the groove floor
+// edge). Negative outside it.
+fn visibleEdgePx(r: vec4<f32>, px: vec2<f32>, halfGroovePx: f32) -> f32 {
+  return min(
+    min(px.x - (r.x + halfGroovePx), (r.x + r.z - halfGroovePx) - px.x),
+    min(px.y - (r.y + halfGroovePx), (r.y + r.w - halfGroovePx) - px.y),
+  );
 }
 
 // ---- Noise and hash utilities. Coordinates are world/atlas metres (or any float lattice); there is no wrap. ----
@@ -58,7 +111,7 @@ fn fbm(p: vec2<f32>, octaves: u32, seed: u32) -> f32 {
   var norm = 0.0;
   var q = p;
   for (var o = 0u; o < octaves; o++) {
-    sum += amp * valueNoise(q, seed + o * 101u);
+    sum += amp * valueNoise(q, seed ^ (o * 0x9e3779b9u));
     norm += amp;
     amp *= 0.5;
     q = q * 2.0 + vec2<f32>(17.3, 9.1);
@@ -75,11 +128,12 @@ fn warp(p: vec2<f32>, amountM: f32, seed: u32) -> vec2<f32> {
 
 struct VoronoiHit {
   cell: vec2<i32>,  // lattice cell of the nearest feature point
-  d1: f32,          // distance to the nearest feature point, in stretched space (cell units)
-  d2: f32,          // distance to the second nearest
+  d1: f32,          // distance to the nearest feature point, in stretched cell units (x divided by anisotropy)
+  d2: f32,          // distance to the second nearest, same units; inexact beyond the 3x3 neighbourhood
 }
 
-// Worley 3x3 with hash jitter. anisotropy > 1 stretches cells along +X (distances are measured in the stretched space).
+// Worley 3x3 with hash jitter. anisotropy > 1 stretches cells along +X; d1 and d2 are measured in the stretched
+// space, in cell units, not in the units of p.
 fn voronoi(p: vec2<f32>, anisotropy: f32, seed: u32) -> VoronoiHit {
   let q = vec2<f32>(p.x / max(anisotropy, 1e-3), p.y);
   let base = floor(q);

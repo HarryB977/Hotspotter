@@ -7,12 +7,16 @@ export interface GpuStructure {
   pieceId: GPUTexture;
   /** r32float: metres to the nearest joint. */
   jointDistM: GPUTexture;
+  /** The material has joints; without them pieceId / jointDistM carry no information for the wear. */
+  hasPieces: boolean;
   destroy(): void;
 }
 
 const USAGE = GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC;
 
-function create(ctx: GpuContext, w: number, h: number, pieceId: Uint32Array, jointDistM: Float32Array): GpuStructure {
+function create(
+  ctx: GpuContext, w: number, h: number, pieceId: Uint32Array, jointDistM: Float32Array, hasPieces: boolean,
+): GpuStructure {
   const { device } = ctx;
   const make = (format: GPUTextureFormat, data: Uint32Array | Float32Array) => {
     const texture = device.createTexture({ size: [w, h], format, usage: USAGE });
@@ -24,6 +28,7 @@ function create(ctx: GpuContext, w: number, h: number, pieceId: Uint32Array, joi
   return {
     pieceId: ids,
     jointDistM: dist,
+    hasPieces,
     destroy() {
       ids.destroy();
       dist.destroy();
@@ -32,10 +37,10 @@ function create(ctx: GpuContext, w: number, h: number, pieceId: Uint32Array, joi
 }
 
 export function uploadStructure(ctx: GpuContext, r: StructureResult): GpuStructure {
-  return create(ctx, r.width, r.height, r.pieceId, r.jointDistM);
+  return create(ctx, r.width, r.height, r.pieceId, r.jointDistM, r.jointFraction > 0);
 }
 
 /** 1×1 structure for unanalysed materials: one piece everywhere, 1 m from any joint (continuous). */
 export function continuousStructure(ctx: GpuContext): GpuStructure {
-  return create(ctx, 1, 1, new Uint32Array([1]), new Float32Array([1]));
+  return create(ctx, 1, 1, new Uint32Array([1]), new Float32Array([1]), false);
 }

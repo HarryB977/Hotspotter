@@ -51,8 +51,8 @@ test('fbm is continuous at frequency 1/32 px', async ({ page }) => {
   };
   for (let y = 0; y < 256; y++) for (let x = 0; x < 255; x++) step(y * 256 + x + 1, y * 256 + x);
   for (let y = 0; y < 255; y++) for (let x = 0; x < 256; x++) step((y + 1) * 256 + x, y * 256 + x);
-  // The mean step is well under 0.05; the worst step of 4 octaves measured 0.057, so 0.1 guards against jumps.
-  expect(sumDiff / n).toBeLessThan(0.05);
+  // The worst step of 4 octaves measured 0.057, so 0.1 guards against jumps; the mean step is far smaller.
+  expect(sumDiff / n).toBeLessThan(0.02);
   expect(maxDiff).toBeLessThan(0.1);
 });
 

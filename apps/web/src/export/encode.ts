@@ -76,7 +76,7 @@ export async function exportProject(opts: ExportOptions): Promise<string[]> {
     heightTex?.destroy();
     if (maps) {
       const m = maps;
-      for (const t of [m.baseColor, m.normal, m.height, m.roughness, m.metallic, m.ao, m.rectId, m.pieceId, m.jointDistM]) {
+      for (const t of [m.baseColor, m.normal, m.height, m.roughness, m.metallic, m.ao, m.rectId, m.pieceId, m.jointDistM, m.loss]) {
         t.destroy();
       }
     }

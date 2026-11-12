@@ -2,13 +2,6 @@
 // Three entry points share the mapping; they are split only to stay within the
 // default limit of 4 storage textures per shader stage.
 
-struct Rect {
-  rect: vec4<f32>,         // x, y, w, h in reference px, top-left origin
-  originM: vec2<f32>,
-  rotate90: u32,
-  pad: u32,
-}
-
 @group(0) @binding(0) var<uniform> P: Params;
 @group(0) @binding(1) var<storage, read> rects: array<Rect>;
 @group(0) @binding(2) var rectIdTex: texture_2d<u32>;
@@ -69,12 +62,8 @@ fn pixel(p: vec2<u32>) -> Pixel {
     m = atlasPxToMaterialM(r, pl.originM, pl.rotate90, px);
     out.rotate90 = pl.rotate90;
     // d: distance from the groove floor edge (the shrunk rect edge), normalized over bevelM.
-    let half = 0.5 * P.grooveWidthM * P.ppmRef;
     let bevelPx = P.bevelM * P.ppmRef;
-    let edgePx = min(
-      min(px.x - (r.x + half), (r.x + r.z - half) - px.x),
-      min(px.y - (r.y + half), (r.y + r.w - half) - px.y),
-    );
+    let edgePx = visibleEdgePx(r, px, 0.5 * P.grooveWidthM * P.ppmRef);
     if (bevelPx > 0.0) {
       out.prof = profile(clamp(edgePx / bevelPx, 0.0, 1.0));
     } else {

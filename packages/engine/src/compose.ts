@@ -1,10 +1,11 @@
 import { pxPerMetre } from '@hotspotter/core';
-import type { HotspotLayout, RectPlacement } from '@hotspotter/core';
+import type { HotspotLayout, RectPlacement, WearParams } from '@hotspotter/core';
 import type { GpuContext } from './gpu';
 import type { GpuMaterial } from './material';
 import { continuousStructure } from './structure';
 import type { GpuStructure } from './structure';
 import { PARAMS_BYTES, packParams, withCommon } from './params';
+import { encodeWearLoss } from './wear';
 import rectIdWgsl from './shaders/rectId.wgsl?raw';
 import composeWgsl from './shaders/compose.wgsl?raw';
 import normalFromHeightWgsl from './shaders/normalFromHeight.wgsl?raw';
@@ -18,6 +19,12 @@ export interface ComposeInput {
   resolutionPx: number;
   /** Material structure; without it the material is one continuous piece. */
   structure?: GpuStructure;
+  /** Edge wear; without it `loss` is 0 everywhere. */
+  wear?: WearParams;
+  /** User B/N mask over the full atlas UV (white = more damage); applies when `wear.mask.enabled`. */
+  mask?: GPUTexture;
+  /** Material grain axis (structure analysis); voronoi cells stretch along it. */
+  grainAxis?: 'x' | 'y' | null;
 }
 
 export interface AtlasMaps {
@@ -34,6 +41,8 @@ export interface AtlasMaps {
   pieceId: GPUTexture;
   /** r32float: metres to the nearest material joint, 0 in the groove */
   jointDistM: GPUTexture;
+  /** rg32float: R = material lost 0..1, G = target depth in metres; 0 in the groove and without wear. */
+  loss: GPUTexture;
   heightRangeM: [number, number];
 }
 
@@ -62,7 +71,7 @@ function paramsBuffer(device: GPUDevice, input: ComposeInput, outW: number, outH
     roughnessIsGloss: s.roughnessIsGloss,
     refHeightPx: layout.heightPx,
     sobelMacro: material.hasNormalMap,
-    seed: 0,
+    seed: input.wear && Number.isFinite(input.wear.seed) ? input.wear.seed >>> 0 : 0,
   });
   const buf = device.createBuffer({ size: PARAMS_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   device.queue.writeBuffer(buf, 0, data);
@@ -182,11 +191,13 @@ export async function composeAtlas(ctx: GpuContext, input: ComposeInput): Promis
   const normal = tex('rgba8unorm');
   const pieceId = tex('r32uint');
   const jointDistM = tex('r32float');
+  const loss = tex('rg32float');
 
   const params = paramsBuffer(device, input, outW, outH);
   const rects = rectsBuffer(device, layout, placements);
   const ownStructure = input.structure ? null : continuousStructure(ctx);
   const structure = input.structure ?? ownStructure!;
+  let wearResources: { destroy(): void } | null = null;
   try {
     const encoder = device.createCommandEncoder();
 
@@ -256,6 +267,14 @@ export async function composeAtlas(ctx: GpuContext, input: ComposeInput): Promis
     composePass('scalars', scalarLayout, [[3, roughness], [4, metallic], [5, ao]]);
     composePass('structure', structureLayout, [[6, pieceId], [7, jointDistM]]);
 
+    // Wear loss. Without wear the pass is skipped: WebGPU textures start zeroed.
+    if (input.wear) {
+      wearResources = encodeWearLoss(device, encoder, {
+        wear: input.wear, params, rects, rectId, pieceId, jointDistM, loss,
+        hasPieces: structure.hasPieces, grainAxis: input.grainAxis ?? null, mask: input.mask,
+      });
+    }
+
     // Pass 3: normal from height combined with the material normal.
     const normalPipeline = device.createComputePipeline({
       layout: 'auto',
@@ -280,13 +299,14 @@ export async function composeAtlas(ctx: GpuContext, input: ComposeInput): Promis
   } finally {
     // The 1×1 fallback is bound only by this submit; free it even if encoding throws.
     ownStructure?.destroy();
+    wearResources?.destroy();
   }
   const heightRangeM = await reduceHeightRange(ctx, height);
   params.destroy();
   rects.destroy();
   matNormal.destroy();
 
-  return { baseColor, normal, height, roughness, metallic, ao, rectId, pieceId, jointDistM, heightRangeM };
+  return { baseColor, normal, height, roughness, metallic, ao, rectId, pieceId, jointDistM, loss, heightRangeM };
 }
 
 /** Height normalized by heightRangeM into rgba8unorm (grey, A = 255), for export and preview. */
