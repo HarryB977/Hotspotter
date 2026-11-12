@@ -13,7 +13,6 @@
 @group(0) @binding(8) var outLoss: texture_storage_2d<r32uint, write>;
 
 // Independent seed streams per use, so no two noises share a lattice.
-const S_RECT = 0x1b873593u;
 const S_WARP = 0x68e31da4u;
 const S_CELL = 0xcc9e2d51u;
 const S_CELLHASH = 0x85ebca77u;
@@ -64,13 +63,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
   let pDamage = clamp(pEdge * pMask * pPiece, 0.0, 1.0);
 
-  // Rect-local metres (origin at the rect's bottom-left, y up) plus a per-rect offset of up to 100 m.
-  let rectIndex = f32(id - 1u);
-  let offset = 100.0 * vec2<f32>(
-    hash31(vec3<f32>(rectIndex, 0.0, 0.0), P.seed ^ S_RECT),
-    hash31(vec3<f32>(rectIndex, 1.0, 0.0), P.seed ^ S_RECT),
-  );
-  let local = vec2<f32>(px.x - r.x, r.y + r.w - px.y) / ppm + offset;
+  // Rect-local metres plus the per-rect offset (common.wgsl).
+  let local = wearLocalM(id, r, px, ppm, P.seed);
   // Noise coordinates in units of sizeM, domain-warped by 0.3 · sizeM.
   let q = warp(local / W.sizeM, 0.3, P.seed ^ S_WARP);
 

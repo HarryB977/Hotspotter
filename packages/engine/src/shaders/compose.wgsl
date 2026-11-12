@@ -78,6 +78,7 @@ fn pixel(p: vec2<u32>) -> Pixel {
 @group(1) @binding(0) var outBaseColor: texture_storage_2d<rgba8unorm, write>;
 @group(1) @binding(1) var outMatNormal: texture_storage_2d<rgba16float, write>;
 @group(1) @binding(2) var outHeight: texture_storage_2d<r32float, write>;
+@group(1) @binding(8) var outMacroHeight: texture_storage_2d<r32float, write>;
 
 @compute @workgroup_size(8, 8)
 fn surface(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -104,9 +105,11 @@ fn surface(@builtin(global_invocation_id) gid: vec3<u32>) {
     macroH = -P.grooveDepthM * q.prof;
     h = (raw - 0.5) * P.heightScaleM + macroH;
   }
-  // Alpha carries the macro height to the normal pass.
+  // Alpha keeps the f16 macro height for the no-wear normal pass, so its output stays byte-identical to v0.1-A;
+  // with wear the normal pass reads the final macroHeight instead.
   textureStore(outMatNormal, c, vec4<f32>(n, macroH));
   textureStore(outHeight, c, vec4<f32>(h, 0.0, 0.0, 1.0));
+  textureStore(outMacroHeight, c, vec4<f32>(macroH, 0.0, 0.0, 1.0));
 }
 
 @group(1) @binding(3) var outRoughness: texture_storage_2d<rgba8unorm, write>;

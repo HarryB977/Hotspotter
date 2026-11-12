@@ -154,3 +154,17 @@ fn voronoi(p: vec2<f32>, anisotropy: f32, seed: u32) -> VoronoiHit {
   }
   return hit;
 }
+
+const S_RECT = 0x1b873593u;
+
+// Wear coordinates: rect-local metres (origin at the rect's bottom-left, y up) plus a per-rect offset of up to
+// 100 m, hashed from the seed and the rect index (id - 1). px is in reference px (top-left origin), ppm reference
+// px per metre.
+fn wearLocalM(id: u32, r: vec4<f32>, px: vec2<f32>, ppm: f32, seed: u32) -> vec2<f32> {
+  let rectIndex = f32(id - 1u);
+  let offset = 100.0 * vec2<f32>(
+    hash31(vec3<f32>(rectIndex, 0.0, 0.0), seed ^ S_RECT),
+    hash31(vec3<f32>(rectIndex, 1.0, 0.0), seed ^ S_RECT),
+  );
+  return vec2<f32>(px.x - r.x, r.y + r.w - px.y) / ppm + offset;
+}

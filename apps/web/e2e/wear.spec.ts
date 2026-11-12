@@ -23,6 +23,10 @@ interface ComposeOpts {
   grainAxis?: 'x' | 'y' | null;
   /** Per-rect rotate90 with origin 0; default: placeMaterial without rotation. */
   rotate?: boolean[];
+  /** Also upload a gentle procedural normal map (xy up to 0.1 each), so the normal pass runs Sobel on the macro height. */
+  normalMap?: boolean;
+  /** Use syntheticBrick({ colour: true }) as albedo (red bricks, light joints). */
+  colour?: boolean;
 }
 
 interface WearProbe {
@@ -43,6 +47,23 @@ interface WearProbe {
   ppm: number;
   halfGroovePx: number;
   grooveWidthM: number;
+  /** Final height and macro height, metres. */
+  height: Float32Array;
+  macroHeight: Float32Array;
+  /** RGBA8 final normal (GL). */
+  normal: Uint8Array;
+  /** Signed metres to the loss contour (negative inside), or null when it is a 1 × 1 placeholder. */
+  border: Float32Array | null;
+  /** Red channel of wearMask (0..255), or null when it is a 1 × 1 placeholder. */
+  wearMask: Uint8Array | null;
+  /** Sizes of the border and wearMask textures. */
+  borderSize: [number, number];
+  wearMaskSize: [number, number];
+  /** Structure the analysis found (null when composed without structure). */
+  structureType: string | null;
+  jointFraction: number;
+  /** FNV-1a of every pre-Task-9 map's texels, plus heightRangeM. */
+  hashes: Record<string, number | number[]>;
 }
 
 declare global {
@@ -59,7 +80,24 @@ test.beforeEach(async ({ page }) => {
   await page.evaluate(() => {
     const { core, engine } = window.__hs!;
     let ctxP: Promise<import('@hotspotter/engine').GpuContext> | null = null;
-    const brick = core.syntheticBrick({ size: 256, courseH: 32, brickW: 64, joint: 4, jointH: 0.2, brickH: 0.8 });
+    const brickOpts = { size: 256, courseH: 32, brickW: 64, joint: 4, jointH: 0.2, brickH: 0.8 };
+    const brick = core.syntheticBrick(brickOpts);
+    const colourBrick = core.syntheticBrick({ ...brickOpts, colour: true });
+    // Gentle procedural normal map: tilt up to 0.1 in x and y.
+    const normalRgba = new Uint8Array(64 * 64 * 4);
+    for (let y = 0; y < 64; y++) {
+      for (let x = 0; x < 64; x++) {
+        const nx = 0.1 * Math.sin((2 * Math.PI * x) / 16), ny = 0.1 * Math.cos((2 * Math.PI * y) / 24);
+        const l = Math.hypot(nx, ny, 1);
+        normalRgba.set([nx / l, ny / l, 1 / l].map((v) => Math.round((v * 0.5 + 0.5) * 255)).concat(255), (y * 64 + x) * 4);
+      }
+    }
+    const fnv = (bytes: ArrayBuffer) => {
+      const b = new Uint8Array(bytes);
+      let h = 0x811c9dc5;
+      for (let i = 0; i < b.length; i++) h = Math.imul(h ^ b[i], 0x01000193);
+      return h >>> 0;
+    };
     const toBitmap = (rgba: Uint8Array, w: number, h: number) =>
       createImageBitmap(new ImageData(new Uint8ClampedArray(rgba), w, h), {
         colorSpaceConversion: 'none',
@@ -109,6 +147,7 @@ test.beforeEach(async ({ page }) => {
     window.__t8 = {
       async compose({
         material = 'brick', structure, layout: kind = 'pair', resolutionPx = 1024, wear = {}, mask, grainAxis = null, rotate,
+        normalMap = false, colour = false,
       }) {
         const ctx = await (ctxP ??= engine.initGpu());
         const groove = core.DEFAULT_GROOVE;
@@ -136,16 +175,19 @@ test.beforeEach(async ({ page }) => {
           heightScaleM: 0.02, period: core.CONTINUOUS, allowRotation: false,
           orientation: { baseRotation: 0 as const, rule: 'fixed' as const },
         };
+        const albedo = colour ? colourBrick.rgba : brick.rgba;
         const bmp = await toBitmap(brick.rgba, 256, 256);
-        const gpuMaterial = engine.uploadMaterial(ctx, {
-          settings,
-          images: material === 'brick' ? { baseColor: bmp, height: bmp } : { baseColor: bmp },
-        });
-        const gpuStructure = structureFrom === 'height'
-          ? engine.uploadStructure(ctx, core.analyzeStructure(brick.gray, tileSizeM))
+        const albedoBmp = colour ? await toBitmap(albedo, 256, 256) : bmp;
+        const images: Partial<Record<'baseColor' | 'height' | 'normal', ImageBitmap>> = { baseColor: albedoBmp };
+        if (material === 'brick') images.height = bmp;
+        if (normalMap) images.normal = await toBitmap(normalRgba, 64, 64);
+        const gpuMaterial = engine.uploadMaterial(ctx, { settings, images });
+        const analysis = structureFrom === 'height'
+          ? core.analyzeStructure(brick.gray, tileSizeM)
           : structureFrom === 'invertedLuma'
-            ? engine.uploadStructure(ctx, core.analyzeStructure(core.toGray(brick.rgba, 256, 256, 'invertedLuma'), tileSizeM))
-            : undefined;
+            ? core.analyzeStructure(core.toGray(albedo, 256, 256, 'invertedLuma'), tileSizeM)
+            : null;
+        const gpuStructure = analysis ? engine.uploadStructure(ctx, analysis) : undefined;
         const placements = rotate
           ? layout.rects.map((r, i) => ({ rectId: r.id, originM: [0, 0] as [number, number], rotate90: !!rotate[i] }))
           : core.placeMaterial(layout, core.CONTINUOUS, {
@@ -166,8 +208,35 @@ test.beforeEach(async ({ page }) => {
           loss[2 * i] = halfToFloat(packed[i] & 0xffff);
           loss[2 * i + 1] = halfToFloat(packed[i] >>> 16);
         }
-        const rectId = new Uint32Array(await readTexels(ctx, maps.rectId, 4));
-        const jointDistM = new Float32Array(await readTexels(ctx, maps.jointDistM, 4));
+        const rectIdBytes = await readTexels(ctx, maps.rectId, 4);
+        const rectId = new Uint32Array(rectIdBytes);
+        const jointDistBytes = await readTexels(ctx, maps.jointDistM, 4);
+        const jointDistM = new Float32Array(jointDistBytes);
+        const heightBytes = await readTexels(ctx, maps.height, 4);
+        const normalBytes = await readTexels(ctx, maps.normal, 4);
+        const hashes: Record<string, number | number[]> = {
+          baseColor: fnv(await readTexels(ctx, maps.baseColor, 4)),
+          normal: fnv(normalBytes),
+          height: fnv(heightBytes),
+          roughness: fnv(await readTexels(ctx, maps.roughness, 4)),
+          metallic: fnv(await readTexels(ctx, maps.metallic, 4)),
+          ao: fnv(await readTexels(ctx, maps.ao, 4)),
+          rectId: fnv(rectIdBytes),
+          pieceId: fnv(await readTexels(ctx, maps.pieceId, 4)),
+          jointDistM: fnv(jointDistBytes),
+          loss: fnv(packed.buffer),
+          heightRangeM: maps.heightRangeM,
+        };
+        const extra = maps as unknown as Partial<Record<'macroHeight' | 'border' | 'wearMask', GPUTexture>>;
+        const sizeOf = (t?: GPUTexture): [number, number] => (t ? [t.width, t.height] : [0, 0]);
+        const big = (t?: GPUTexture) => !!t && t.width > 1;
+        const macroHeight = extra.macroHeight ? new Float32Array(await readTexels(ctx, extra.macroHeight, 4)) : new Float32Array(0);
+        const border = big(extra.border) ? new Float32Array(await readTexels(ctx, extra.border!, 4)) : null;
+        const wearMask = big(extra.wearMask)
+          ? new Uint8Array(await readTexels(ctx, extra.wearMask!, 4)).filter((_, i) => i % 4 === 0)
+          : null;
+        const borderSize = sizeOf(extra.border);
+        const wearMaskSize = sizeOf(extra.wearMask);
         const w = maps.rectId.width;
         const h = maps.rectId.height;
         const lossSize: [number, number] = [maps.loss.width, maps.loss.height];
@@ -179,11 +248,15 @@ test.beforeEach(async ({ page }) => {
         for (const t of [m.baseColor, m.normal, m.height, m.roughness, m.metallic, m.ao, m.rectId, m.pieceId, m.jointDistM, m.loss]) {
           t.destroy();
         }
+        for (const t of [extra.macroHeight, extra.border, extra.wearMask]) t?.destroy();
         for (const t of Object.values(gpuMaterial.textures)) t.destroy();
         gpuStructure?.destroy();
         maskTex?.destroy();
         return {
           w, h, lossSize, loss, rectId, jointDistM, rects, refScale, ppm, halfGroovePx, grooveWidthM: groove.widthM,
+          height: new Float32Array(heightBytes), macroHeight, normal: new Uint8Array(normalBytes), border, wearMask,
+          borderSize, wearMaskSize, hashes,
+          structureType: analysis ? analysis.type : null, jointFraction: analysis ? analysis.jointFraction : 0,
           mpp: 1 / (ppm * refScale),
           edgeM(x: number, y: number) {
             const id = rectId[y * w + x];
@@ -463,15 +536,18 @@ test('Review Focus 1: an albedo-only material without structure still loses mate
 
 test('Review Focus 1: an albedo-only material analysed from its inverted luma loses material', async ({ page }) => {
   const r = await page.evaluate(async () => {
-    const m = await window.__t8!.compose({ material: 'albedo', structure: 'invertedLuma', wear: { intensity: 0.8 } });
+    // Red bricks with light joints: the inverted luma makes the joints the low relief.
+    const m = await window.__t8!.compose({ material: 'albedo', colour: true, structure: 'invertedLuma', wear: { intensity: 0.8 } });
     let beyondRim = 0;
     for (let y = 0; y < m.h; y++) {
       for (let x = 0; x < m.w; x++) {
         if (m.loss[2 * (y * m.w + x)] === 1 && m.edgeM(x, y) > 1.6 * 0.004 + m.mpp) beyondRim++;
       }
     }
-    return { beyondRim };
+    return { beyondRim, type: m.structureType, jointFraction: m.jointFraction };
   });
+  expect(r.type).toBe('pieces');
+  expect(r.jointFraction).toBeGreaterThan(0);
   expect(r.beyondRim).toBeGreaterThan(1000);
 });
 
@@ -549,4 +625,187 @@ test('packWear byte layout and sanitising of saved values', async ({ page }) => 
   expect(r.sanitized).toEqual({
     intensity: 0.5, widthM: 0, sizeM: expect.closeTo(0.03, 7), pieceBias: 1, maskStrength: 1, maskEnabled: 0,
   });
+});
+
+// ---------------------------------------------------------------------------
+// Task 9: border distance and height composite.
+// ---------------------------------------------------------------------------
+
+test('without wear the compose is byte-identical to the pre-Task-9 output', async ({ page }) => {
+  const r = await page.evaluate(async () => {
+    const out: Record<string, unknown> = {};
+    for (const normalMap of [false, true]) {
+      const m = await window.__t8!.compose({ wear: null, normalMap });
+      out[normalMap ? 'normalMap' : 'heightOnly'] = { hashes: m.hashes, border: m.borderSize, wearMask: m.wearMaskSize };
+    }
+    return out;
+  });
+  // FNV-1a captured at 4154044 (before Task 9) on the author's RTX 3060.
+  const base = {
+    baseColor: 2695357893, height: 58284608, roughness: 664575429, metallic: 664575429, ao: 305717061,
+    rectId: 1040324165, pieceId: 957728965, jointDistM: 2939675589, loss: 1268118805,
+    heightRangeM: [-0.007489611394703388, 0.006000000052154064],
+  };
+  expect(r).toEqual({
+    heightOnly: { hashes: { ...base, normal: 2183622913 }, border: [1, 1], wearMask: [1, 1] },
+    normalMap: { hashes: { ...base, normal: 2210805229 }, border: [1, 1], wearMask: [1, 1] },
+  });
+});
+
+test('JFA: border on a synthetic 40 px disc is -40 px at the centre and +10 px 10 px outside', async ({ page }) => {
+  const r = await page.evaluate(async () => {
+    const { engine } = window.__hs!;
+    const ctx = await engine.initGpu();
+    const { device } = ctx;
+    // Disc centred on the centre of pixel (120, 96).
+    const w = 256, h = 200, px = 120, py = 96, cx = px + 0.5, cy = py + 0.5, radius = 40;
+    const mpp = 0.001;
+    const bandM = 12 * mpp; // clamp 4 · bandM = 48 px
+    const texels = new Uint32Array(w * h);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        // pack2x16float(1, depth): half 1.0 = 0x3c00 in the low half.
+        if (Math.hypot(x + 0.5 - cx, y + 0.5 - cy) < radius) texels[y * w + x] = 0x3c00 | (0x1c19 << 16);
+      }
+    }
+    const usage = GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC | GPUTextureUsage.COPY_DST;
+    const loss = device.createTexture({ size: [w, h], format: 'r32uint', usage });
+    device.queue.writeTexture({ texture: loss }, texels, { bytesPerRow: w * 4 }, [w, h]);
+    const border = device.createTexture({ size: [w, h], format: 'r32float', usage });
+    const enc = device.createCommandEncoder();
+    const res = engine.encodeBorder(device, enc, { loss, border, bandM, metresPerPx: mpp });
+    device.queue.submit([enc.finish()]);
+    res.destroy();
+    const bytesPerRow = Math.ceil((w * 4) / 256) * 256;
+    const buf = device.createBuffer({ size: bytesPerRow * h, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    const enc2 = device.createCommandEncoder();
+    enc2.copyTextureToBuffer({ texture: border }, { buffer: buf, bytesPerRow }, [w, h]);
+    device.queue.submit([enc2.finish()]);
+    await buf.mapAsync(GPUMapMode.READ);
+    const f = new Float32Array(buf.getMappedRange().slice(0));
+    buf.unmap();
+    buf.destroy();
+    loss.destroy();
+    border.destroy();
+    const at = (x: number, y: number) => f[y * (bytesPerRow / 4) + x] / mpp;
+    // Pixel centres 10 px beyond the disc along four directions.
+    const outside = [at(px + 50, py), at(px - 50, py), at(px, py + 50), at(px, py - 50)];
+    let min = Infinity, max = -Infinity;
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { min = Math.min(min, at(x, y)); max = Math.max(max, at(x, y)); }
+    return { centre: at(px, py), outside, min, max, far: at(w - 1, h - 1) };
+  });
+  expect(Math.abs(r.centre - -40)).toBeLessThanOrEqual(1);
+  for (const v of r.outside) expect(Math.abs(v - 10)).toBeLessThanOrEqual(1);
+  // Clamped to ±4 · bandM; far pixels have no seed within range.
+  expect(r.min).toBeGreaterThanOrEqual(-48 - 1e-3);
+  expect(r.max).toBeLessThanOrEqual(48 + 1e-3);
+  expect(r.far).toBeCloseTo(48, 3);
+});
+
+/** Compares a wear compose against the same compose without wear (d = wear height − material height). */
+async function wearHeight(page: import('@playwright/test').Page, opts: ComposeOpts) {
+  return page.evaluate(async (o) => {
+    const plain = await window.__t8!.compose({ ...o, wear: null });
+    const m = await window.__t8!.compose(o);
+    const d = new Float32Array(m.w * m.h);
+    for (let i = 0; i < d.length; i++) d[i] = m.height[i] - plain.height[i];
+    let contour = 0;
+    let maxSlope = 0;
+    let belowLimit = 0;
+    let bandSum = 0, bandN = 0, intactSum = 0, intactN = 0;
+    const bandM = 0.006;
+    for (let y = 1; y < m.h - 1; y++) {
+      for (let x = 1; x < m.w - 1; x++) {
+        const i = y * m.w + x;
+        if (m.rectId[i] === 0) continue;
+        // h_final ≥ h_material − depthM − microM.
+        if (m.height[i] < plain.height[i] - 0.006 - 0.0005) belowLimit++;
+        const b = m.border![i];
+        if (b > 0 && b < bandM) { bandSum += d[i]; bandN++; }
+        if (b > bandM && b < 2 * bandM) { intactSum += d[i]; intactN++; }
+        if (!(m.loss[2 * i] > 0.5)) continue;
+        const nb = [i - 1, i + 1, i - m.w, i + m.w];
+        if (!nb.some((j) => !(m.loss[2 * j] > 0.5) && m.rectId[j] === m.rectId[i])) continue;
+        // Contour pixel: the steepest wear-height step to any same-rect neighbour.
+        contour++;
+        for (const k of nb) if (m.rectId[k] === m.rectId[i]) maxSlope = Math.max(maxSlope, Math.abs(d[k] - d[i]) / m.mpp);
+      }
+    }
+    return { contour, maxSlope, belowLimit, bandMean: bandSum / bandN, bandN, intactMean: intactSum / intactN, intactN };
+  }, opts);
+}
+
+test('wear height: no cliff at the loss contour, depth limit, and a fracture band around each break', async ({ page }) => {
+  for (const resolutionPx of [1024, 2048]) {
+    const r = await wearHeight(page, { resolutionPx, wear: { intensity: 0.8 } });
+    expect(r.contour).toBeGreaterThan(500);
+    // depthM / bandM · 1.5 with the defaults.
+    expect(r.maxSlope).toBeLessThan((0.006 / 0.006) * 1.5);
+    expect(r.belowLimit).toBe(0);
+    expect(r.bandN).toBeGreaterThan(1000);
+    expect(r.intactN).toBeGreaterThan(1000);
+    expect(r.intactMean).toBe(0);
+    expect(r.bandMean).toBeLessThan(r.intactMean);
+  }
+});
+
+test('normals follow the macro height and the detail normal fades inside the loss', async ({ page }) => {
+  const r = await page.evaluate(async () => {
+    const m = await window.__t8!.compose({ normalMap: true, wear: { intensity: 0.8 } });
+    const { w, h, mpp } = m;
+    const H = (x: number, y: number) => m.macroHeight[Math.min(h - 1, Math.max(0, y)) * w + Math.min(w - 1, Math.max(0, x))];
+    let steep = 0, against = 0;
+    let inSum = 0, inN = 0, outSum = 0, outN = 0;
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = y * w + x;
+        // Sobel on the macro height, y up (as normalFromHeight).
+        const sx = (H(x + 1, y - 1) + 2 * H(x + 1, y) + H(x + 1, y + 1)) - (H(x - 1, y - 1) + 2 * H(x - 1, y) + H(x - 1, y + 1));
+        const sr = (H(x - 1, y + 1) + 2 * H(x, y + 1) + H(x + 1, y + 1)) - (H(x - 1, y - 1) + 2 * H(x, y - 1) + H(x + 1, y - 1));
+        const gx = sx / (8 * mpp), gy = -sr / (8 * mpp);
+        const n = [0, 1, 2].map((c) => (m.normal[i * 4 + c] / 255) * 2 - 1);
+        if (Math.hypot(gx, gy) > 0.2) {
+          steep++;
+          if (n[0] * -gx + n[1] * -gy < 0) against++;
+        }
+        if (m.rectId[i] === 0) continue;
+        // Angle between the final normal and the Sobel macro normal.
+        const l = Math.hypot(gx, gy, 1);
+        const dev = Math.acos(Math.min(1, (n[0] * -gx + n[1] * -gy + n[2]) / (l * Math.hypot(n[0], n[1], n[2]))));
+        const b = m.border![i];
+        if (b < -0.006) { inSum += dev; inN++; } else if (b >= 0.024 - 1e-6) { outSum += dev; outN++; }
+      }
+    }
+    return { steep, against, inMean: inSum / inN, inN, outMean: outSum / outN, outN };
+  });
+  expect(r.steep).toBeGreaterThan(1000);
+  expect(r.against).toBe(0);
+  expect(r.inN).toBeGreaterThan(1000);
+  expect(r.outN).toBeGreaterThan(1000);
+  expect(r.inMean).toBeLessThan(0.5 * r.outMean);
+});
+
+test('wear outputs: border clamped to ±4 · bandM and negative exactly on the loss; wearMask 0 outside it', async ({ page }) => {
+  const r = await page.evaluate(async () => {
+    const m = await window.__t8!.compose({ wear: { intensity: 0.8 } });
+    let badSign = 0, outOfRange = 0, maskOutside = 0, maskDeep = 0, deep = 0;
+    for (let i = 0; i < m.w * m.h; i++) {
+      if (m.rectId[i] === 0) continue;
+      const b = m.border![i];
+      const lost = m.loss[2 * i] > 0.5;
+      if (lost !== b < 0) badSign++;
+      if (Math.abs(b) > 4 * 0.006 + 1e-6) outOfRange++;
+      if (!lost && m.wearMask![i] !== 0) maskOutside++;
+      if (b < -0.006) {
+        deep++;
+        if (m.wearMask![i] < 250) maskDeep++;
+      }
+    }
+    return { badSign, outOfRange, maskOutside, maskDeep, deep, sizes: [m.borderSize, m.wearMaskSize] };
+  });
+  expect(r.badSign).toBe(0);
+  expect(r.outOfRange).toBe(0);
+  expect(r.maskOutside).toBe(0);
+  expect(r.deep).toBeGreaterThan(1000);
+  expect(r.maskDeep).toBe(0);
 });

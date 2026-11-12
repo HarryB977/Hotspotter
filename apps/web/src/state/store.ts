@@ -517,7 +517,10 @@ export const useProject = create<ProjectState>()((set, get) => ({
 }));
 
 function destroyMaps(m: AtlasMaps): void {
-  for (const t of [m.baseColor, m.normal, m.height, m.roughness, m.metallic, m.ao, m.rectId, m.pieceId, m.jointDistM, m.loss]) {
+  for (const t of [
+    m.baseColor, m.normal, m.height, m.macroHeight, m.roughness, m.metallic, m.ao, m.rectId, m.pieceId, m.jointDistM,
+    m.loss, m.border, m.wearMask,
+  ]) {
     t.destroy();
   }
 }

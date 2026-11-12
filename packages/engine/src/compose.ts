@@ -5,7 +5,7 @@ import type { GpuMaterial } from './material';
 import { continuousStructure } from './structure';
 import type { GpuStructure } from './structure';
 import { PARAMS_BYTES, packParams, withCommon } from './params';
-import { encodeWearLoss } from './wear';
+import { createWearUniforms, encodeBorder, encodeWearComposite, encodeWearLoss } from './wear';
 import rectIdWgsl from './shaders/rectId.wgsl?raw';
 import composeWgsl from './shaders/compose.wgsl?raw';
 import normalFromHeightWgsl from './shaders/normalFromHeight.wgsl?raw';
@@ -30,8 +30,13 @@ export interface ComposeInput {
 export interface AtlasMaps {
   baseColor: GPUTexture;
   normal: GPUTexture;
-  /** r32float, metres */
+  /** r32float, metres: the final height (material, groove and wear). */
   height: GPUTexture;
+  /**
+   * r32float, metres: everything but the intact material relief (groove, bevel and wear), the field the normal pass
+   * runs Sobel on when the material has a normal map (R15, R19).
+   */
+  macroHeight: GPUTexture;
   roughness: GPUTexture;
   metallic: GPUTexture;
   ao: GPUTexture;
@@ -46,6 +51,13 @@ export interface AtlasMaps {
    * placeholder (0): a 1×1 loss means no wear, and consumers branch on Wear.enabled instead of reading it.
    */
   loss: GPUTexture;
+  /**
+   * r32float: signed metres to the loss contour, negative inside the loss, clamped to ±4 · bandM. 1×1 placeholder
+   * without wear.
+   */
+  border: GPUTexture;
+  /** rgba8unorm grey: the smoothed final loss (smoothstep(0, bandM, −border)), exportable. 1×1 placeholder without wear. */
+  wearMask: GPUTexture;
   heightRangeM: [number, number];
 }
 
@@ -188,21 +200,27 @@ export async function composeAtlas(ctx: GpuContext, input: ComposeInput): Promis
   const baseColor = tex('rgba8unorm');
   const matNormal = tex('rgba16float', GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING);
   const height = tex('r32float');
+  const macroHeight = tex('r32float');
   const roughness = tex('rgba8unorm');
   const metallic = tex('rgba8unorm');
   const ao = tex('rgba8unorm');
   const normal = tex('rgba8unorm');
   const pieceId = tex('r32uint');
   const jointDistM = tex('r32float');
-  const loss = input.wear
-    ? tex('r32uint')
-    : device.createTexture({ size: [1, 1], format: 'r32uint', usage: OUT_USAGE });
+  // Without wear these are 1×1 placeholders, never read (consumers branch on Wear.enabled).
+  const placeholder = (format: GPUTextureFormat) => device.createTexture({ size: [1, 1], format, usage: OUT_USAGE });
+  const loss = input.wear ? tex('r32uint') : placeholder('r32uint');
+  const border = input.wear ? tex('r32float') : placeholder('r32float');
+  const wearMask = input.wear ? tex('rgba8unorm') : placeholder('rgba8unorm');
 
   const params = paramsBuffer(device, input, outW, outH);
   const rects = rectsBuffer(device, layout, placements);
   const ownStructure = input.structure ? null : continuousStructure(ctx);
   const structure = input.structure ?? ownStructure!;
-  let wearResources: { destroy(): void } | null = null;
+  const wearUniforms = createWearUniforms(device, input.wear, {
+    hasPieces: structure.hasPieces, grainAxis: input.grainAxis ?? null, maskBound: !!input.mask,
+  });
+  const wearResources: { destroy(): void }[] = [];
   try {
     const encoder = device.createCommandEncoder();
 
@@ -244,7 +262,9 @@ export async function composeAtlas(ctx: GpuContext, input: ComposeInput): Promis
     });
     const composeModule = device.createShaderModule({ code: withCommon(composeWgsl) });
     const surfaceLayout = device.createBindGroupLayout({
-      entries: [storageEntry(0, 'rgba8unorm'), storageEntry(1, 'rgba16float'), storageEntry(2, 'r32float')],
+      entries: [
+        storageEntry(0, 'rgba8unorm'), storageEntry(1, 'rgba16float'), storageEntry(2, 'r32float'), storageEntry(8, 'r32float'),
+      ],
     });
     const scalarLayout = device.createBindGroupLayout({
       entries: [storageEntry(3, 'rgba8unorm'), storageEntry(4, 'rgba8unorm'), storageEntry(5, 'rgba8unorm')],
@@ -268,16 +288,20 @@ export async function composeAtlas(ctx: GpuContext, input: ComposeInput): Promis
       pass.dispatchWorkgroups(workgroups(outW), workgroups(outH));
       pass.end();
     };
-    composePass('surface', surfaceLayout, [[0, baseColor], [1, matNormal], [2, height]]);
+    composePass('surface', surfaceLayout, [[0, baseColor], [1, matNormal], [2, height], [8, macroHeight]]);
     composePass('scalars', scalarLayout, [[3, roughness], [4, metallic], [5, ao]]);
     composePass('structure', structureLayout, [[6, pieceId], [7, jointDistM]]);
 
-    // Wear loss. Without wear the pass is skipped and `loss` stays a zeroed 1×1 placeholder.
+    // Wear: loss, border distance and the height composite. Without wear every pass is skipped; `height` and
+    // `macroHeight` stay as composed and loss, border and wearMask stay 1×1 placeholders.
     if (input.wear) {
-      wearResources = encodeWearLoss(device, encoder, {
-        wear: input.wear, params, rects, rectId, pieceId, jointDistM, loss,
-        hasPieces: structure.hasPieces, grainAxis: input.grainAxis ?? null, mask: input.mask,
-      });
+      const wear = wearUniforms.buffer;
+      wearResources.push(encodeWearLoss(device, encoder, {
+        wear, params, rects, rectId, pieceId, jointDistM, loss, mask: input.mask,
+      }));
+      const metresPerPx = layout.widthPx / (pxPerMetre(layout) * resolutionPx);
+      wearResources.push(encodeBorder(device, encoder, { loss, border, bandM: wearUniforms.bandM, metresPerPx }));
+      encodeWearComposite(device, encoder, { params, rects, wear, rectId, loss, border, height, macroHeight, wearMask });
     }
 
     // Pass 3: normal from height combined with the material normal.
@@ -292,6 +316,9 @@ export async function composeAtlas(ctx: GpuContext, input: ComposeInput): Promis
         { binding: 1, resource: height.createView() },
         { binding: 2, resource: matNormal.createView() },
         { binding: 3, resource: normal.createView() },
+        { binding: 4, resource: macroHeight.createView() },
+        { binding: 5, resource: { buffer: wearUniforms.buffer } },
+        { binding: 6, resource: wearMask.createView() },
       ],
     });
     const normalPass = encoder.beginComputePass();
@@ -302,16 +329,20 @@ export async function composeAtlas(ctx: GpuContext, input: ComposeInput): Promis
 
     device.queue.submit([encoder.finish()]);
   } finally {
-    // The 1×1 fallback is bound only by this submit; free it even if encoding throws.
+    // The 1×1 fallback and the wear scratch (JFA seeds) are bound only by this submit; free them even if encoding throws.
     ownStructure?.destroy();
-    wearResources?.destroy();
+    for (const r of wearResources) r.destroy();
+    wearUniforms.buffer.destroy();
   }
   const heightRangeM = await reduceHeightRange(ctx, height);
   params.destroy();
   rects.destroy();
   matNormal.destroy();
 
-  return { baseColor, normal, height, roughness, metallic, ao, rectId, pieceId, jointDistM, loss, heightRangeM };
+  return {
+    baseColor, normal, height, macroHeight, roughness, metallic, ao, rectId, pieceId, jointDistM, loss, border, wearMask,
+    heightRangeM,
+  };
 }
 
 /** Height normalized by heightRangeM into rgba8unorm (grey, A = 255), for export and preview. */
