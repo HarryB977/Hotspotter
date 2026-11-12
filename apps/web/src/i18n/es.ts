@@ -101,8 +101,10 @@ export const es = {
     types: { pieces: 'Piezas', continuous: 'Continuo', directional: 'Direccional' },
     notAnalyzed: 'Sin analizar',
     threshold: 'Umbral',
-    thresholdHint: 'Relieve de junta (1 = enrasado). Vacío = automático',
-    pieces: (n: number) => `${n} piezas`,
+    thresholdHint:
+      'Profundidad mínima de junta, en fracción del relieve (más alto = juntas más finas). Vacío = automático',
+    auto: 'auto',
+    pieces: (n: number) => (n === 1 ? '1 pieza' : `${n} piezas`),
     source: { height: 'desde Height', baseColor: 'desde BaseColor (luminancia invertida)' },
     detect: 'Detectar',
     failed: (msg: string) => `No se pudo analizar la estructura: ${msg}`,

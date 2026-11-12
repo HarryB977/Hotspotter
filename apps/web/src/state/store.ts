@@ -75,8 +75,9 @@ export interface ProjectState {
   /**
    * Analyses the material structure (height, else inverted albedo luma, at <= 512 px), uploads it, and sets the
    * structure node and, unless `periodUserSet`, the proposed period. Discarded if the maps change meanwhile.
+   * `applyPeriod` (the Detectar button, R25) applies the detected period regardless and clears `periodUserSet`.
    */
-  analyze(): Promise<void>;
+  analyze(opts?: { applyPeriod?: boolean }): Promise<void>;
   /** Stores the segmentation threshold (null = automatic) and re-analyses. */
   setStructureThreshold(t: number | null): Promise<void>;
 }
@@ -95,6 +96,9 @@ let importGen = 0;
 
 /** Bumped by imports and by settings changes that re-upload; guards re-uploading updates. */
 let generation = 0;
+
+/** Bumped by settings changes and imports, not by analyses (R26); add-mode imports check it for staleness. */
+let materialRev = 0;
 
 /** Bumped by every analysis request; only the latest may apply its result. */
 let analyzeGen = 0;
@@ -186,6 +190,7 @@ async function addFiles(
   const { files: chosen, normalConvention } = chooseMaps(images.map((f) => f.name));
   const kinds = Object.keys(chosen) as MapKind[];
   const startMaterial = get().material;
+  const startRev = materialRev;
   if (kinds.length === 0 || !startMaterial) {
     importGen++;
     generation++;
@@ -197,7 +202,6 @@ async function addFiles(
   set({ importing: true, importError: null });
   const fresh = new Map<string, ImageBitmap>();
   try {
-    const startGpuMaterial = get().gpuMaterial;
     const current = startMaterial.settings;
     const patch: Partial<MaterialSettings> = { files: { ...current.files, ...chosen } };
     if (chosen.normal) patch.normalConvention = normalConvention;
@@ -212,13 +216,15 @@ async function addFiles(
     }
     const { material, gpuMaterial, doc, sources } = get();
     // A settings change committed during the decode would be overwritten by this add; drop the add instead.
-    if (!material || !gpuMaterial || !doc || material !== startMaterial || gpuMaterial !== startGpuMaterial) {
+    // Analysis commits (period) do not bump materialRev and are kept: settings below merge onto fresh state.
+    if (!material || !gpuMaterial || !doc || materialRev !== startRev) {
       destroyTextures(partial);
       closeAll(fresh);
       set({ importing: false, importError: es.material.addDiscarded });
       return;
     }
     generation++;
+    materialRev++;
     const settings: MaterialSettings = { ...material.settings, ...patch };
     const textures = { ...gpuMaterial.textures };
     for (const [kind, tex] of Object.entries(partial.textures) as [MapKind, GPUTexture][]) {
@@ -344,6 +350,7 @@ export const useProject = create<ProjectState>()((set, get) => ({
         return;
       }
       generation++;
+      materialRev++;
       destroyTextures(get().gpuMaterial);
       closeAll(bitmaps);
       bitmaps = fresh;
@@ -369,7 +376,8 @@ export const useProject = create<ProjectState>()((set, get) => ({
   async updateSettings(patch) {
     const { material, gpu, doc, sources } = get();
     if (!material || !gpu) return;
-    const settings: MaterialSettings = { ...material.settings, ...patch };
+    materialRev++;
+    let settings: MaterialSettings = { ...material.settings, ...patch };
     const reupload =
       patch.files !== undefined ||
       (patch.normalConvention !== undefined && patch.normalConvention !== material.settings.normalConvention);
@@ -390,8 +398,12 @@ export const useProject = create<ProjectState>()((set, get) => ({
         }
         destroyTextures(get().gpuMaterial);
         for (const [k, b] of fresh) bitmaps.set(k, b);
-        next.material = loaded;
-        next.gpuMaterial = gpuMaterial;
+        // Rebuild on the state after the await, so a concurrent analysis commit (period) is not reverted.
+        const now = get();
+        settings = { ...(now.material?.settings ?? material.settings), ...patch };
+        next.doc = now.doc ? withMaterialNode(now.doc, settings) : now.doc;
+        next.material = { settings, images };
+        next.gpuMaterial = { ...gpuMaterial, settings };
         next.importError = null;
       } catch (e) {
         closeAll(fresh);
@@ -435,7 +447,7 @@ export const useProject = create<ProjectState>()((set, get) => ({
     await get().updateSettings(patch);
   },
 
-  async analyze() {
+  async analyze(opts) {
     const mine = ++analyzeGen;
     const startImages = get().material?.images;
     // Let the UI paint before the CPU work; anything committed meanwhile is caught below.
@@ -470,11 +482,13 @@ export const useProject = create<ProjectState>()((set, get) => ({
     let settings = material.settings;
     const p = result.period;
     const cur = settings.period;
-    if (
-      !settings.periodUserSet &&
-      (cur.x !== p.x || cur.y !== p.y || cur.phaseX !== p.phaseX || cur.phaseY !== p.phaseY)
-    ) {
-      settings = { ...settings, period: { ...cur, x: p.x, y: p.y, phaseX: p.phaseX, phaseY: p.phaseY } };
+    const differs = cur.x !== p.x || cur.y !== p.y || cur.phaseX !== p.phaseX || cur.phaseY !== p.phaseY;
+    if (opts?.applyPeriod ? differs || settings.periodUserSet : !settings.periodUserSet && differs) {
+      settings = {
+        ...settings,
+        period: { ...cur, x: p.x, y: p.y, phaseX: p.phaseX, phaseY: p.phaseY },
+        periodUserSet: opts?.applyPeriod ? false : settings.periodUserSet,
+      };
     }
     let nextDoc = settings === material.settings ? doc : withMaterialNode(doc, settings);
     if (node) nextDoc = updateNodeParams(nextDoc, node.id, { type: result.type, analyzed: true });

@@ -172,7 +172,8 @@ test('editing the threshold stores it and re-analyses; Detectar re-runs the anal
   const field = page.getByTestId('structure-threshold');
   const suggested = await page.evaluate(() => window.__hs!.store.getState().structure!.result.suggestedThreshold);
   await expect.poll(async () => Number(await field.inputValue())).toBeCloseTo(suggested, 2);
-  const before = await page.evaluate(() => window.__hs!.store.getState().structure!.result);
+  // Only the count: the full result holds 512² id and distance arrays.
+  const beforeCount = await page.evaluate(() => window.__hs!.store.getState().structure!.result.pieceCount);
   await field.fill('0.995');
   await field.press('Enter');
   await expect.poll(() => page.evaluate(() => {
@@ -181,7 +182,7 @@ test('editing the threshold stores it and re-analyses; Detectar re-runs the anal
     return { threshold: node.threshold, used: s.structure!.result.threshold };
   })).toEqual({ threshold: 0.995, used: 0.995 });
   const after = await page.evaluate(() => window.__hs!.store.getState().structure!.result.pieceCount);
-  expect(after).not.toBe(before.pieceCount);
+  expect(after).not.toBe(beforeCount);
 
   const prev = await page.evaluate(() => {
     (window as unknown as Record<string, unknown>).__prevStructure = window.__hs!.store.getState().structure;
@@ -193,31 +194,92 @@ test('editing the threshold stores it and re-analyses; Detectar re-runs the anal
     window.__hs!.store.getState().structure !== (window as unknown as Record<string, unknown>).__prevStructure)).toBe(true);
 });
 
-test('a user-set period is not overwritten by a later analysis', async ({ page }) => {
+/** Marks the current structure state so a later poll can wait for the next analysis commit. */
+async function markStructure(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    (window as unknown as Record<string, unknown>).__mark = window.__hs!.store.getState().structure;
+  });
+}
+
+async function nextStructure(page: Page): Promise<void> {
+  await expect.poll(() => page.evaluate(() =>
+    window.__hs!.store.getState().structure !== (window as unknown as Record<string, unknown>).__mark)).toBe(true);
+}
+
+const settingsOf = (page: Page) => page.evaluate(() => {
+  const s = window.__hs!.store.getState();
+  return { y: s.material!.settings.period.y, userSet: s.material!.settings.periodUserSet, detectedY: s.structure!.result.period.y };
+});
+
+test('automatic re-analyses keep a user-set period; Detectar resets it to the detected one (R25)', async ({ page }) => {
   await importBricks(page);
   await page.getByLabel(PERIOD_Y).fill('0.2');
   await page.getByLabel(PERIOD_Y).blur();
   await expect.poll(() => page.evaluate(() => window.__hs!.store.getState().material!.settings.periodUserSet)).toBe(true);
+
+  // Automatic re-analysis (threshold edit) respects the flag.
+  await markStructure(page);
+  await page.getByTestId('structure-threshold').fill('0.97');
+  await page.getByTestId('structure-threshold').press('Enter');
+  await nextStructure(page);
+  expect(await settingsOf(page)).toEqual(expect.objectContaining({ y: 0.2, userSet: true }));
+
+  // Detectar applies the detected period and clears the flag.
+  await markStructure(page);
   await page.getByTestId('structure-detect').click();
-  await page.waitForTimeout(300);
-  expect(await page.evaluate(() => window.__hs!.store.getState().material!.settings.period.y)).toBe(0.2);
+  await nextStructure(page);
+  const after = await settingsOf(page);
+  expect(after.userSet).toBe(false);
+  expect(after.detectedY).toBeGreaterThan(0);
+  expect(after.y).toBe(after.detectedY);
 });
 
-test('an analysis is discarded when the material changes while it runs', async ({ page }) => {
+test('focusing and leaving the threshold and period fields commits nothing', async ({ page }) => {
+  await page.goto('/');
+  await page.getByTestId('folder-input').setInputFiles(CONCRETE);
+  await expect(page.getByTestId('structure-type')).toHaveText('Continuo');
+  await page.waitForFunction(() => !!window.__hs?.store.getState().structure);
+  // No joints found: the automatic threshold field is empty.
+  await expect(page.getByTestId('structure-threshold')).toHaveValue('');
+  const docBefore = await page.evaluate(() => window.__hs!.store.getState().doc);
+  for (const field of [page.getByTestId('structure-threshold'), page.getByLabel(PERIOD_Y)]) {
+    await field.focus();
+    await field.blur();
+  }
+  await page.waitForTimeout(200);
+  const r = await page.evaluate((before) => {
+    const s = window.__hs!.store.getState();
+    const node = s.doc!.nodes.find((n) => n.type === 'structure')!.params as { threshold: number | null };
+    return { threshold: node.threshold, userSet: s.material!.settings.periodUserSet ?? false, same: JSON.stringify(s.doc) === JSON.stringify(before) };
+  }, docBefore);
+  expect(r).toEqual({ threshold: null, userSet: false, same: true });
+  await expect(page.getByTestId('structure-type')).toHaveText('Continuo');
+
+  // Same on bricks, whose field shows the suggested threshold: a blur must not pin it.
+  await page.getByTestId('folder-input').setInputFiles(BRICKS);
+  await page.getByTestId('import-replace').click();
+  await expect(page.getByTestId('structure-type')).toHaveText('Piezas');
+  await expect.poll(async () => (await page.getByTestId('structure-threshold').inputValue()) !== '').toBe(true);
+  await page.getByTestId('structure-threshold').focus();
+  await page.getByTestId('structure-threshold').blur();
+  await page.waitForTimeout(200);
+  expect(await page.evaluate(() =>
+    (window.__hs!.store.getState().doc!.nodes.find((n) => n.type === 'structure')!.params as { threshold: number | null }).threshold,
+  )).toBeNull();
+});
+
+test('an analysis is discarded when the material maps change while it runs', async ({ page }) => {
   await importBricks(page);
   const r = await page.evaluate(async () => {
     const store = window.__hs!.store;
     const before = store.getState().structure;
-    // Start an analysis, then replace the material's maps before it commits.
+    // Start an analysis, then swap the maps object without requesting a new analysis.
     const pending = store.getState().analyze();
-    await store.getState().assignMap('bricks_wall_13_height_1k.png', null);
+    const m = store.getState().material!;
+    store.setState({ material: { ...m, images: { ...m.images } } });
     await pending;
-    const s = store.getState();
-    return {
-      replaced: s.structure !== before,
-      // The surviving result is the albedo analysis triggered by the reassignment, not the stale height one.
-      fromCurrent: s.structure?.source === 'baseColor',
-    };
+    return store.getState().structure === before;
   });
-  expect(r).toEqual({ replaced: true, fromCurrent: true });
+  // Without the staleness guard the pending analysis would commit a new structure.
+  expect(r).toBe(true);
 });

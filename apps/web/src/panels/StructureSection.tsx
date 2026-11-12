@@ -17,8 +17,9 @@ export function StructureSection() {
   const setThreshold = useProject((s) => s.setStructureThreshold);
   if (!node || !hasMaterial) return null;
   const r = structure?.result;
-  // Automatic threshold: show the analysis' suggestion (on the joint relief scale) as the field's value.
-  const shown = node.threshold ?? r?.suggestedThreshold ?? null;
+  // Automatic threshold: show the threshold the analysis segmented with; empty ("auto") when it found no joints.
+  const auto = r && r.threshold > 0 ? r.suggestedThreshold : null;
+  const shown = node.threshold ?? auto;
 
   return (
     <Section title={es.structure.title}>
@@ -38,10 +39,11 @@ export function StructureSection() {
           aria-label={es.structure.threshold}
           title={es.structure.thresholdHint}
           data-testid="structure-threshold"
+          placeholder={es.structure.auto}
           value={shown === null ? null : Math.round(shown * 1000) / 1000}
           onCommit={(v) => (v === null || (v > 0 && v <= 1)) && void setThreshold(v)}
         />
-        <Button size="sm" data-testid="structure-detect" onClick={() => void analyze()}>
+        <Button size="sm" data-testid="structure-detect" onClick={() => void analyze({ applyPeriod: true })}>
           <ScanSearch className="h-3 w-3" />
           {es.structure.detect}
         </Button>

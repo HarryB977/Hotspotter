@@ -56,19 +56,19 @@ interface NumFieldProps extends Omit<InputHTMLAttributes<HTMLInputElement>, 'val
   nullable?: boolean;
 }
 
-/** Text field that edits a number locally and commits on blur or Enter. */
+/** Text field that edits a number locally and commits on blur or Enter, only when the value changed. */
 export function NumField({ value, onCommit, nullable, className, ...rest }: NumFieldProps) {
   const [text, setText] = useState(value === null ? '' : String(value));
   useEffect(() => setText(value === null ? '' : String(value)), [value]);
   const commit = () => {
     const t = text.trim().replace(',', '.');
     if (t === '') {
-      if (nullable) onCommit(null);
+      if (nullable && value !== null) onCommit(null);
       else setText(value === null ? '' : String(value));
       return;
     }
     const n = Number(t);
-    if (Number.isFinite(n)) onCommit(n);
+    if (Number.isFinite(n) && n !== value) onCommit(n);
     else setText(value === null ? '' : String(value));
   };
   return (
@@ -150,8 +150,9 @@ export function MaterialPanel() {
 
   const setPeriod = (patch: Partial<MaterialPeriod>) => {
     if (!s) return;
-    // Editing the period itself (not the cut flags) stops the structure analysis from proposing one.
-    const userSet = s.periodUserSet === true || ['x', 'y', 'phaseX', 'phaseY'].some((k) => k in patch);
+    // Changing the period itself (not the cut flags) stops automatic analyses from proposing one.
+    const keys = ['x', 'y', 'phaseX', 'phaseY'] as const;
+    const userSet = s.periodUserSet === true || keys.some((k) => k in patch && patch[k] !== s.period[k]);
     void updateSettings({ period: { ...s.period, ...patch }, periodUserSet: userSet });
   };
 

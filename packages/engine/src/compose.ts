@@ -182,101 +182,105 @@ export async function composeAtlas(ctx: GpuContext, input: ComposeInput): Promis
   const normal = tex('rgba8unorm');
   const pieceId = tex('r32uint');
   const jointDistM = tex('r32float');
-  const ownStructure = input.structure ? null : continuousStructure(ctx);
-  const structure = input.structure ?? ownStructure!;
 
   const params = paramsBuffer(device, input, outW, outH);
   const rects = rectsBuffer(device, layout, placements);
-  const encoder = device.createCommandEncoder();
+  const ownStructure = input.structure ? null : continuousStructure(ctx);
+  const structure = input.structure ?? ownStructure!;
+  try {
+    const encoder = device.createCommandEncoder();
 
-  // Pass 1: rect ids.
-  renderRectIds(device, encoder, rectId, params, rects, layout.rects.length);
+    // Pass 1: rect ids.
+    renderRectIds(device, encoder, rectId, params, rects, layout.rects.length);
 
-  // Pass 2: material sampling and groove profile.
-  const tx = { sampleType: 'float' as const };
-  const inputLayout = device.createBindGroupLayout({
-    entries: [
-      { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
-      { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
-      { binding: 2, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'uint' } },
-      { binding: 3, visibility: GPUShaderStage.COMPUTE, sampler: { type: 'filtering' } },
-      ...[4, 5, 6, 7, 8, 9].map((binding) => ({ binding, visibility: GPUShaderStage.COMPUTE, texture: tx })),
-      { binding: 10, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'uint' } },
-      { binding: 11, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-    ],
-  });
-  const t = material.textures;
-  const inputs = device.createBindGroup({
-    layout: inputLayout,
-    entries: [
-      { binding: 0, resource: { buffer: params } },
-      { binding: 1, resource: { buffer: rects } },
-      { binding: 2, resource: rectId.createView() },
-      {
-        binding: 3,
-        resource: device.createSampler({
-          addressModeU: 'repeat', addressModeV: 'repeat', magFilter: 'linear', minFilter: 'linear',
-        }),
-      },
-      ...[t.baseColor, t.normal, t.height, t.roughness, t.metallic, t.ao].map((m, i) => ({
-        binding: 4 + i, resource: m.createView(),
-      })),
-      { binding: 10, resource: structure.pieceId.createView() },
-      { binding: 11, resource: structure.jointDistM.createView() },
-    ],
-  });
-  const composeModule = device.createShaderModule({ code: withCommon(composeWgsl) });
-  const surfaceLayout = device.createBindGroupLayout({
-    entries: [storageEntry(0, 'rgba8unorm'), storageEntry(1, 'rgba16float'), storageEntry(2, 'r32float')],
-  });
-  const scalarLayout = device.createBindGroupLayout({
-    entries: [storageEntry(3, 'rgba8unorm'), storageEntry(4, 'rgba8unorm'), storageEntry(5, 'rgba8unorm')],
-  });
-  const structureLayout = device.createBindGroupLayout({
-    entries: [storageEntry(6, 'r32uint'), storageEntry(7, 'r32float')],
-  });
-  const composePass = (entryPoint: string, outLayout: GPUBindGroupLayout, outs: [number, GPUTexture][]) => {
-    const pipeline = device.createComputePipeline({
-      layout: device.createPipelineLayout({ bindGroupLayouts: [inputLayout, outLayout] }),
-      compute: { module: composeModule, entryPoint },
+    // Pass 2: material sampling and groove profile.
+    const tx = { sampleType: 'float' as const };
+    const inputLayout = device.createBindGroupLayout({
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 2, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'uint' } },
+        { binding: 3, visibility: GPUShaderStage.COMPUTE, sampler: { type: 'filtering' } },
+        ...[4, 5, 6, 7, 8, 9].map((binding) => ({ binding, visibility: GPUShaderStage.COMPUTE, texture: tx })),
+        { binding: 10, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'uint' } },
+        { binding: 11, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
+      ],
     });
-    const outGroup = device.createBindGroup({
-      layout: outLayout,
-      entries: outs.map(([binding, target]) => ({ binding, resource: target.createView() })),
+    const t = material.textures;
+    const inputs = device.createBindGroup({
+      layout: inputLayout,
+      entries: [
+        { binding: 0, resource: { buffer: params } },
+        { binding: 1, resource: { buffer: rects } },
+        { binding: 2, resource: rectId.createView() },
+        {
+          binding: 3,
+          resource: device.createSampler({
+            addressModeU: 'repeat', addressModeV: 'repeat', magFilter: 'linear', minFilter: 'linear',
+          }),
+        },
+        ...[t.baseColor, t.normal, t.height, t.roughness, t.metallic, t.ao].map((m, i) => ({
+          binding: 4 + i, resource: m.createView(),
+        })),
+        { binding: 10, resource: structure.pieceId.createView() },
+        { binding: 11, resource: structure.jointDistM.createView() },
+      ],
     });
-    const pass = encoder.beginComputePass();
-    pass.setPipeline(pipeline);
-    pass.setBindGroup(0, inputs);
-    pass.setBindGroup(1, outGroup);
-    pass.dispatchWorkgroups(workgroups(outW), workgroups(outH));
-    pass.end();
-  };
-  composePass('surface', surfaceLayout, [[0, baseColor], [1, matNormal], [2, height]]);
-  composePass('scalars', scalarLayout, [[3, roughness], [4, metallic], [5, ao]]);
-  composePass('structure', structureLayout, [[6, pieceId], [7, jointDistM]]);
+    const composeModule = device.createShaderModule({ code: withCommon(composeWgsl) });
+    const surfaceLayout = device.createBindGroupLayout({
+      entries: [storageEntry(0, 'rgba8unorm'), storageEntry(1, 'rgba16float'), storageEntry(2, 'r32float')],
+    });
+    const scalarLayout = device.createBindGroupLayout({
+      entries: [storageEntry(3, 'rgba8unorm'), storageEntry(4, 'rgba8unorm'), storageEntry(5, 'rgba8unorm')],
+    });
+    const structureLayout = device.createBindGroupLayout({
+      entries: [storageEntry(6, 'r32uint'), storageEntry(7, 'r32float')],
+    });
+    const composePass = (entryPoint: string, outLayout: GPUBindGroupLayout, outs: [number, GPUTexture][]) => {
+      const pipeline = device.createComputePipeline({
+        layout: device.createPipelineLayout({ bindGroupLayouts: [inputLayout, outLayout] }),
+        compute: { module: composeModule, entryPoint },
+      });
+      const outGroup = device.createBindGroup({
+        layout: outLayout,
+        entries: outs.map(([binding, target]) => ({ binding, resource: target.createView() })),
+      });
+      const pass = encoder.beginComputePass();
+      pass.setPipeline(pipeline);
+      pass.setBindGroup(0, inputs);
+      pass.setBindGroup(1, outGroup);
+      pass.dispatchWorkgroups(workgroups(outW), workgroups(outH));
+      pass.end();
+    };
+    composePass('surface', surfaceLayout, [[0, baseColor], [1, matNormal], [2, height]]);
+    composePass('scalars', scalarLayout, [[3, roughness], [4, metallic], [5, ao]]);
+    composePass('structure', structureLayout, [[6, pieceId], [7, jointDistM]]);
 
-  // Pass 3: normal from height combined with the material normal.
-  const normalPipeline = device.createComputePipeline({
-    layout: 'auto',
-    compute: { module: device.createShaderModule({ code: withCommon(normalFromHeightWgsl) }), entryPoint: 'main' },
-  });
-  const normalGroup = device.createBindGroup({
-    layout: normalPipeline.getBindGroupLayout(0),
-    entries: [
-      { binding: 0, resource: { buffer: params } },
-      { binding: 1, resource: height.createView() },
-      { binding: 2, resource: matNormal.createView() },
-      { binding: 3, resource: normal.createView() },
-    ],
-  });
-  const normalPass = encoder.beginComputePass();
-  normalPass.setPipeline(normalPipeline);
-  normalPass.setBindGroup(0, normalGroup);
-  normalPass.dispatchWorkgroups(workgroups(outW), workgroups(outH));
-  normalPass.end();
+    // Pass 3: normal from height combined with the material normal.
+    const normalPipeline = device.createComputePipeline({
+      layout: 'auto',
+      compute: { module: device.createShaderModule({ code: withCommon(normalFromHeightWgsl) }), entryPoint: 'main' },
+    });
+    const normalGroup = device.createBindGroup({
+      layout: normalPipeline.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: params } },
+        { binding: 1, resource: height.createView() },
+        { binding: 2, resource: matNormal.createView() },
+        { binding: 3, resource: normal.createView() },
+      ],
+    });
+    const normalPass = encoder.beginComputePass();
+    normalPass.setPipeline(normalPipeline);
+    normalPass.setBindGroup(0, normalGroup);
+    normalPass.dispatchWorkgroups(workgroups(outW), workgroups(outH));
+    normalPass.end();
 
-  device.queue.submit([encoder.finish()]);
-  ownStructure?.destroy();
+    device.queue.submit([encoder.finish()]);
+  } finally {
+    // The 1×1 fallback is bound only by this submit; free it even if encoding throws.
+    ownStructure?.destroy();
+  }
   const heightRangeM = await reduceHeightRange(ctx, height);
   params.destroy();
   rects.destroy();
