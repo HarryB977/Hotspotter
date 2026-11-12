@@ -51,7 +51,7 @@ describe('project document', () => {
 
   it('applies the output groove to the resolved layout', () => {
     let doc = createDefaultDoc(material);
-    doc = updateNodeParams<'output'>(doc, 'output', { groove: { widthM: 0.01, depthM: 0.002, profile: 'round' } });
+    doc = updateNodeParams<'output'>(doc, 'output', { groove: { widthM: 0.01, bevelM: 0.005, depthM: 0.002, profile: 'round' } });
     expect(resolveLayout(doc).groove.profile).toBe('round');
   });
 

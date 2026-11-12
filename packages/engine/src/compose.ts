@@ -1,7 +1,8 @@
 import { pxPerMetre } from '@hotspotter/core';
-import type { GrooveProfile, HotspotLayout, RectPlacement } from '@hotspotter/core';
+import type { HotspotLayout, RectPlacement } from '@hotspotter/core';
 import type { GpuContext } from './gpu';
 import type { GpuMaterial } from './material';
+import { PARAMS_BYTES, packParams, withCommon } from './params';
 import rectIdWgsl from './shaders/rectId.wgsl?raw';
 import composeWgsl from './shaders/compose.wgsl?raw';
 import normalFromHeightWgsl from './shaders/normalFromHeight.wgsl?raw';
@@ -30,8 +31,6 @@ export interface AtlasMaps {
 
 const MAX_RECTS = 256;
 
-const PROFILE_CODE: Record<GrooveProfile, number> = { bevel: 0, round: 1, step: 2, none: 3 };
-const PARAMS_BYTES = 64;
 const RECT_BYTES = 32;
 
 const OUT_USAGE =
@@ -44,22 +43,19 @@ function workgroups(n: number): number {
 function paramsBuffer(device: GPUDevice, input: ComposeInput, outW: number, outH: number): GPUBuffer {
   const { layout, material } = input;
   const s = material.settings;
-  const data = new ArrayBuffer(PARAMS_BYTES);
-  const f = new Float32Array(data);
-  const u = new Uint32Array(data);
-  f[0] = outW;
-  f[1] = outH;
-  f[2] = input.resolutionPx / layout.widthPx;
-  f[3] = pxPerMetre(layout);
-  f[4] = s.tileSizeM[0];
-  f[5] = s.tileSizeM[1];
-  f[6] = s.heightScaleM;
-  f[7] = layout.groove.widthM;
-  f[8] = layout.groove.depthM;
-  u[9] = PROFILE_CODE[layout.groove.profile];
-  u[10] = s.roughnessIsGloss ? 1 : 0;
-  f[11] = layout.heightPx;
-  u[12] = material.hasNormalMap ? 1 : 0;
+  const data = packParams({
+    outW,
+    outH,
+    refScale: input.resolutionPx / layout.widthPx,
+    ppmRef: pxPerMetre(layout),
+    tileSizeM: s.tileSizeM,
+    heightScaleM: s.heightScaleM,
+    groove: layout.groove,
+    roughnessIsGloss: s.roughnessIsGloss,
+    refHeightPx: layout.heightPx,
+    sobelMacro: material.hasNormalMap,
+    seed: 0,
+  });
   const buf = device.createBuffer({ size: PARAMS_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   device.queue.writeBuffer(buf, 0, data);
   return buf;
@@ -87,7 +83,7 @@ function renderRectIds(
   device: GPUDevice, encoder: GPUCommandEncoder, target: GPUTexture,
   params: GPUBuffer, rects: GPUBuffer, count: number,
 ): void {
-  const module = device.createShaderModule({ code: rectIdWgsl });
+  const module = device.createShaderModule({ code: withCommon(rectIdWgsl) });
   const pipeline = device.createRenderPipeline({
     layout: 'auto',
     vertex: { module, entryPoint: 'vs' },
@@ -213,7 +209,7 @@ export async function composeAtlas(ctx: GpuContext, input: ComposeInput): Promis
       })),
     ],
   });
-  const composeModule = device.createShaderModule({ code: composeWgsl });
+  const composeModule = device.createShaderModule({ code: withCommon(composeWgsl) });
   const surfaceLayout = device.createBindGroupLayout({
     entries: [storageEntry(0, 'rgba8unorm'), storageEntry(1, 'rgba16float'), storageEntry(2, 'r32float')],
   });
@@ -242,7 +238,7 @@ export async function composeAtlas(ctx: GpuContext, input: ComposeInput): Promis
   // Pass 3: normal from height combined with the material normal.
   const normalPipeline = device.createComputePipeline({
     layout: 'auto',
-    compute: { module: device.createShaderModule({ code: normalFromHeightWgsl }), entryPoint: 'main' },
+    compute: { module: device.createShaderModule({ code: withCommon(normalFromHeightWgsl) }), entryPoint: 'main' },
   });
   const normalGroup = device.createBindGroup({
     layout: normalPipeline.getBindGroupLayout(0),

@@ -124,7 +124,8 @@ export function resolveLayout(d: ProjectDoc, opts?: { widthPx?: number }): Hotsp
   const base = layout.mode === 'preset'
     ? presetLayout(layout.preset, widthPx, worldWidthM)
     : autoLayout({ target: layout.target, widthPx, worldWidthM, period: material.period, seed: layout.seed });
-  return { ...base, groove: { ...output.groove } };
+  // Documents saved before bevelM existed bevelled widthM / 2.
+  return { ...base, groove: { ...output.groove, bevelM: output.groove.bevelM ?? output.groove.widthM / 2 } };
 }
 
 export interface ComposeInputs {

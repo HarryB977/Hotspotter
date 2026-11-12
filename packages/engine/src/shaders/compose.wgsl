@@ -2,20 +2,6 @@
 // Two entry points share the mapping; they are split only to stay within the
 // default limit of 4 storage textures per shader stage.
 
-struct Params {
-  outSize: vec2<f32>,      // output texture size, px
-  refScale: f32,           // output px per reference (layout) px
-  ppmRef: f32,             // reference px per metre
-  tileSizeM: vec2<f32>,
-  heightScaleM: f32,
-  grooveWidthM: f32,
-  grooveDepthM: f32,
-  profile: u32,            // 0 bevel, 1 round, 2 step, 3 none
-  roughnessIsGloss: u32,
-  refHeightPx: f32,        // layout height in reference px
-  sobelMacro: u32,         // 1: Sobel on the macro height (matNormal.a), the material has a normal map
-}
-
 struct Rect {
   rect: vec4<f32>,         // x, y, w, h in reference px, top-left origin
   originM: vec2<f32>,
@@ -80,14 +66,15 @@ fn pixel(p: vec2<u32>) -> Pixel {
     let r = pl.rect;
     m = atlasPxToMaterialM(r, pl.originM, pl.rotate90, px);
     out.rotate90 = pl.rotate90;
-    // d: distance to the groove (the shrunk rect edge), normalized over widthM / 2.
+    // d: distance from the groove floor edge (the shrunk rect edge), normalized over bevelM.
     let half = 0.5 * P.grooveWidthM * P.ppmRef;
+    let bevelPx = P.bevelM * P.ppmRef;
     let edgePx = min(
       min(px.x - (r.x + half), (r.x + r.z - half) - px.x),
       min(px.y - (r.y + half), (r.y + r.w - half) - px.y),
     );
-    if (P.grooveWidthM > 0.0) {
-      out.prof = profile(clamp(edgePx / half, 0.0, 1.0));
+    if (P.grooveWidthM > 0.0 && bevelPx > 0.0) {
+      out.prof = profile(clamp(edgePx / bevelPx, 0.0, 1.0));
     } else {
       out.prof = 0.0;
     }

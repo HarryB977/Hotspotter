@@ -10,7 +10,7 @@ function layoutWith(h: number): HotspotLayout {
     heightPx: 512,
     worldWidthM: 1,
     rects: [makeRect({ id: 'a', x: 0, y: 0, w: 100, h })],
-    groove: { widthM: 0.006, depthM: 0.004, profile: 'bevel' },
+    groove: { widthM: 0.006, bevelM: 0.003, depthM: 0.004, profile: 'bevel' },
   };
 }
 

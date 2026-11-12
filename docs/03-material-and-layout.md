@@ -62,4 +62,4 @@ Como en Source 2 (`concrete_painted_white_hs05a/b/c`, `_blue`…), un proyecto p
 
 ### Juntas entre rectángulos
 
-El espacio entre rectángulos (la "ranura") tiene ancho, profundidad y perfil configurables (bisel recto, redondeado, escalón, sin ranura). Por defecto la ranura es oscura y hundida para que Anvil detecte los rectángulos automáticamente.
+El espacio entre rectángulos (la "ranura") tiene ancho del fondo plano (centrado en el borde compartido), ancho de bisel (dentro de cada rectángulo, 3 mm por defecto), profundidad y perfil configurables (bisel recto, redondeado, escalón, sin ranura). Por defecto la ranura es oscura y hundida para que Anvil detecte los rectángulos automáticamente.

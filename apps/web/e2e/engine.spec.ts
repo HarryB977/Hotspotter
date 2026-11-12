@@ -46,7 +46,7 @@ test('createConstTexture returns the constant color', async ({ page }) => {
 // ---------------------------------------------------------------------------
 // Atlas composition (Task 11)
 // Layout: two 256x512 rects side by side in a 512x512 atlas, 1 m wide
-// (512 px/m), groove 0.02 m wide. Albedo: 128x128 checkerboard of 8x8 cells
+// (512 px/m), groove floor 0.02 m wide, bevel 0.01 m inside each rect. Albedo: 128x128 checkerboard of 8x8 cells
 // (16 px each), tileSizeM [1, 1], so one cell = 0.125 m = 64 atlas px.
 // Cell colour: R = checker (0/255), G = column * 32, B = row-from-bottom * 32.
 // ---------------------------------------------------------------------------
@@ -112,7 +112,7 @@ test.describe('composeAtlas', () => {
               core.makeRect({ id: 'a', x: 0, y: 0, w: 256, h: 512 }),
               core.makeRect({ id: 'b', x: 256, y: 0, w: 256, h: 512 }),
             ],
-            groove: { widthM: 0.02, depthM, profile: 'bevel' as const },
+            groove: { widthM: 0.02, bevelM: 0.01, depthM, profile: 'bevel' as const },
           };
           const images: Partial<Record<'baseColor' | 'normal' | 'height', ImageBitmap>> = {
             baseColor: await bitmap(128, 128, checker),
@@ -209,6 +209,19 @@ test.describe('composeAtlas', () => {
     expect(r.centreH - r.grooveH).toBeGreaterThanOrEqual(0.9 * DEPTH_M);
     expect(r.range[0]).toBeCloseTo(-DEPTH_M, 6);
     expect(r.range[1]).toBeCloseTo(0, 3); // default height byte 128 is 0.502, not 0.5
+  });
+
+  test('groove floor is widthM wide and the bevel spans bevelM inside the rect', async ({ page }) => {
+    const r = await page.evaluate(async () => {
+      const m = await window.__t11!.compose({});
+      const h = (x: number) => m.height[256 * m.w + x];
+      // Floor edge of rect a at 256 - 5.12 px; the bevel ends 5.12 px further in.
+      return { floor: [h(251), h(256), h(260)], mid: h(248), outside: h(244) };
+    });
+    for (const v of r.floor) expect(Math.abs(v + DEPTH_M)).toBeLessThan(2e-4);
+    // Pixel centre 248.5: d = (250.88 - 248.5) / 5.12 = 0.465, linear profile.
+    expect(Math.abs(r.mid + DEPTH_M * 0.535)).toBeLessThan(2e-4);
+    expect(Math.abs(r.outside)).toBeLessThan(2e-4);
   });
 
   test('heightToRgba8 normalizes height by heightRangeM', async ({ page }) => {

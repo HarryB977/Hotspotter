@@ -7,7 +7,7 @@ import type { MaterialPeriod } from '../src/period';
 
 const layout: HotspotLayout = {
   version: 1, widthPx: 2048, heightPx: 2048, worldWidthM: 4,
-  groove: { widthM: 0.006, depthM: 0.004, profile: 'bevel' },
+  groove: { widthM: 0.006, bevelM: 0.003, depthM: 0.004, profile: 'bevel' },
   rects: [
     makeRect({ id: 'a', x: 0, y: 0, w: 1024, h: 512, allowRotation: true }),
     makeRect({ id: 'b', x: 1024, y: 0, w: 1024, h: 512, allowRotation: true }),

@@ -5,20 +5,6 @@
 // matNormal.a; otherwise it runs on the full height.
 // Output is OpenGL convention: +X right, +Y up (image rows grow downwards).
 
-struct Params {
-  outSize: vec2<f32>,
-  refScale: f32,
-  ppmRef: f32,
-  tileSizeM: vec2<f32>,
-  heightScaleM: f32,
-  grooveWidthM: f32,
-  grooveDepthM: f32,
-  profile: u32,
-  roughnessIsGloss: u32,
-  refHeightPx: f32,
-  sobelMacro: u32,         // 1: Sobel on the macro height (matNormal.a), the material has a normal map
-}
-
 @group(0) @binding(0) var<uniform> P: Params;
 @group(0) @binding(1) var heightTex: texture_2d<f32>;
 @group(0) @binding(2) var matNormalTex: texture_2d<f32>;

@@ -76,8 +76,7 @@ export const es = {
     placementSeed: 'Seed de colocación',
     groove: 'Ranura',
     grooveWidth: 'Fondo de ranura (mm)',
-    grooveWidthHint:
-      'Ancho del fondo plano de la ranura. El bisel añade la mitad de este ancho a cada lado, dentro del rectángulo.',
+    grooveBevel: 'Bisel (mm)',
     grooveDepth: 'Profundidad (mm)',
     grooveProfile: 'Perfil',
     profiles: { bevel: 'Bisel', round: 'Redondo', step: 'Escalón', none: 'Ninguno' },

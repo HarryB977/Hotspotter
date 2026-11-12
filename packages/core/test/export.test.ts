@@ -31,6 +31,12 @@ describe('hotspot.json', () => {
   it('round-trips the layout', () => {
     expect(parseHotspotJson(toHotspotJson(layout, meta))).toEqual(layout);
   });
+  it('falls back to widthM / 2 when bevelM is absent', () => {
+    const j = JSON.parse(toHotspotJson(layout, meta));
+    expect(j.groove.bevelM).toBe(DEFAULT_GROOVE.bevelM);
+    delete j.groove.bevelM;
+    expect(parseHotspotJson(JSON.stringify(j)).groove.bevelM).toBe(DEFAULT_GROOVE.widthM / 2);
+  });
   it('rejects other versions', () => {
     const j = JSON.parse(toHotspotJson(layout, meta));
     j.version = 2;

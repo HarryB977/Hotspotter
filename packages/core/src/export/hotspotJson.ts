@@ -54,6 +54,7 @@ export function parseHotspotJson(s: string): HotspotLayout {
     heightPx: j.atlas.heightPx,
     worldWidthM: j.atlas.worldWidthM,
     rects,
-    groove: j.groove,
+    // Older documents have no bevelM; they bevelled widthM / 2.
+    groove: { ...j.groove, bevelM: j.groove.bevelM ?? j.groove.widthM / 2 },
   };
 }

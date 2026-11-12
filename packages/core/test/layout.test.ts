@@ -50,6 +50,12 @@ describe('validateLayout', () => {
   });
 });
 
+describe('groove defaults', () => {
+  it('has a separate 3 mm bevel', () => {
+    expect(DEFAULT_GROOVE.bevelM).toBe(0.003);
+  });
+});
+
 describe('metrics', () => {
   it('pxPerMetre is 512 for 4096 px over 8 m', () => {
     expect(pxPerMetre(layout([], 4096, 4096))).toBe(512);

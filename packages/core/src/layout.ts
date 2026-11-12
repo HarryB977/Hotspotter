@@ -20,7 +20,10 @@ export interface HotspotRect {
 export type GrooveProfile = 'bevel' | 'round' | 'step' | 'none';
 
 export interface GrooveSettings {
+  /** Flat groove floor, centred on the edge shared by two rects. */
   widthM: number;
+  /** Bevel width inside each rect, measured from the floor edge. */
+  bevelM: number;
   depthM: number;
   profile: GrooveProfile;
 }
@@ -34,7 +37,7 @@ export interface HotspotLayout {
   groove: GrooveSettings;
 }
 
-export const DEFAULT_GROOVE: GrooveSettings = { widthM: 0.006, depthM: 0.004, profile: 'bevel' };
+export const DEFAULT_GROOVE: GrooveSettings = { widthM: 0.006, bevelM: 0.003, depthM: 0.004, profile: 'bevel' };
 
 const MIN_RECT_PX = 4;
 
