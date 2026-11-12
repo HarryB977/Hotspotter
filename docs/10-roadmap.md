@@ -9,4 +9,13 @@ Decidido con el usuario: las funcionalidades se reparten en versiones usables. E
 | **v0.3** | **IA local**: gestor de modelos, sidecar, generar tileable desde cero, inpainting de bordes | Crear sin tener material de partida |
 | **v0.4** | **Vista de nodos** y nodos avanzados | Control total para artistas |
 
+## Pendiente tras probar la v0.1-A (2026-11-12)
+
+Lo encontró el usuario al probar la v0.1-A. Entra en la v0.1 (plan v0.1-B):
+
+- **Importar archivos sueltos**: botón de selección múltiple además del de carpeta, y elegir entre **añadir** al material actual o **reemplazarlo** (ver [03](03-material-and-layout.md#importar-un-material)).
+- **Orientación del material**: rotación base y regla por rectángulo (fija o seguir el eje largo), con el periodo girado en el arranque en junta y en las comprobaciones (ver [03](03-material-and-layout.md#escala-y-proporciones-regla-dura)). Hace falta para que las tablas casen con jambas y dinteles.
+
+La exportación para Blender/Maya, Unreal y Source 2 ya estaba prevista en la v0.2. En la v0.1 solo están Unity y Anvil porque son el destino prioritario.
+
 Aunque la vista de nodos llega en la v0.4, el documento es un grafo desde la v0.1 (ver [02-architecture.md](02-architecture.md)). Así la pila nunca hay que reescribirla.

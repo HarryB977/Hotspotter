@@ -1,0 +1,13 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html, body, #root { height: 100%; }
+  body {
+    @apply bg-zinc-950 text-zinc-200 text-base antialiased;
+    font-variant-numeric: tabular-nums;
+    overflow: hidden;
+  }
+  * { scrollbar-width: thin; scrollbar-color: theme('colors.zinc.700') transparent; }
+}

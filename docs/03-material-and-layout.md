@@ -2,7 +2,7 @@
 
 ## Importar un material
 
-- Se arrastran archivos o una carpeta. Los mapas se reconocen por sufijos habituales (`_albedo`, `_basecolor`, `_diff`, `_nor_gl`, `_normal_dx`, `_rough`, `_metal`, `_ao`, `_height`, `_disp`, `_opacity`…) y el usuario puede corregir la asignación.
+- Se arrastran archivos o una carpeta, o se eligen con dos botones: **carpeta** y **archivos** (selección múltiple de imágenes sueltas). Si ya hay un material cargado, la herramienta pregunta si los archivos nuevos **reemplazan** el material o **se añaden** a él, por ejemplo para completar un AO que faltaba o sustituir un mapa concreto. Los mapas se reconocen por sufijos habituales (`_albedo`, `_basecolor`, `_diff`, `_nor_gl`, `_normal_dx`, `_rough`, `_metal`, `_ao`, `_height`, `_disp`, `_opacity`…) y el usuario puede corregir la asignación.
 - Hay que indicar o confirmar: convención de normal (OpenGL / DirectX), si roughness es en realidad gloss o smoothness (y entonces se invierte), espacio de color de cada mapa y **tamaño real** que cubre una repetición (en metros).
 - Si falta un mapa, se deriva: height a partir de normal o luminancia, normal a partir de height, AO a partir de height, y valores constantes de roughness/metallic editables.
 - Formatos: PNG, JPG, TGA, TIFF (8/16 bits) y EXR para height.
@@ -25,6 +25,14 @@ Un material continuo no tiene piezas; su "estructura" es solo la dirección domi
 - En materiales con piezas o por bandas, cada rectángulo arranca en una junta (o en la línea de banda) en el lado que se elija (por defecto, abajo a la izquierda).
 - Si la medida de un rectángulo no es múltiplo del periodo del material en un eje donde importa, la herramienta lo marca. Puede **ajustarlo** al múltiplo más cercano (opción por defecto en layouts automáticos) o **avisar** sin tocarlo (opción por defecto en layouts manuales). Una pieza cortada por el borde del rectángulo se permite solo en el eje donde el usuario lo acepta, por ejemplo ladrillos cortados en vertical pero hiladas siempre enteras.
 - **Bandas** (pared pintada a dos colores, zócalos): una banda es una franja horizontal a una altura del mundo fija, medida desde el borde inferior del rectángulo. Es un nodo propio que compone dos materiales o dos tintes con una línea de transición (recta, irregular o con moldura) y que respeta esa altura en todos los rectángulos lo bastante altos.
+- **Orientación del material** (pedido por el usuario tras probar `wood_planks_12` con el preset Marcos): las tablas de madera deben seguir la dirección de la pieza del layout. En una jamba van en vertical; en un dintel o un alféizar, en horizontal. El material tiene:
+  - **Rotación base** de 0° o 90°, para que la textura de entrada se lea en la dirección correcta.
+  - **Regla por rectángulo**:
+    - *Fija*: todos los rectángulos usan la misma orientación. Es lo correcto en ladrillo, donde las hiladas siempre van en horizontal.
+    - *Seguir el eje largo*: la veta o las tablas van a lo largo del lado mayor de cada rectángulo. Es la opción por defecto en materiales direccionales.
+    - *Por rectángulo*: se elige rectángulo a rectángulo, en el layout manual.
+
+  Al girar un material con periodo se intercambian sus ejes (periodo X ↔ Y, fase y "permitir corte"). El arranque en junta y las comprobaciones de proporción se hacen con el periodo ya girado, así que también funcionan con periodos no cuadrados.
 - **Variación** por rectángulo: cada rectángulo puede tomar un desplazamiento distinto del material (múltiplo del periodo, para no romper las juntas) y girar 90° si el rectángulo y el material lo permiten. Un valor 0–1 controla cuánto.
 
 ## Layouts
