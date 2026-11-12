@@ -7,5 +7,5 @@ export { composeAtlas, heightToRgba8 } from './compose';
 export type { ComposeInput, AtlasMaps } from './compose';
 export { uploadStructure } from './structure';
 export type { GpuStructure } from './structure';
-export { packParams } from './params';
+export { packParams, withCommon } from './params';
 export type { ParamsInput } from './params';
