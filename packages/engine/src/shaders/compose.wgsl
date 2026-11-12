@@ -73,7 +73,7 @@ fn pixel(p: vec2<u32>) -> Pixel {
       min(px.x - (r.x + half), (r.x + r.z - half) - px.x),
       min(px.y - (r.y + half), (r.y + r.w - half) - px.y),
     );
-    if (P.grooveWidthM > 0.0 && bevelPx > 0.0) {
+    if (bevelPx > 0.0) {
       out.prof = profile(clamp(edgePx / bevelPx, 0.0, 1.0));
     } else {
       out.prof = 0.0;

@@ -24,6 +24,16 @@ describe('project document', () => {
     expect(parseDoc(serializeDoc(doc))).toEqual(doc);
   });
 
+  it('migrates a groove without bevelM to widthM / 2', () => {
+    const doc = createDefaultDoc(material);
+    const json = JSON.parse(serializeDoc(doc));
+    const g = json.nodes.find((n: { type: string }) => n.type === 'output').params.groove;
+    g.widthM = 0.01;
+    delete g.bevelM;
+    const out = parseDoc(JSON.stringify(json));
+    expect(resolveLayout(out).groove.bevelM).toBe(0.005);
+  });
+
   it('rejects bad versions and shapes with DocParseError', () => {
     expect(() => parseDoc('{"version":2}')).toThrow(DocParseError);
     expect(() => parseDoc('not json')).toThrow(DocParseError);

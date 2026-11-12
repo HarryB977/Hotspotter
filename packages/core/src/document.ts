@@ -76,6 +76,11 @@ export function parseDoc(s: string): ProjectDoc {
     }
     if (!ids.has(e.from) || !ids.has(e.to)) throw new DocParseError('Edge references unknown node');
   }
+  // Documents saved before bevelM existed bevelled widthM / 2.
+  for (const n of raw.nodes as Array<{ type: string; params: Record<string, unknown> }>) {
+    const g = n.type === 'output' ? n.params.groove : undefined;
+    if (isObj(g) && typeof g.bevelM !== 'number' && typeof g.widthM === 'number') g.bevelM = g.widthM / 2;
+  }
   return raw as unknown as ProjectDoc;
 }
 

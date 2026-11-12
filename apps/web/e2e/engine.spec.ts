@@ -74,6 +74,7 @@ declare global {
         flatNormal?: boolean;
         /** Adds a height map of 8-texel vertical stripes. */
         heightRelief?: boolean;
+        groove?: { widthM: number; bevelM: number };
       }): Promise<ComposeProbe>;
     };
   }
@@ -99,7 +100,7 @@ test.describe('composeAtlas', () => {
         return [(cx + cy) % 2 ? 255 : 0, cx * 32, cy * 32, 255];
       };
       window.__t11 = {
-        async compose({ albedoOnly = true, normal = 'gl', flatNormal = false, heightRelief = false }) {
+        async compose({ albedoOnly = true, normal = 'gl', flatNormal = false, heightRelief = false, groove = { widthM: 0.02, bevelM: 0.01 } }) {
           const { core, engine } = window.__hs!;
           const ctx = await engine.initGpu();
           const period = { x: 0.125, y: 0.125, phaseX: 0, phaseY: 0, cutAllowedX: false, cutAllowedY: false };
@@ -112,7 +113,7 @@ test.describe('composeAtlas', () => {
               core.makeRect({ id: 'a', x: 0, y: 0, w: 256, h: 512 }),
               core.makeRect({ id: 'b', x: 256, y: 0, w: 256, h: 512 }),
             ],
-            groove: { widthM: 0.02, bevelM: 0.01, depthM, profile: 'bevel' as const },
+            groove: { ...groove, depthM, profile: 'bevel' as const },
           };
           const images: Partial<Record<'baseColor' | 'normal' | 'height', ImageBitmap>> = {
             baseColor: await bitmap(128, 128, checker),
@@ -222,6 +223,33 @@ test.describe('composeAtlas', () => {
     // Pixel centre 248.5: d = (250.88 - 248.5) / 5.12 = 0.465, linear profile.
     expect(Math.abs(r.mid + DEPTH_M * 0.535)).toBeLessThan(2e-4);
     expect(Math.abs(r.outside)).toBeLessThan(2e-4);
+  });
+
+  test('widthM 0 with bevelM > 0 gives a V groove rising linearly over bevelM', async ({ page }) => {
+    const r = await page.evaluate(async () => {
+      const m = await window.__t11!.compose({ groove: { widthM: 0, bevelM: 0.01 } });
+      const h = (x: number) => m.height[256 * m.w + x];
+      // Pixel centre 253.5 is 2.5 px from the edge: 1 - 2.5 / 5.12 = 0.512 of the depth.
+      return { left: h(253), right: h(258), farLeft: h(240), farRight: h(270) };
+    });
+    expect(Math.abs(r.left + DEPTH_M * 0.512)).toBeLessThan(2e-4);
+    expect(Math.abs(r.right + DEPTH_M * 0.512)).toBeLessThan(2e-4);
+    expect(Math.abs(r.farLeft)).toBeLessThan(2e-4);
+    expect(Math.abs(r.farRight)).toBeLessThan(2e-4);
+  });
+
+  test('packParams places bevelM at byte 52 and seed at byte 56', async ({ page }) => {
+    const r = await page.evaluate(() => {
+      const { engine } = window.__hs!;
+      const buf = engine.packParams({
+        outW: 1, outH: 1, refScale: 1, ppmRef: 1, tileSizeM: [1, 1], heightScaleM: 1,
+        groove: { widthM: 0.5, bevelM: 0.25, depthM: 0.125, profile: 'bevel' },
+        roughnessIsGloss: false, refHeightPx: 1, sobelMacro: false, seed: 0xdeadbeef,
+      });
+      const dv = new DataView(buf);
+      return { bytes: buf.byteLength, bevel: dv.getFloat32(52, true), seed: dv.getUint32(56, true) };
+    });
+    expect(r).toEqual({ bytes: 64, bevel: 0.25, seed: 0xdeadbeef });
   });
 
   test('heightToRgba8 normalizes height by heightRangeM', async ({ page }) => {
