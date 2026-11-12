@@ -3,9 +3,11 @@ import { DEFAULT_WEAR, DEFAULT_DIRT, WEAR_FAMILIES, proposeFamily } from '../src
 
 describe('wear params', () => {
   it('DEFAULT_WEAR matches the constraints', () => {
-    expect(DEFAULT_WEAR).toMatchObject({
+    expect(DEFAULT_WEAR).toEqual({
       family: 'brittle', intensity: 0.5, widthM: 0.04, minEdgeM: 0.004, sizeM: 0.03, depthM: 0.006, bandM: 0.006,
-      microM: 0.0005, pieceBias: 0.7, edgeTone: 0.3, mask: { strength: 1, invert: false },
+      microM: 0.0005, pieceBias: 0.7, seed: 0, edgeTone: 0.3,
+      mask: { enabled: false, strength: 1, invert: false },
+      substrate: { source: 'interior', hueShift: 0, satMul: 0.7, valMul: 0.8, roughAdd: 0.2 },
     });
     expect(DEFAULT_DIRT).toEqual({ cavity: 0.4, runoff: 0.3, runoffLengthM: 0.4, tint: [0.25, 0.22, 0.18] });
   });

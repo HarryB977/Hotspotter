@@ -50,7 +50,9 @@ describe('project document', () => {
     expect(Array.isArray(stack) && stack.map((e) => e.type)).toEqual(
       ['material', 'structure', 'layout', 'placement', 'wear', 'dirt', 'output'],
     );
-    expect(Array.isArray(stack) && stack.map((e) => e.label).slice(1, 2)).toEqual(['Estructura']);
+    expect(Array.isArray(stack) && stack.map((e) => e.label)).toEqual(
+      ['Material', 'Estructura', 'Layout', 'Colocación', 'Desgaste', 'Suciedad', 'Salida'],
+    );
   });
 
   it('migrates a v0.1-A document (4 nodes) to 7 chained nodes', () => {
@@ -75,6 +77,88 @@ describe('project document', () => {
       ['material', 'structure', 'layout', 'placement', 'wear', 'dirt', 'output'],
     );
     expect(composeInputsFromDoc(doc, 512).wear).toEqual(DEFAULT_WEAR);
+  });
+
+  const v01a = () => ({
+    version: 1,
+    nodes: [
+      { id: 'material', type: 'material', params: { ...material } },
+      { id: 'layout', type: 'layout', params: { mode: 'preset', preset: 'walls' } },
+      { id: 'placement', type: 'placement', params: { variation: 0.5, seed: 0 } },
+      { id: 'output', type: 'output', params: { resolutionPx: 4096, worldWidthM: 8, groove: { widthM: 0.01, bevelM: 0.005, depthM: 0.002, profile: 'round' } } },
+    ] as Array<{ id: string; type: string; params: unknown }>,
+    edges: [
+      { from: 'material', to: 'layout', port: 'period' },
+      { from: 'layout', to: 'placement', port: 'layout' },
+      { from: 'placement', to: 'output', port: 'placement' },
+    ],
+  });
+  const types = ['material', 'structure', 'layout', 'placement', 'wear', 'dirt', 'output'];
+
+  it('migration is idempotent', () => {
+    const once = parseDoc(JSON.stringify(v01a()));
+    const twice = parseDoc(serializeDoc(once));
+    expect(twice.nodes).toHaveLength(7);
+    expect(twice).toEqual(once);
+  });
+
+  it('throws DocParseError when the edge to splice into is missing', () => {
+    const old = v01a();
+    old.edges = old.edges.filter((e) => e.from !== 'material');
+    expect(() => parseDoc(JSON.stringify(old))).toThrow(DocParseError);
+  });
+
+  it('completes a partial migration (wear without dirt, and dirt without wear)', () => {
+    const withWear = v01a();
+    withWear.nodes.splice(3, 0, { id: 'wear', type: 'wear', params: { intensity: 0.9 } });
+    withWear.edges.splice(2, 1, { from: 'placement', to: 'wear', port: 'placement' }, { from: 'wear', to: 'output', port: 'wear' });
+    const a = parseDoc(JSON.stringify(withWear));
+    const sa = toStack(a);
+    expect(Array.isArray(sa) && sa.map((e) => e.type)).toEqual(types);
+    expect(composeInputsFromDoc(a, 512).wear.intensity).toBe(0.9);
+
+    const withDirt = v01a();
+    withDirt.nodes.splice(3, 0, { id: 'dirt', type: 'dirt', params: {} });
+    withDirt.edges.splice(2, 1, { from: 'placement', to: 'dirt', port: 'placement' }, { from: 'dirt', to: 'output', port: 'dirt' });
+    const sb = toStack(parseDoc(JSON.stringify(withDirt)));
+    expect(Array.isArray(sb) && sb.map((e) => e.type)).toEqual(types);
+  });
+
+  it('merges defaults into incomplete wear, dirt and structure params', () => {
+    const old = v01a();
+    old.nodes.splice(3, 0,
+      { id: 'wear', type: 'wear', params: { family: 'nope', userSetFamily: true, mask: { invert: true }, substrate: { satMul: 0.5 } } },
+      { id: 'dirt', type: 'dirt', params: { cavity: 0.1, tint: [1, 2] } },
+      { id: 'structure', type: 'structure', params: { type: 'weird' } });
+    old.edges.splice(0, 3,
+      { from: 'material', to: 'structure', port: 'material' },
+      { from: 'structure', to: 'layout', port: 'period' },
+      { from: 'layout', to: 'placement', port: 'layout' },
+      { from: 'placement', to: 'wear', port: 'placement' },
+      { from: 'wear', to: 'dirt', port: 'wear' },
+      { from: 'dirt', to: 'output', port: 'dirt' });
+    const r = composeInputsFromDoc(parseDoc(JSON.stringify(old)), 512);
+    expect(r.wear).toEqual({
+      ...DEFAULT_WEAR, userSetFamily: true,
+      mask: { ...DEFAULT_WEAR.mask, invert: true },
+      substrate: { ...DEFAULT_WEAR.substrate, satMul: 0.5 },
+    });
+    expect(r.dirt).toEqual({ ...DEFAULT_DIRT, cavity: 0.1 });
+    expect(r.structure.type).toBe('continuous');
+  });
+
+  it('gives inserted nodes unique ids when the id is taken', () => {
+    const old = v01a();
+    old.nodes[1].id = 'wear';
+    old.edges = [
+      { from: 'material', to: 'wear', port: 'period' },
+      { from: 'wear', to: 'placement', port: 'layout' },
+      { from: 'placement', to: 'output', port: 'placement' },
+    ];
+    const doc = parseDoc(JSON.stringify(old));
+    expect(new Set(doc.nodes.map((n) => n.id)).size).toBe(doc.nodes.length);
+    expect(doc.nodes).toHaveLength(7);
+    expect(doc.nodes.filter((n) => n.type === 'layout')).toHaveLength(1);
   });
 
   it('composeInputsFromDoc carries wear, dirt and structure', () => {

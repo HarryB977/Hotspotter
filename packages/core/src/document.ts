@@ -11,7 +11,7 @@ import { checkProportions } from './period';
 import { DEFAULT_ORIENTATION } from './orientation';
 import type { ProportionIssue } from './period';
 import type { MaterialType } from './structure/analyze';
-import { DEFAULT_WEAR, DEFAULT_DIRT } from './wear/params';
+import { DEFAULT_WEAR, DEFAULT_DIRT, WEAR_FAMILIES } from './wear/params';
 import type { WearParams, DirtParams } from './wear/params';
 
 export type NodeType = 'material' | 'structure' | 'layout' | 'placement' | 'wear' | 'dirt' | 'output';
@@ -105,42 +105,67 @@ export function parseDoc(s: string): ProjectDoc {
   return raw as unknown as ProjectDoc;
 }
 
-/** v0.1-A documents lack structure, wear and dirt: insert them once, at their chain position. */
-function migrateV01A(d: ProjectDoc): void {
-  const first = (t: NodeType) => d.nodes.find((n) => n.type === t);
-  const hasAny = (t: NodeType) => d.nodes.some((n) => n.type === t);
-  // Replaces edge a→b with a→mid→...→b; when absent, the chain is left unlinked rather than guessed.
-  const rewire = (a: DocNode, b: DocNode, chain: Array<{ id: string; port: string }>) => {
-    const i = d.edges.findIndex((e) => e.from === a.id && e.to === b.id);
-    if (i < 0) return;
-    const links: DocEdge[] = [];
-    let prev = a.id;
-    for (const c of chain) {
-      links.push({ from: prev, to: c.id, port: c.port });
-      prev = c.id;
+const STRUCTURE_TYPES: MaterialType[] = ['pieces', 'continuous', 'directional'];
+
+function mergeObj<T extends object>(defaults: T, v: unknown): T {
+  return { ...defaults, ...(isObj(v) ? v : {}) } as T;
+}
+
+/** Fills missing fields of structure/wear/dirt nodes from the defaults (deep for mask, substrate). */
+function normalizeNodes(d: ProjectDoc): void {
+  for (const n of d.nodes as Array<{ type: string; params: Record<string, unknown> }>) {
+    if (n.type === 'structure') {
+      const p = mergeObj(defaultStructure(), n.params);
+      if (!STRUCTURE_TYPES.includes(p.type)) p.type = 'continuous';
+      n.params = p as unknown as Record<string, unknown>;
+    } else if (n.type === 'wear') {
+      const w = defaultWear();
+      const p = mergeObj(w, n.params);
+      p.mask = mergeObj(w.mask, n.params.mask);
+      p.substrate = mergeObj(w.substrate, n.params.substrate);
+      if (!Object.prototype.hasOwnProperty.call(WEAR_FAMILIES, p.family)) p.family = 'brittle';
+      n.params = p as unknown as Record<string, unknown>;
+    } else if (n.type === 'dirt') {
+      const p = mergeObj(defaultDirt(), n.params);
+      const t = (n.params as { tint?: unknown }).tint;
+      if (!Array.isArray(t) || t.length !== 3 || !t.every((x) => typeof x === 'number')) p.tint = [...DEFAULT_DIRT.tint];
+      n.params = p as unknown as Record<string, unknown>;
     }
-    links.push({ from: prev, to: b.id, port: d.edges[i].port });
-    d.edges.splice(i, 1, ...links);
-  };
-  const material = first('material');
-  const layout = first('layout');
-  if (!hasAny('structure') && material && layout) {
-    d.nodes.splice(d.nodes.indexOf(layout), 0, { id: 'structure', type: 'structure', params: defaultStructure() });
-    rewire(material, layout, [{ id: 'structure', port: 'material' }]);
   }
-  const placement = first('placement');
-  const output = first('output');
-  if (!hasAny('wear') && !hasAny('dirt') && placement && output) {
-    d.nodes.splice(d.nodes.indexOf(output), 0,
-      { id: 'wear', type: 'wear', params: defaultWear() },
-      { id: 'dirt', type: 'dirt', params: defaultDirt() });
-    const i = d.edges.findIndex((e) => e.from === placement.id && e.to === output.id);
-    if (i >= 0) {
-      d.edges.splice(i, 1,
-        { from: placement.id, to: 'wear', port: 'placement' },
-        { from: 'wear', to: 'dirt', port: 'wear' },
-        { from: 'dirt', to: output.id, port: 'dirt' });
-    }
+}
+
+function uniqueId(d: ProjectDoc, base: string): string {
+  const taken = new Set(d.nodes.map((n) => n.id));
+  let id = base;
+  for (let i = 2; taken.has(id); i++) id = `${base}_${i}`;
+  return id;
+}
+
+/** Inserts `node` into the edge `from → to`, keeping that edge's port name on both new links. */
+function spliceInto(d: ProjectDoc, from: DocNode | undefined, to: DocNode | undefined, node: DocNode): void {
+  const i = from && to ? d.edges.findIndex((e) => e.from === from.id && e.to === to.id) : -1;
+  if (!from || !to || i < 0) {
+    throw new DocParseError(`Cannot insert ${node.type} node: no edge between the ${from?.type ?? '?'} and ${to?.type ?? '?'} nodes`);
+  }
+  const port = d.edges[i].port;
+  node.id = uniqueId(d, node.id);
+  d.nodes.splice(d.nodes.indexOf(to), 0, node);
+  d.edges.splice(i, 1, { from: from.id, to: node.id, port }, { from: node.id, to: to.id, port });
+}
+
+/** v0.1-A documents lack structure, wear and dirt: insert each missing node on its chain edge. */
+function migrateV01A(d: ProjectDoc): void {
+  normalizeNodes(d);
+  const first = (t: NodeType) => d.nodes.find((n) => n.type === t);
+  if (!first('structure')) {
+    spliceInto(d, first('material'), first('layout'), { id: 'structure', type: 'structure', params: defaultStructure() });
+  }
+  if (!first('wear')) {
+    const target = first('dirt') ?? first('output');
+    spliceInto(d, first('placement'), target, { id: 'wear', type: 'wear', params: defaultWear() });
+  }
+  if (!first('dirt')) {
+    spliceInto(d, first('wear'), first('output'), { id: 'dirt', type: 'dirt', params: defaultDirt() });
   }
 }
 
