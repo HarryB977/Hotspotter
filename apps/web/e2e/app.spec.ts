@@ -329,16 +329,29 @@ test.describe('add mode races and texture bookkeeping (wood planks 12)', () => {
         const res = await fetch(`/samples/pbr/wood%20planks%2012/${encodeURIComponent(n)}`);
         return new File([await res.blob()], n);
       }));
+      // Hold the add's decode until the reassignment has committed.
+      let release!: () => void;
+      const gate = new Promise<void>((res) => { release = res; });
+      let entered!: () => void;
+      const inDecode = new Promise<void>((res) => { entered = res; });
+      const orig = window.createImageBitmap.bind(window);
+      window.createImageBitmap = (async (...a: Parameters<typeof orig>) => {
+        entered();
+        await gate;
+        return orig(...a);
+      }) as typeof window.createImageBitmap;
       const add = store.getState().importFiles(files, undefined, 'add');
-      await new Promise((res) => setTimeout(res, 0));
+      await inDecode;
       await store.getState().assignMap('wood_planks_12_height_1k.png', null);
+      release();
       await add;
+      window.createImageBitmap = orig;
       const s = store.getState();
       return { files: Object.keys(s.material!.settings.files).sort(), importing: s.importing, error: s.importError };
     }, ['wood_planks_12_ambient_occlusion_1k.png']);
-    expect(r.error).toBeNull();
+    expect(r.error).toBe('La configuración cambió durante la importación; vuelve a añadir los archivos.');
     expect(r.importing).toBe(false);
-    // The add started first but the reassignment committed during its decode, so the add is dropped.
+    // The reassignment committed during the add's decode, so the add is discarded.
     expect(r.files).toEqual(['baseColor', 'normal', 'roughness']);
   });
 });

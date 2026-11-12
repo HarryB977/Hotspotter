@@ -16,6 +16,7 @@ export const es = {
     },
     importing: 'Importando…',
     decodeFailed: (name: string) => `No se pudo leer la imagen ${name}.`,
+    addDiscarded: 'La configuración cambió durante la importación; vuelve a añadir los archivos.',
     noMaps: 'No se reconocieron mapas en los archivos.',
     name: 'Nombre del material',
     nameHint: 'Prefijo de los archivos exportados',

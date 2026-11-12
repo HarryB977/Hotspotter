@@ -139,7 +139,8 @@ async function addFiles(
 ): Promise<void> {
   const { files: chosen, normalConvention } = chooseMaps(images.map((f) => f.name));
   const kinds = Object.keys(chosen) as MapKind[];
-  if (kinds.length === 0) {
+  const startMaterial = get().material;
+  if (kinds.length === 0 || !startMaterial) {
     importGen++;
     generation++;
     set({ importError: es.material.noMaps, importing: false });
@@ -150,7 +151,6 @@ async function addFiles(
   set({ importing: true, importError: null });
   const fresh = new Map<string, ImageBitmap>();
   try {
-    const startMaterial = get().material!;
     const startGpuMaterial = get().gpuMaterial;
     const current = startMaterial.settings;
     const patch: Partial<MaterialSettings> = { files: { ...current.files, ...chosen } };
@@ -169,7 +169,7 @@ async function addFiles(
     if (!material || !gpuMaterial || !doc || material !== startMaterial || gpuMaterial !== startGpuMaterial) {
       destroyTextures(partial);
       closeAll(fresh);
-      set({ importing: false });
+      set({ importing: false, importError: es.material.addDiscarded });
       return;
     }
     generation++;
