@@ -132,11 +132,13 @@ test.describe('composeAtlas', () => {
               heightScaleM: 0.02,
               period,
               allowRotation: false,
+              orientation: { baseRotation: 0, rule: 'fixed' },
             },
             images,
           });
           const placements = core.placeMaterial(layout, period, {
             variation: 0, seed: 1, materialAllowsRotation: false, tileSizeM: [1, 1],
+            orientation: { baseRotation: 0, rule: 'fixed' },
           });
           const maps = await engine.composeAtlas(ctx, { layout, material, placements, resolutionPx: 512 });
           const rb = async (t: GPUTexture) => (await engine.readbackRgba8(ctx, t)).data;
@@ -355,6 +357,7 @@ test('composeAtlas rejects more than 256 rects', async ({ page }) => {
       settings: {
         name: 'x', files: {}, normalConvention: 'gl', roughnessIsGloss: false, tileSizeM: [1, 1],
         heightScaleM: 0.02, period: core.CONTINUOUS, allowRotation: false,
+        orientation: { baseRotation: 0, rule: 'fixed' },
       },
       images: {},
     });

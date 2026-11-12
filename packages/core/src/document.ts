@@ -8,6 +8,7 @@ import type { MaterialSettings } from './material';
 import { placeMaterial } from './placement';
 import type { RectPlacement } from './placement';
 import { checkProportions } from './period';
+import { DEFAULT_ORIENTATION } from './orientation';
 import type { ProportionIssue } from './period';
 
 export type NodeType = 'material' | 'layout' | 'placement' | 'output';
@@ -76,8 +77,9 @@ export function parseDoc(s: string): ProjectDoc {
     }
     if (!ids.has(e.from) || !ids.has(e.to)) throw new DocParseError('Edge references unknown node');
   }
-  // Documents saved before bevelM existed bevelled widthM / 2.
   for (const n of raw.nodes as Array<{ type: string; params: Record<string, unknown> }>) {
+    if (n.type === 'material' && !isObj(n.params.orientation)) n.params.orientation = { ...DEFAULT_ORIENTATION };
+    // Documents saved before bevelM existed bevelled widthM / 2.
     const g = n.type === 'output' ? n.params.groove : undefined;
     if (isObj(g) && typeof g.bevelM !== 'number' && typeof g.widthM === 'number') g.bevelM = g.widthM / 2;
   }
@@ -128,7 +130,7 @@ export function resolveLayout(d: ProjectDoc, opts?: { widthPx?: number }): Hotsp
   const { worldWidthM } = output;
   const base = layout.mode === 'preset'
     ? presetLayout(layout.preset, widthPx, worldWidthM)
-    : autoLayout({ target: layout.target, widthPx, worldWidthM, period: material.period, seed: layout.seed });
+    : autoLayout({ target: layout.target, widthPx, worldWidthM, period: material.period, seed: layout.seed, orientation: material.orientation });
   return { ...base, groove: { ...output.groove } };
 }
 
@@ -137,6 +139,7 @@ export interface ComposeInputs {
   placements: RectPlacement[];
   material: MaterialSettings;
   issues: ProportionIssue[];
+  rotations: Map<string, boolean>;
 }
 
 /** Layout, placements and proportion checks for composing `d`, shared by preview and export. */
@@ -149,8 +152,10 @@ export function composeInputsFromDoc(d: ProjectDoc, widthPx?: number): ComposeIn
     seed: pl.seed,
     materialAllowsRotation: material.allowRotation,
     tileSizeM: material.tileSizeM,
+    orientation: material.orientation,
   });
-  return { layout, placements, material, issues: checkProportions(layout, material.period) };
+  const rotations = new Map(placements.map((x) => [x.rectId, x.rotate90]));
+  return { layout, placements, material, rotations, issues: checkProportions(layout, material.period, rotations) };
 }
 
 export function updateNodeParams<T extends NodeType>(

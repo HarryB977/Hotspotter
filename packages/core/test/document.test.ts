@@ -16,6 +16,7 @@ const material: MaterialSettings = {
   heightScaleM: 0.02,
   period: { x: 0.25, y: 0.075, phaseX: 0, phaseY: 0, cutAllowedX: false, cutAllowedY: false },
   allowRotation: false,
+  orientation: { baseRotation: 0, rule: 'fixed' },
 };
 
 describe('project document', () => {
@@ -110,5 +111,24 @@ describe('project document', () => {
       expect(r.material).toEqual(material);
       expect(r.issues).toEqual(checkProportions(r.layout, material.period));
     });
+  });
+});
+
+describe('material orientation in documents', () => {
+  it('parseDoc adds the default orientation to older documents', () => {
+    const doc = createDefaultDoc(material);
+    const old = JSON.parse(serializeDoc(doc));
+    delete old.nodes[0].params.orientation;
+    const parsed = parseDoc(JSON.stringify(old));
+    expect(parsed.nodes[0].params).toMatchObject({ orientation: { baseRotation: 0, rule: 'fixed' } });
+  });
+  it('composeInputsFromDoc exposes rotations and checks proportions with them', () => {
+    const doc = updateNodeParams<'material'>(createDefaultDoc(material), 'material', {
+      orientation: { baseRotation: 90, rule: 'fixed' },
+    });
+    const r = composeInputsFromDoc(doc, 1024);
+    expect(r.rotations.size).toBe(r.layout.rects.length);
+    expect([...r.rotations.values()].every(Boolean)).toBe(true);
+    expect(r.issues).toEqual(checkProportions(r.layout, material.period, r.rotations));
   });
 });

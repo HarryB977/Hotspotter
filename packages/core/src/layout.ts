@@ -35,6 +35,8 @@ export interface HotspotLayout {
   worldWidthM: number;
   rects: HotspotRect[];
   groove: GrooveSettings;
+  /** Non-fatal notes from layout generation, e.g. 'orientation-fallback'. */
+  warnings?: string[];
 }
 
 export const DEFAULT_GROOVE: GrooveSettings = { widthM: 0.006, bevelM: 0.003, depthM: 0.004, profile: 'bevel' };

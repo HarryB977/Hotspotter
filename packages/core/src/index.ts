@@ -6,6 +6,10 @@ export type {
 } from './layout';
 export { CONTINUOUS, snapToPeriod, checkProportions } from './period';
 export type { MaterialPeriod, ProportionIssue } from './period';
+export {
+  rectRotations, effectivePeriod, orientationUnit, OrientationUnitError, DEFAULT_ORIENTATION,
+} from './orientation';
+export type { OrientationRule, MaterialOrientation } from './orientation';
 export { PRESET_IDS, presetLayout } from './presets';
 export type { PresetId } from './presets';
 export { autoLayout } from './autoLayout';

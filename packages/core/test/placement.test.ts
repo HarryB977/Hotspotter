@@ -16,7 +16,10 @@ const layout: HotspotLayout = {
   ],
 };
 const ppm = pxPerMetre(layout);
-const opts = { variation: 1, seed: 7, materialAllowsRotation: true, tileSizeM: [0.6, 0.6] as [number, number] };
+const opts = {
+  variation: 1, seed: 7, materialAllowsRotation: true, tileSizeM: [0.6, 0.6] as [number, number],
+  orientation: { baseRotation: 0 as const, rule: 'fixed' as const },
+};
 const periodic: MaterialPeriod = { x: 0.3, y: 0.075, phaseX: 0.02, phaseY: 0.01, cutAllowedX: true, cutAllowedY: true };
 const mod = (v: number, m: number) => ((v % m) + m) % m;
 const corner = (r: { x: number; y: number; h: number }): [number, number] => [r.x, r.y + r.h];
@@ -95,5 +98,27 @@ describe('placeMaterial', () => {
   it('is deterministic for a fixed seed', () => {
     expect(placeMaterial(layout, periodic, opts)).toEqual(placeMaterial(layout, periodic, opts));
     expect(placeMaterial(layout, periodic, opts)).not.toEqual(placeMaterial(layout, periodic, { ...opts, seed: 8 }));
+  });
+});
+
+describe('placeMaterial orientation', () => {
+  const planks: MaterialPeriod = { x: 0.3, y: 0.15, phaseX: 0.02, phaseY: 0.01, cutAllowedX: false, cutAllowedY: false };
+  it('longAxis: every rotated rect keeps its bottom-left corner on a joint', () => {
+    const o = { ...opts, orientation: { baseRotation: 0 as const, rule: 'longAxis' as const } };
+    const pls = placeMaterial(layout, planks, o);
+    expect(pls.map((p) => p.rotate90)).toEqual(layout.rects.map((r) => r.h > r.w));
+    layout.rects.forEach((r, i) => {
+      const [x, y] = atlasPxToMaterialM(layout, r, pls[i], corner(r));
+      expect(mod(x - planks.phaseX + 1e-9, 0.3)).toBeLessThan(2e-9);
+      expect(mod(y - planks.phaseY + 1e-9, 0.15)).toBeLessThan(2e-9);
+    });
+  });
+  it('fixed/90 rotates every rect even with no variation', () => {
+    const none = placeMaterial(layout, CONTINUOUS, { ...opts, variation: 0, orientation: { baseRotation: 90, rule: 'fixed' } });
+    expect(none.every((p) => p.rotate90)).toBe(true);
+  });
+  it('longAxis disables variation rotation', () => {
+    const pls = placeMaterial(layout, CONTINUOUS, { ...opts, orientation: { baseRotation: 0, rule: 'longAxis' } });
+    expect(pls.map((p) => p.rotate90)).toEqual(layout.rects.map((r) => r.h > r.w));
   });
 });

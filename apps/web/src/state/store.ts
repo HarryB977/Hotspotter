@@ -194,6 +194,7 @@ export const useProject = create<ProjectState>()((set, get) => ({
         heightScaleM: 0.02,
         period: { ...CONTINUOUS },
         allowRotation: false,
+        orientation: { baseRotation: 0, rule: 'fixed' },
       };
       const material: LoadedMaterial = { settings, images: loaded };
       const gpuMaterial = uploadMaterial(gpu, material);
