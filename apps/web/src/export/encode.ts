@@ -46,13 +46,14 @@ export async function exportProject(opts: ExportOptions): Promise<string[]> {
   if (!doc || !gpuMaterial || !gpu) throw new Error('No project');
   // Resolved at the export resolution, so hotspot.json and the Anvil csv px match the PNGs.
   const inputs = composeInputsFromDoc(doc, opts.resolutionPx);
-  const { layout, material: mat, dirt } = inputs;
-  // Downward streaks: a vertical mirror (or a rotation) in the engine would turn them (docs/06).
-  const runoff = dirt.runoff > 0;
+  const { layout, material: mat } = inputs;
   let maps: AtlasMaps | null = null;
   let heightTex: GPUTexture | null = null;
   try {
     const input = composeInputFor({ ...state, doc, gpuMaterial }, inputs, opts.resolutionPx);
+    // Downward streaks: a vertical mirror (or a rotation) in the engine would turn them (docs/06). Dirt switched off
+    // composes none.
+    const runoff = (input.dirt?.runoff ?? 0) > 0;
     maps = await composeAtlas(gpu, input);
     // Not exported: free them before the readbacks, which peak in memory at 8192.
     for (const t of [maps.loss, maps.pieceId, maps.jointDistM, maps.border, maps.macroHeight]) t.destroy();

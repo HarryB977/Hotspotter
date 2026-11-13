@@ -124,11 +124,19 @@ function Check({ checked, onChange, label, testId }: {
   );
 }
 
-export function Section({ title, children }: { title: string; children: React.ReactNode }) {
+/** Panel section; `action` sits at the right of the header, `dimmed` fades the fields (they stay editable). */
+export function Section({ title, children, action, dimmed, testId }: {
+  title: string; children: React.ReactNode; action?: React.ReactNode; dimmed?: boolean; testId?: string;
+}) {
   return (
-    <section className="border-b border-zinc-800 px-2 py-2">
-      <h2 className="mb-1 text-xs uppercase tracking-wide text-zinc-500">{title}</h2>
-      <div className="flex flex-col gap-1">{children}</div>
+    <section className="border-b border-zinc-800 px-2 py-2" data-testid={testId}>
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <h2 className="text-xs uppercase tracking-wide text-zinc-500">{title}</h2>
+        {action}
+      </div>
+      <div className={cn('flex flex-col gap-1', dimmed && 'opacity-40')} data-dimmed={dimmed ? '' : undefined}>
+        {children}
+      </div>
     </section>
   );
 }

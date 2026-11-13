@@ -107,7 +107,10 @@ export const es = {
     placementSeed: 'Semilla de colocación',
     groove: 'Ranura',
     grooveWidth: 'Fondo de ranura (mm)',
+    grooveWidthHint:
+      'Ancho del fondo plano de la ranura, centrado en el borde que comparten dos rectángulos. 0 deja una ranura en V si hay bisel',
     grooveBevel: 'Bisel (mm)',
+    grooveBevelHint: 'Ancho de la rampa entre la superficie y el fondo de la ranura, dentro de cada rectángulo. 0 la quita',
     grooveDepth: 'Profundidad (mm)',
     grooveProfile: 'Perfil',
     profiles: { bevel: 'Bisel', round: 'Redondo', step: 'Escalón', none: 'Ninguno' },
@@ -128,6 +131,9 @@ export const es = {
   },
   wear: {
     title: 'Desgaste',
+    enabled: 'Activar',
+    enabledHint:
+      'Apagado, el atlas sale sin desgaste: sin roturas, con la máscara de desgaste en negro y sin datos de desgaste en hotspot.json. Los ajustes se conservan',
     family: 'Familia',
     familyHint:
       'Tipo de daño. Se propone solo según el material (piezas, veta o nombre); si eliges una, se respeta aunque se vuelva a analizar',
@@ -196,6 +202,9 @@ export const es = {
   },
   dirt: {
     title: 'Suciedad',
+    enabled: 'Activar',
+    enabledHint:
+      'Apagado, el atlas sale sin suciedad de cavidad ni escorrentía, y el espejo de los rectángulos vuelve a seguir al layout. Los ajustes se conservan',
     cavity: 'Cavidad',
     cavityHint: 'Suciedad acumulada en juntas, ranuras y huecos. 0 la quita',
     runoff: 'Escorrentía',

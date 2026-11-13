@@ -50,7 +50,7 @@ Viven en el nodo `wear` del documento (`packages/core/src/wear/params.ts`). Toda
 | `mask` | apagada, fuerza 1, sin invertir | Máscara B/N | Ver la decisión 43 |
 | `substrate` | interior: tono 0°, saturación ×0.7, valor ×0.8, rugosidad +0.2 | Sustrato | Lo que queda debajo (ver "Pasada de color") |
 
-Suciedad (nodo `dirt`): `cavity` 0.4, `runoff` 0.3, `runoffLengthM` 0.4 m y `tint` [0.25, 0.22, 0.18].
+Suciedad (nodo `dirt`): `enabled` true, `cavity` 0.4, `runoff` 0 (era 0.3; decisión 69), `runoffLengthM` 0.4 m y `tint` [0.25, 0.22, 0.18]. El desgaste también lleva `enabled` (true por defecto).
 
 ### Resumen del cálculo
 
@@ -115,7 +115,7 @@ Corre siempre, con desgaste y sin él, cuando la altura ya es la final. El color
 - **Suciedad de cavidad**: `k = cavity · (1 − AO_material · AO_altura)`; `color = mix(color, tint·color, k)` y la rugosidad suma `0.1·k`.
 - **Escorrentía**: `runoffLengthM` se limita a la altura del atlas. Nace en el borde superior visible de cada rectángulo y debajo de cada pérdida del mismo rectángulo, y baja hasta `runoffLengthM`: `cantidad = runoff · (1 − smoothstep(0, L, distancia bajo el origen)) · fbm(local.x / 1 cm, local.y / L)`, con `color = mix(color, tint·color, cantidad)`. Nunca aparece por encima de su origen. Para conocer la última pérdida de encima, cada invocación recorre de arriba abajo un tramo de una columna, después de releer `runoffLengthM` por encima del tramo (solo `rectId` y `loss`).
 - La ranura y el fondo de ranura no llevan sustrato, tono de canto ni escorrentía. El AO de altura y la suciedad de cavidad se aplican en todo el atlas.
-- Sin `dirt` en la composición no hay suciedad (cavidad y escorrentía a 0). La suciedad funciona igual con el desgaste apagado.
+- Sin `dirt` en la composición (o con la suciedad apagada) no hay suciedad (cavidad y escorrentía a 0). La suciedad funciona igual con el desgaste apagado.
 
 ### Qué queda debajo ("sustrato")
 
@@ -170,7 +170,7 @@ El material ya trae su estética; el estilo solo decide cómo se dibuja el daño
 
 ## Comprobaciones automáticas
 
-Se ejecutan en el render final (y en una versión barata en el preview). Se muestran en el panel de comprobaciones y se pueden marcar en el atlas:
+Se ejecutan sobre una composición de evaluación a 2048 px, tras cada cambio y antes de exportar; el sangrado se calcula a la resolución de exportación (decisión 50). Se muestran en el panel de comprobaciones y se pueden marcar en el atlas:
 
 | Comprobación | Falla si… |
 |---|---|
@@ -187,9 +187,9 @@ Se ejecutan en el render final (y en una versión barata en el preview). Se mues
 
 ### Lo que hace la v0.1
 
-La v0.1 trae seis comprobaciones: cobertura, islas, normal, proporciones, sangrado y sustrato. El resto de la tabla queda para la v0.2. Las calcula `runChecks` (TS puro en `packages/core/src/checks`) sobre una **composición de evaluación a 2048 px** de ancho, la misma que el preview pero a esa resolución:
+La v0.1 trae seis comprobaciones: cobertura, islas, normal, proporciones, sangrado y sustrato. El resto de la tabla queda para la v0.2. Las calcula `runChecks` (TS puro en `packages/core/src/checks`) sobre una **composición de evaluación a 2048 px** de ancho, la misma que el preview pero a esa resolución; el sangrado se calcula a la resolución de exportación. Así lo decidió el usuario (2026-11-13, decisión 50): cumple la regla 3 de CLAUDE.md porque el export compone con las mismas entradas y las reglas van en metros, así que el resultado no depende de la resolución:
 
-- Si el preview ya está a 2048 px y al día (mismo documento, material, estructura, máscara y sustrato), se leen sus mapas. Si no, se compone aparte y esos mapas se liberan nada más leerlos.
+- Si el preview ya está a 2048 px y al día (mismo documento, material, estructura, máscara y sustrato), se leen sus mapas (solo un preview a 2048 px conserva `matNormal`). Si no, se compone aparte y esos mapas se liberan nada más leerlos.
 - Se lanza 600 ms después de cada recomposición y antes de exportar.
 - Nunca corre dos veces a la vez: las peticiones van en cola, una petición en cola a la que adelanta otra más nueva se salta, y un resultado que llega cuando ya hay otra petición o recomposición posterior no se guarda.
 - A 2048 px un atlas de 8 m mide 3.9 mm por píxel, así que el borde mínimo de 4 mm ocupa al menos un píxel. Todas las distancias se dan en metros y se pasan a píxeles con los px/m de la evaluación, de modo que el resultado no depende de la resolución.
@@ -200,12 +200,21 @@ Cada fila tiene un estado (correcto, aviso o error), un mensaje en español llan
 |---|---|
 | Cobertura de borde | Solo con `minEdgeM > 0`. Se recorre el perímetro visible de cada rectángulo (sin el fondo de ranura) y, en cada punto, la franja del borde mínimo hacia dentro, de ancho `min(minEdgeM, 0.5·wEff)`. Si un tramo de más de 2 cm no tiene `wearMask` en esa franja, da aviso, con el punto medio de cada tramo. Si el borde mínimo mide menos de un píxel de la evaluación (atlas muy anchos), no se comprueba y el mensaje lo dice; un trim fino con un borde de menos de un píxel se salta |
 | Islas | Manchas de pérdida visible (`wearMask ≥ 128`) dentro de un rectángulo que no llegan a la franja de desgaste de borde: ningún píxel a menos de `wEff` del borde visible. Antes de etiquetarlas se puentean los huecos de hasta `bandM`, como si la máscara se dilatara `bandM/2`: dos píxeles perdidos del mismo rectángulo se unen si sus centros distan como mucho `bandM·px/m + 1` px (y siempre con vecindad 8). Sin límite de área. Si hay alguna, da aviso, con el centroide de cada una (R38). La regla de R38 con la franja del borde garantizado (`1.6·rimM` + 1 px) avisaba en todos los ladrillos por defecto (bricks wall 13: 337, 208, 323 y 173 islas con intensidad 0.5 y 1 y semillas 0 y 7): eran desconchones a 1–3 cm del canto, separados del borde por más de `bandM`. Por eso se usa la franja `wEff` del brief; las motas sueltas dentro de esa franja no se marcan (pendiente, decisión 51) |
-| Coherencia de normal | La misma definición que el test de la Task 9 (R40, R41): Sobel sobre la altura macro, con y hacia arriba. La pendiente del material es la mayor entre la del relieve propio (Sobel de la altura final menos la macro) y la de su normal de detalle (`|n.xy| / n.z` de `matNormal`, la normal del material ya muestreada en el atlas; plana sin normal map), porque un normal map puede llevar mucho más relieve que su height. Solo cuentan los píxeles donde la pendiente macro pasa de 0.2 **y** supera a la del material; en ellos se exige `dot(n.xy, −grad macro) ≥ 0`. Donde el relieve del material es más fuerte (una junta de baldosa que cruza el bisel), la normal sigue al material con razón y no se juzga. Si falla más del 0.5 % de los píxeles contados, da error |
+| Coherencia de normal | La misma definición que el test de la Task 9 (R40, R41): Sobel sobre la altura macro, con y hacia arriba. La pendiente del material es la mayor entre la del relieve propio (Sobel de la altura final menos la macro) y la de su normal de detalle (`|n.xy| / n.z` de `matNormal`, la normal del material ya muestreada en el atlas; plana sin normal map). Como en `normalFromHeight.wgsl`, esa normal de detalle se desvanece hacia (0, 0, 1) según `wearMask` antes de medirla: lo perdido se lleva su relieve. Es así porque un normal map puede llevar mucho más relieve que su height. Solo cuentan los píxeles donde la pendiente macro pasa de 0.2 **y** supera a la del material; en ellos se exige `dot(n.xy, −grad macro) ≥ 0`. Donde el relieve del material es más fuerte (una junta de baldosa que cruza el bisel), la normal sigue al material con razón y no se juzga. Si falla más del 0.5 % de los píxeles contados, da error |
 | Proporciones | `checkProportions` con el periodo girado de cada rectángulo. Si hay problemas, da aviso, con el centro de cada rectángulo |
 | Sangrado | Si la ranura visible (fondo `groove.widthM` más el bisel a cada lado, `2·groove.bevelM`) mide menos de 4 px a la resolución de exportación, da aviso: la ranura desaparece en mip 2 y hay que ensanchar la ranura o el bisel. Con los valores por defecto (6 + 2·3 mm = 12 mm en 8 m) mide 6.1 px a 4096 y está bien (R35) |
 | Sustrato | Solo con segundo set y un material con piezas. Compara el color medio del BaseColor del segundo set con el color medio de las juntas del propio material superior, en espacio de material: su BaseColor al tamaño del análisis de estructura donde `pieceId` es 0, sin la suciedad ni el desgaste del atlas (R37). Se calcula una vez por material y estructura. La diferencia es ΔE76 en Lab (sRGB → lineal → XYZ D65 → Lab). Si pasa de 20, da aviso |
 
-Con el desgaste apagado (mapas de 1×1), con alcance 0 o con una familia que no quita material (`dent`, `edgeOnly`), la cobertura y las islas dan "correcto" y el mensaje lo explica.
+Con el desgaste apagado (interruptor "Activar" o mapas de 1×1), con alcance 0 o con una familia que no quita material (`dent`, `edgeOnly`), la cobertura y las islas dan "correcto" y el mensaje lo explica. Con el desgaste apagado, el sustrato también da "correcto": no queda nada al descubierto.
+
+### Interruptores de desgaste y suciedad
+
+Las secciones Desgaste y Suciedad tienen un interruptor "Activar" en la cabecera (`enabled` en `WearParams` y `DirtParams`, encendido por defecto; los documentos sin el campo se abren encendidos). Apagado, la composición es la misma que sin ese nodo (decisión 69):
+
+- **Desgaste apagado**: no hay pérdida ni altura de desgaste; `loss`, `border` y `wearMask` son marcadores de 1×1, `_WearMask` sale negro y `hotspot.json` no lleva el bloque `wear`. Es la salida de la v0.1-A.
+- **Suciedad apagada**: ni suciedad de cavidad ni escorrentía, aunque los parámetros digan otra cosa; `allowMirrorY` y el `Can mirror` de Anvil vuelven a seguir al layout.
+
+Los ajustes de la sección se conservan y se ven atenuados mientras está apagada. La escorrentía empieza en 0 por defecto, así que el espejo está libre mientras el usuario no pida chorretones.
 
 Las islas y las demás comprobaciones nunca bloquean: solo la coherencia de normal puede dar error, y aun así se puede exportar. `runChecks` y el análisis de estructura corren en el hilo principal (unos 0.5–0.7 s y 1.3 s); pasarlos a un Worker queda pendiente (ver [10](10-roadmap.md)).
 

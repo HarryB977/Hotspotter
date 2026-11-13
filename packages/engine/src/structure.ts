@@ -37,7 +37,8 @@ function create(
 }
 
 export function uploadStructure(ctx: GpuContext, r: StructureResult): GpuStructure {
-  return create(ctx, r.width, r.height, r.pieceId, r.jointDistM, r.jointFraction > 0);
+  // Same rule as proposeFamily: only a 'pieces' material gets per-piece wear.
+  return create(ctx, r.width, r.height, r.pieceId, r.jointDistM, r.type === 'pieces');
 }
 
 /** 1×1 structure for unanalysed materials: one piece everywhere, 1 m from any joint (continuous). */

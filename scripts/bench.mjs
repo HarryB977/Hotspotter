@@ -1,5 +1,5 @@
 // npm run bench: runs the visual bench (apps/web/e2e/bench.spec.ts, @bench) over samples/pbr and opens its index.html.
-// Output: samples/_bench/<YYYYMMDD-HHmm>/ (never committed). Exits with Playwright's exit code.
+// Output: samples/_bench/<YYYYMMDD-HHmm>/ (never committed). Exits with Playwright's exit code (0 without samples/pbr).
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -10,6 +10,11 @@ const p = (n) => String(n).padStart(2, '0');
 const d = new Date();
 const stamp = `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
 const out = join(root, 'samples', '_bench', stamp);
+
+if (!existsSync(join(root, 'samples', 'pbr'))) {
+  console.log('No existe samples/pbr: no hay sets que pasar por el banco.');
+  process.exit(0);
+}
 
 const run = spawnSync('npx', ['playwright', 'test', '--grep', '@bench', '--workers=1', '--reporter=line'], {
   cwd: join(root, 'apps', 'web'),

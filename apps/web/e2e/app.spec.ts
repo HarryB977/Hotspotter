@@ -179,8 +179,9 @@ test('exports Unity URP maps, hotspot.json and Anvil csv to a folder, and overwr
 
   const dir = join(tmpdir(), `hotspotter export ${Date.now()}`, 'out dir');
   await page.getByTestId('export-open').click();
-  // Default dirt has runoff: the dialog warns as soon as it opens that rotating the rects would turn the streaks.
-  await expect(page.getByTestId('export-runoff-warning')).toBeVisible();
+  // Default dirt has no runoff (user decision 2026-11-13): no rotation warning.
+  await expect(page.getByTestId('export-run')).toBeVisible();
+  await expect(page.getByTestId('export-runoff-warning')).toHaveCount(0);
   await page.getByTestId('export-dir').fill(dir);
   await page.getByTestId('export-preset').click();
   await page.getByRole('option', { name: 'Unity URP' }).click();
@@ -252,12 +253,19 @@ test('exports Unity URP maps, hotspot.json and Anvil csv to a folder, and overwr
   expect(json.checks.map((c: { id: string }) => c.id)).toEqual(
     ['coverage', 'islands', 'normal', 'proportions', 'bleed', 'substrate'],
   );
-  // Runoff on: no vertical mirror in hotspot.json, and Anvil's single mirror flag is off.
-  expect(json.rects.every((r: { allowMirrorY: boolean }) => !r.allowMirrorY)).toBe(true);
+  // No runoff by default: mirroring follows the layout in hotspot.json and in Anvil's "Can mirror".
+  const mirrors = await page.evaluate(() =>
+    window.__hs!.core.composeInputsFromDoc(window.__hs!.store.getState().doc!, 1024).layout.rects
+      .map((r) => [r.allowMirrorX, r.allowMirrorY]));
+  expect(json.rects.map((r: { allowMirrorX: boolean; allowMirrorY: boolean }) => [r.allowMirrorX, r.allowMirrorY]))
+    .toEqual(mirrors);
+  // The v0.1 presets set no mirror flags, so this only shows nothing is forced; core export.test covers the flags.
   const csv = readFileSync(join(dir, 'bricks_wall_13.anvil.csv'), 'utf8').split(String.fromCharCode(13, 10));
   expect(csv[1].split(',').slice(6, 8)).toEqual(['Can mirror', 'Mirror X ok']);
-  expect(csv.slice(2).every((l) => l.split(',')[6] === 'no')).toBe(true);
-  csv.slice(2).forEach((l, i) => expect(l.split(',')[7]).toBe(json.rects[i].allowMirrorX ? 'yes' : 'no'));
+  csv.slice(2).forEach((l, i) => {
+    expect(l.split(',')[6]).toBe(mirrors[i][0] || mirrors[i][1] ? 'yes' : 'no');
+    expect(l.split(',')[7]).toBe(json.rects[i].allowMirrorX ? 'yes' : 'no');
+  });
 
   // _RectID: the view's hash colour of each rect at its centre.
   const ids = decodeRgbaPng(readFileSync(join(dir, 'bricks_wall_13_RectID.png')));
@@ -825,6 +833,136 @@ test.describe('wear and dirt controls (bricks wall 13)', () => {
     await expectParity(second);
     const a = lossRgb(interior), b = lossRgb(second);
     expect(Math.max(...a.map((v, c) => Math.abs(v - b[c])))).toBeGreaterThan(8);
+  });
+
+  /** FNV hashes of every composed map of the shown atlas, plus the sizes of the wear maps. */
+  const atlasHashes = (page: P) =>
+    page.evaluate(async () => {
+      const hs = window.__hs!;
+      const s = hs.store.getState();
+      const m = s.atlas!.maps;
+      const h = (d: Uint8Array) => {
+        let x = 0x811c9dc5;
+        for (let i = 0; i < d.length; i++) x = Math.imul(x ^ d[i], 0x01000193) >>> 0;
+        return x;
+      };
+      const rgba = async (t: GPUTexture) => h((await hs.engine.readbackRgba8(s.gpu!, t)).data);
+      const r32 = async (t: GPUTexture) => {
+        const d = (await hs.engine.readbackR32(s.gpu!, t)).data;
+        return h(new Uint8Array(d.buffer, d.byteOffset, d.byteLength));
+      };
+      return {
+        baseColor: await rgba(m.baseColor), normal: await rgba(m.normal), roughness: await rgba(m.roughness),
+        metallic: await rgba(m.metallic), ao: await rgba(m.ao), height: await r32(m.height),
+        wearMask: await rgba(m.wearMask), sizes: [m.loss, m.border, m.wearMask].map((t) => [t.width, t.height]),
+      };
+    });
+
+  const switchSection = async (page: P, id: 'wear' | 'dirt', on: boolean) => {
+    const sw = page.getByTestId(`${id}-enabled`);
+    await expect(sw).toHaveAttribute('title', /^Apagado, el atlas sale sin/);
+    await sw.click();
+    await expect(sw).toHaveAttribute('aria-checked', String(on));
+    await settled(page);
+    // Off dims the section's fields.
+    await expect(page.getByTestId(`${id}-section`).locator('[data-dimmed]')).toHaveCount(on ? 0 : 1);
+  };
+
+  test('wear off composes as without wear: 1 × 1 maps, black _WearMask, no wear in hotspot.json', async ({ page }, testInfo) => {
+    test.setTimeout(120_000);
+    await setField(page, 'Intensidad', '1');
+    const on = await atlasHashes(page);
+    await switchSection(page, 'wear', false);
+    const off = await atlasHashes(page);
+    expect(off.sizes).toEqual([[1, 1], [1, 1], [1, 1]]);
+    expect(off.baseColor).not.toBe(on.baseColor);
+    // The in-run wear-null compose (R32e): the same input with no wear at all gives the same bytes.
+    const nullHashes = await page.evaluate(async () => {
+      const hs = window.__hs!;
+      const s = hs.store.getState();
+      const { layout, placements } = hs.core.composeInputsFromDoc(s.doc!);
+      const dirt = s.doc!.nodes.find((n) => n.type === 'dirt')!.params as import('@hotspotter/core').DirtParams;
+      const m = await hs.engine.composeAtlas(s.gpu!, {
+        layout, material: s.gpuMaterial!, placements, resolutionPx: s.previewRes, structure: s.structure?.gpu,
+        wear: undefined, dirt: dirt.enabled ? dirt : undefined, mask: s.mask?.texture,
+        substrateMaterial: s.substrate?.gpu, grainAxis: s.structure?.result.grainAxis ?? null,
+      });
+      const h = (d: Uint8Array) => {
+        let x = 0x811c9dc5;
+        for (let i = 0; i < d.length; i++) x = Math.imul(x ^ d[i], 0x01000193) >>> 0;
+        return x;
+      };
+      const rgba = async (t: GPUTexture) => h((await hs.engine.readbackRgba8(s.gpu!, t)).data);
+      const hd = (await hs.engine.readbackR32(s.gpu!, m.height)).data;
+      const out = {
+        baseColor: await rgba(m.baseColor), normal: await rgba(m.normal), roughness: await rgba(m.roughness),
+        metallic: await rgba(m.metallic), ao: await rgba(m.ao),
+        height: h(new Uint8Array(hd.buffer, hd.byteOffset, hd.byteLength)),
+        wearMask: await rgba(m.wearMask), sizes: [m.loss, m.border, m.wearMask].map((t) => [t.width, t.height]),
+      };
+      for (const t of Object.values(m)) {
+        if (t && typeof (t as GPUTexture).destroy === 'function') (t as GPUTexture).destroy();
+      }
+      return out;
+    });
+    expect(off).toEqual(nullHashes);
+    // Coverage and islands report the wear as off.
+    await expect.poll(() => page.evaluate(() => {
+      const s = window.__hs!.store.getState();
+      if (!s.checks || s.checksPending) return null;
+      return s.checks.results.filter((c) => c.id === 'coverage' || c.id === 'islands')
+        .map((c) => [c.status, /desactivado/.test(c.message)]);
+    }), { timeout: 30_000 }).toEqual([['ok', true], ['ok', true]]);
+
+    const dir = testInfo.outputPath('wear-off');
+    await page.evaluate((d) => window.__hs!.exportProject({ dir: d, preset: 'unity-urp', resolutionPx: 1024 }), dir);
+    const wm = decodeRgbaPng(readFileSync(join(dir, 'bricks_wall_13_WearMask.png')));
+    expect([wm.w, wm.h]).toEqual([1024, 1024]);
+    for (let i = 0; i < wm.data.length; i += 4) {
+      if (wm.data[i] !== 0 || wm.data[i + 3] !== 255) throw new Error(`_WearMask not black at pixel ${i / 4}`);
+    }
+    const json = JSON.parse(readFileSync(join(dir, 'bricks_wall_13.hotspot.json'), 'utf8'));
+    expect(json).not.toHaveProperty('wear');
+
+    // Back on: the wear returns unchanged.
+    await switchSection(page, 'wear', true);
+    expect(await atlasHashes(page)).toEqual(on);
+  });
+
+  test('dirt off drops cavity dirt and runoff, and mirroring follows the layout again', async ({ page }, testInfo) => {
+    test.setTimeout(120_000);
+    await setField(page, 'Escorrentía', '1');
+    const dirty = await atlasHashes(page);
+    await page.getByTestId('export-open').click();
+    await expect(page.getByTestId('export-runoff-warning')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.getByTestId('export-run')).toBeHidden();
+
+    await switchSection(page, 'dirt', false);
+    const off = await atlasHashes(page);
+    expect(off.baseColor).not.toBe(dirty.baseColor);
+    // runoff > 0 in the params has no effect while the section is off.
+    await setField(page, 'Escorrentía', '0');
+    expect(await atlasHashes(page)).toEqual(off);
+    await setField(page, 'Escorrentía', '1');
+    expect(await atlasHashes(page)).toEqual(off);
+
+    await page.getByTestId('export-open').click();
+    await expect(page.getByTestId('export-run')).toBeVisible();
+    await expect(page.getByTestId('export-runoff-warning')).toHaveCount(0);
+    await page.keyboard.press('Escape');
+
+    const dir = testInfo.outputPath('dirt-off');
+    await page.evaluate((d) => window.__hs!.exportProject({ dir: d, preset: 'unity-urp', resolutionPx: 1024 }), dir);
+    const json = JSON.parse(readFileSync(join(dir, 'bricks_wall_13.hotspot.json'), 'utf8'));
+    const mirrors = await page.evaluate(() =>
+      window.__hs!.core.composeInputsFromDoc(window.__hs!.store.getState().doc!, 1024).layout.rects
+        .map((r) => [r.allowMirrorX, r.allowMirrorY]));
+    // The v0.1 presets set no mirror flags; core export.test covers runoff false keeping them.
+    expect(json.rects.map((r: { allowMirrorX: boolean; allowMirrorY: boolean }) => [r.allowMirrorX, r.allowMirrorY]))
+      .toEqual(mirrors);
+    const csv = readFileSync(join(dir, 'bricks_wall_13.anvil.csv'), 'utf8').split(String.fromCharCode(13, 10));
+    csv.slice(2).forEach((l, i) => expect(l.split(',')[6]).toBe(mirrors[i][0] || mirrors[i][1] ? 'yes' : 'no'));
   });
 
   test('the Desgaste tab shows the wear mask', async ({ page }) => {

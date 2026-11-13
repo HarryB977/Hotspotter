@@ -147,6 +147,22 @@ describe('project document', () => {
     expect(r.structure.type).toBe('continuous');
   });
 
+  it('switches on wear and dirt for documents saved without "enabled", and keeps an explicit value', () => {
+    const doc = createDefaultDoc(material);
+    const wear = doc.nodes.find((n) => n.type === 'wear')!.params as unknown as Record<string, unknown>;
+    const dirt = doc.nodes.find((n) => n.type === 'dirt')!.params as unknown as Record<string, unknown>;
+    delete wear.enabled;
+    dirt.enabled = 'yes';
+    const r = composeInputsFromDoc(parseDoc(JSON.stringify(doc)), 512);
+    expect(r.wear.enabled).toBe(true);
+    expect(r.dirt.enabled).toBe(true);
+    wear.enabled = false;
+    dirt.enabled = false;
+    const off = composeInputsFromDoc(parseDoc(JSON.stringify(doc)), 512);
+    expect(off.wear.enabled).toBe(false);
+    expect(off.dirt.enabled).toBe(false);
+  });
+
   it('gives inserted nodes unique ids when the id is taken', () => {
     const old = v01a();
     old.nodes[1].id = 'wear';

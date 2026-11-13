@@ -102,6 +102,13 @@ describe('runChecks', () => {
       expect(get(r, id).status).toBe('ok');
       expect(get(r, id).message).toMatch(/desactivado/);
     }
+    // The section switch off ("Activar"): the same skip, and the substrate check has nothing uncovered.
+    const secondSet = { ...DEFAULT_WEAR.substrate, source: 'secondSet' as const };
+    const switched = runChecks(ctxWith(off, {}, { enabled: false, substrate: secondSet }));
+    for (const id of ['coverage', 'islands', 'substrate'] as const) {
+      expect(get(switched, id).status).toBe('ok');
+      expect(get(switched, id).message).toMatch(/desactivado/);
+    }
     // A family that loses no material has no edge to cover.
     expect(get(runChecks(ctxWith(m, {}, { family: 'dent' })), 'coverage').status).toBe('ok');
     // A rim under one evaluation pixel (4 mm at 1.28 px/cm) cannot be checked.
@@ -211,6 +218,34 @@ describe('runChecks', () => {
     // A weak detail normal (0.1): the macro dominates, and an inverted normal is still an error.
     expect(get(runChecks(ctxWith(build(0.1, 1))), 'normal').status).toBe('error');
     expect(get(runChecks(ctxWith(build(0.1, -1))), 'normal').status).toBe('ok');
+  });
+
+  it('normal fades the detail normal by wearMask, as normalFromHeight does', () => {
+    const n = 128;
+    const mpp = 1 / n;
+    /** Macro slope 0.5 towards +x; detail normal of slope 1.5 opposing it; inverted final normal; uniform wear. */
+    const build = (wear: number) => {
+      const m = flatMaps(n);
+      const len = Math.hypot(0.5, 1);
+      for (let i = 0; i < n * n; i++) {
+        const x = i % n;
+        m.macroHeight[i] = 0.5 * x * mpp;
+        m.heightM[i] = m.macroHeight[i];
+        m.matNormal.set([1.5, 0, 1, 0], i * 4);
+        m.wearMask[i] = wear;
+        m.normal[i * 4] = Math.round((0.5 / len * 0.5 + 0.5) * 255);
+        m.normal[i * 4 + 2] = Math.round(((1 / len) * 0.5 + 0.5) * 255);
+      }
+      return m;
+    };
+    // Intact material: the detail normal dominates, the pixel is not judged.
+    expect(get(runChecks(ctxWith(build(0))), 'normal').status).toBe('ok');
+    // Fully lost: the detail is gone (flat), the macro slope dominates and the inverted normal is an error.
+    expect(get(runChecks(ctxWith(build(255))), 'normal').status).toBe('error');
+    // A 1 × 1 wearMask placeholder (wear off) does not fade.
+    const off = build(0);
+    off.wearMask = new Uint8Array(1);
+    expect(get(runChecks(ctxWith(off)), 'normal').status).toBe('ok');
   });
 
   it('proportions uses the rotated period and points at the rect', () => {

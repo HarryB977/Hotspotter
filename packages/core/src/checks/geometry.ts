@@ -51,11 +51,11 @@ export function edgeDistPx(r: EvalRect, x: number, y: number): number {
 }
 
 /**
- * Why edge-wear checks (coverage, islands) do not apply, in Spanish, or null when they do: the wear is off (1 × 1
- * placeholder maps), its width is 0 (R30), or the family loses no material (wearMask stays 0).
+ * Why edge-wear checks (coverage, islands) do not apply, in Spanish, or null when they do: the wear is off (its
+ * switch, or 1 × 1 placeholder maps), its width is 0 (R30), or the family loses no material (wearMask stays 0).
  */
 export function wearSkipReason(wear: WearParams, wearMask: Uint8Array, pixels: number, loses: boolean): string | null {
-  if (wearMask.length < pixels) return 'El desgaste está desactivado: no hay nada que comprobar.';
+  if (!wear.enabled || wearMask.length < pixels) return 'El desgaste está desactivado: no hay nada que comprobar.';
   if (wear.widthM <= 0) return 'El desgaste de borde está desactivado (alcance 0): no hay nada que comprobar.';
   if (!loses) return 'Esta familia de desgaste no quita material: no hay roturas que comprobar.';
   return null;

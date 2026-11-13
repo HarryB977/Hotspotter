@@ -25,6 +25,8 @@ export const WEAR_FAMILIES: Record<WearFamily, FamilyShape> = {
 };
 
 export interface WearParams {
+  /** Section switch ("Activar"): off composes without wear (1 × 1 wear maps, no wear block in hotspot.json). */
+  enabled: boolean;
   family: WearFamily;
   /** True once the user picks a family; proposeFamily never overrides it. */
   userSetFamily?: boolean;
@@ -43,6 +45,8 @@ export interface WearParams {
 }
 
 export interface DirtParams {
+  /** Section switch ("Activar"): off composes without dirt (no cavity dirt, no runoff). */
+  enabled: boolean;
   cavity: number;
   runoff: number;
   runoffLengthM: number;
@@ -50,6 +54,7 @@ export interface DirtParams {
 }
 
 export const DEFAULT_WEAR: WearParams = {
+  enabled: true,
   family: 'brittle',
   intensity: 0.5,
   widthM: 0.04,
@@ -65,7 +70,9 @@ export const DEFAULT_WEAR: WearParams = {
   substrate: { source: 'interior', hueShift: 0, satMul: 0.7, valMul: 0.8, roughAdd: 0.2 },
 };
 
-export const DEFAULT_DIRT: DirtParams = { cavity: 0.4, runoff: 0.3, runoffLengthM: 0.4, tint: [0.25, 0.22, 0.18] };
+export const DEFAULT_DIRT: DirtParams = {
+  enabled: true, cavity: 0.4, runoff: 0, runoffLengthM: 0.4, tint: [0.25, 0.22, 0.18],
+};
 
 export function proposeFamily(t: MaterialType, materialName: string): WearFamily {
   if (t === 'pieces') return 'brittle';

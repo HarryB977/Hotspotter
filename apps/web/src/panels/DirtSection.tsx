@@ -1,6 +1,7 @@
 import type { DirtParams, DocNode } from '@hotspotter/core';
 import { es } from '../i18n/es';
 import { useProject } from '../state/store';
+import { Switch } from '../components/ui/switch';
 import { Row, Section } from './MaterialPanel';
 import { LengthField, SliderField } from './WearSection';
 
@@ -10,7 +11,7 @@ const toHex = (rgb: [number, number, number]) =>
 const fromHex = (hex: string): [number, number, number] =>
   [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255) as [number, number, number];
 
-/** Dirt node: cavity dirt, runoff and their tint. */
+/** Dirt node: on/off switch, cavity dirt, runoff and their tint. */
 export function DirtSection() {
   const node = useProject((s) => s.doc?.nodes.find((n): n is DocNode<'dirt'> => n.type === 'dirt'));
   const updateNode = useProject((s) => s.updateNode);
@@ -20,7 +21,17 @@ export function DirtSection() {
   const t = es.dirt;
 
   return (
-    <Section title={t.title}>
+    <Section
+      title={t.title}
+      testId="dirt-section"
+      dimmed={!d.enabled}
+      action={(
+        <Switch
+          checked={d.enabled} onCheckedChange={(enabled) => set({ enabled })}
+          aria-label={`${t.enabled} ${t.title.toLowerCase()}`} title={t.enabledHint} data-testid="dirt-enabled"
+        />
+      )}
+    >
       <SliderField
         label={t.cavity} hint={t.cavityHint} value={d.cavity} min={0} max={1} step={0.01}
         onChange={(v) => set({ cavity: v })}

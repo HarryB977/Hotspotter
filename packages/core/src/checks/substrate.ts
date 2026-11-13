@@ -60,6 +60,9 @@ export function jointMeanRgb(baseColor: Uint8Array, pieceId: Uint32Array): Rgb |
  */
 export function checkSubstrate(ctx: CheckContext): CheckResult {
   const base = { id: 'substrate' as const, rectIds: [] as string[] };
+  if (!ctx.wear.enabled) {
+    return { ...base, status: 'ok', message: 'El desgaste está desactivado: no queda nada al descubierto.' };
+  }
   if (ctx.wear.substrate.source !== 'secondSet') {
     return { ...base, status: 'ok', message: 'Lo que queda debajo sale del propio material.' };
   }

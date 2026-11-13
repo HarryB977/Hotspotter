@@ -809,10 +809,13 @@ export function composeInputFor(
   resolutionPx: number,
 ): ComposeInput {
   const { doc, gpuMaterial, structure, mask, substrate } = s;
+  // A section switched off ("Activar") composes as if its node were absent (v0.1-A output for wear).
+  const wear = wearNode(doc)?.params;
+  const dirt = dirtNode(doc)?.params;
   return {
     layout: inputs.layout, material: gpuMaterial, placements: inputs.placements, resolutionPx, structure: structure?.gpu,
-    wear: wearNode(doc)?.params,
-    dirt: dirtNode(doc)?.params,
+    wear: wear?.enabled ? wear : undefined,
+    dirt: dirt?.enabled ? dirt : undefined,
     mask: mask?.texture,
     substrateMaterial: substrate?.gpu,
     grainAxis: structure?.result.grainAxis ?? null,
@@ -829,10 +832,10 @@ async function recompose(): Promise<void> {
     const t0 = performance.now();
     // composeAtlas binds every texture (structure, mask, substrate) before its first await, so a later replacement
     // may destroy them.
-    // The preview keeps matNormal so a 2048 preview can stand in for the evaluation (R41 normal check).
+    // A preview at EVAL_RES keeps matNormal so it can stand in for the evaluation (R41 normal check).
     maps = await composeAtlas(gpu, {
       ...composeInputFor({ doc, gpuMaterial, structure, mask, substrate }, { layout, placements }, previewRes),
-      keepMatNormal: true,
+      keepMatNormal: previewRes === EVAL_RES,
     });
     await gpu.device.queue.onSubmittedWorkDone();
     const gpuMs = performance.now() - t0;
@@ -952,7 +955,8 @@ async function evaluate(mine: number, opts?: EvaluationOptions): Promise<CheckRe
       atlas.structure === structure && atlas.mask === mask && atlas.substrate === substrate;
     if (!current) evalStats.composes++;
     const compareSubstrate =
-      inputs.wear.substrate.source === 'secondSet' && substrate !== null && structure?.result.type === 'pieces';
+      inputs.wear.enabled && inputs.wear.substrate.source === 'secondSet' && substrate !== null &&
+      structure?.result.type === 'pieces';
     // Before the compose, so a failure cannot leak its maps; a failure only skips the substrate comparison.
     let joints: [number, number, number] | null = null;
     if (compareSubstrate) {

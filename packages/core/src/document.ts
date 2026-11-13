@@ -124,11 +124,13 @@ function normalizeNodes(d: ProjectDoc): void {
       p.mask = mergeObj(w.mask, n.params.mask);
       p.substrate = mergeObj(w.substrate, n.params.substrate);
       if (!Object.prototype.hasOwnProperty.call(WEAR_FAMILIES, p.family)) p.family = 'brittle';
+      if (typeof p.enabled !== 'boolean') p.enabled = true;
       n.params = p as unknown as Record<string, unknown>;
     } else if (n.type === 'dirt') {
       const p = mergeObj(defaultDirt(), n.params);
       const t = (n.params as { tint?: unknown }).tint;
       if (!Array.isArray(t) || t.length !== 3 || !t.every((x) => typeof x === 'number')) p.tint = [...DEFAULT_DIRT.tint];
+      if (typeof p.enabled !== 'boolean') p.enabled = true;
       n.params = p as unknown as Record<string, unknown>;
     }
   }

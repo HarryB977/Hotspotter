@@ -5,11 +5,11 @@
 Se exporta un PNG por mapa (8 o 16 bits; height también en EXR de 32 bits) con un prefijo común: `<nombre>_BaseColor`, `_Normal`, `_Height`, `_Roughness`, `_Metallic`, `_AO`, `_Opacity` (si existe), más dos auxiliares: `_RectID` (color por rectángulo) y `_WearMask` (daño 0–1, útil para shaders).
 
 - El export compone con las mismas entradas que la vista previa (desgaste, suciedad, máscara B/N, segundo material y eje de veta), solo que a su resolución. Con la misma resolución y el mismo layout, los mapas salen idénticos byte a byte a los de la vista previa.
-- `_WearMask` es el `wearMask` del compose en gris (R = G = B, A = 255). Sin desgaste sale negro.
+- `_WearMask` es el `wearMask` del compose en gris (R = G = B, A = 255). Sin desgaste (o con su interruptor apagado) sale negro, y `hotspot.json` no lleva el bloque `wear`.
 - `_RectID` pinta cada rectángulo con el mismo color hash que la vista "IDs rect" (`rectIdRgb` en `packages/core`, `ID_FS` en la vista: 64 + (byte · 166 >> 8) por canal). La ranura vacía es gris oscuro (13).
 - La resolución del diálogo de exportar es `resolutionPx` del nodo de salida: el panel de comprobaciones y el export leen el mismo valor.
-- Con escorrentía, el aviso de giro (ver abajo) sale en cuanto se abre el diálogo. Al reabrirlo no queda el resumen ni el resultado de la exportación anterior.
-- Antes de exportar, el diálogo pasa las seis comprobaciones de [04](04-wear.md) a la resolución de exportación y muestra el resumen. Los avisos (o un fallo de las comprobaciones) no bloquean la exportación.
+- La escorrentía empieza en 0 y la suciedad apagada no tiene; solo con escorrentía activa, el aviso de giro (ver abajo) sale en cuanto se abre el diálogo. Al reabrirlo no queda el resumen ni el resultado de la exportación anterior.
+- Antes de exportar, el diálogo pasa las seis comprobaciones de [04](04-wear.md) (composición de evaluación a 2048 px; el sangrado se calcula a la resolución de exportación) y muestra el resumen. Los avisos (o un fallo de las comprobaciones) no bloquean la exportación.
 
 ### Presets por destino
 
@@ -40,7 +40,7 @@ Campos de `hotspot.json` (versión 1):
 | `groove` | ancho, profundidad, bisel y perfil de la ranura |
 | `rects` | `id`, `px`, `uv`, `allowRotation`, `allowMirrorX/Y`, `tileU/V`, `useOn`, `inset`, `group` |
 
-**Escorrentía y volteos.** La escorrentía (`dirt.runoff > 0`) pinta chorretones que caen hacia −Y del atlas. Girar o voltear en vertical un rectángulo en el motor los deja de lado o hacia arriba. Por eso, con escorrentía:
+**Escorrentía y volteos.** La escorrentía (`dirt.runoff > 0` con la suciedad encendida; 0 por defecto) pinta chorretones que caen hacia −Y del atlas. Girar o voltear en vertical un rectángulo en el motor los deja de lado o hacia arriba. Por eso, con escorrentía:
 
 - `hotspot.json` escribe `allowMirrorY: false` en todos los rectángulos (el volteo horizontal se respeta).
 - La tabla de Anvil escribe `Can mirror` = `no`, porque suponemos que Anvil tiene un único flag de volteo para los dos ejes y no puede limitarlo al horizontal. **Sin verificar:** no se ha comprobado en Anvil. La columna `Mirror X ok` lleva el `allowMirrorX` del rectángulo, por si el volteo horizontal se puede permitir a mano.

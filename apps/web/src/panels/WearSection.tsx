@@ -7,6 +7,7 @@ import { useProject } from '../state/store';
 import { Button } from '../components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { Slider } from '../components/ui/slider';
+import { Switch } from '../components/ui/switch';
 import { NumField, Row, Section } from './MaterialPanel';
 
 const FAMILIES = Object.keys(WEAR_FAMILIES) as WearFamily[];
@@ -55,7 +56,7 @@ export function LengthField({ label, hint, valueM, unit, onChange }: {
   );
 }
 
-/** Wear node: family, edge damage, B/W mask and substrate. */
+/** Wear node: on/off switch, family, edge damage, B/W mask and substrate. */
 export function WearSection() {
   const node = useProject((s) => s.doc?.nodes.find((n): n is DocNode<'wear'> => n.type === 'wear'));
   const mask = useProject((s) => s.mask);
@@ -80,7 +81,17 @@ export function WearSection() {
   const interiorOff = w.substrate.source === 'secondSet' && substrate !== null;
 
   return (
-    <Section title={t.title}>
+    <Section
+      title={t.title}
+      testId="wear-section"
+      dimmed={!w.enabled}
+      action={(
+        <Switch
+          checked={w.enabled} onCheckedChange={(enabled) => set({ enabled })}
+          aria-label={`${t.enabled} ${t.title.toLowerCase()}`} title={t.enabledHint} data-testid="wear-enabled"
+        />
+      )}
+    >
       <Row label={t.family} hint={t.familyHint}>
         <Select value={w.family} onValueChange={(v) => set({ family: v as WearFamily, userSetFamily: true })}>
           <SelectTrigger data-testid="wear-family" title={t.familyHint}><SelectValue /></SelectTrigger>

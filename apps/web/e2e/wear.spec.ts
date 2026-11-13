@@ -639,7 +639,9 @@ test('packWear byte layout and sanitising of saved values', async ({ page }) => 
       bandM: 0.008, microM: 0.001, pieceBias: 0.5, edgeTone: 0.375, seed: 0xdeadbeef,
       mask: { enabled: true, strength: 0.75, invert: true },
     };
-    const d = { cavity: 0.5, runoff: 0.25, runoffLengthM: 0.625, tint: [0.25, 0.5, 0.75] as [number, number, number] };
+    const d = {
+      enabled: true, cavity: 0.5, runoff: 0.25, runoffLengthM: 0.625, tint: [0.25, 0.5, 0.75] as [number, number, number],
+    };
     const sub = { source: 'secondSet' as const, hueShift: 30, satMul: 0.5, valMul: 0.25, roughAdd: 0.125 };
     const buf = engine.packWear({ ...w, family: 'dent', substrate: sub }, d, core.WEAR_FAMILIES.chipping, {
       hasPieces: true, grainAxis: 'y', maskBound: true, substrate: { tileSizeM: [0.5, 0.75], roughnessIsGloss: true },
@@ -863,8 +865,13 @@ test('normals follow the macro height and the detail normal fades inside the los
     const H = (x: number, y: number) => m.macroHeight[at(x, y)];
     // The material's own relief (final − macro height) and its detail normal, for the R40/R41 dominance rule.
     const R = (x: number, y: number) => m.height[at(x, y)] - m.macroHeight[at(x, y)];
-    const detailSlope = (i: number) =>
-      Math.hypot(m.matNormal[i * 4], m.matNormal[i * 4 + 1]) / Math.max(m.matNormal[i * 4 + 2], 1e-3);
+    // Faded by wearMask towards (0, 0, 1), as normalFromHeight and checkNormal do.
+    const detailSlope = (i: number) => {
+      const t = m.wearMask ? m.wearMask[i] / 255 : 0;
+      const l = Math.hypot(m.matNormal[i * 4], m.matNormal[i * 4 + 1], m.matNormal[i * 4 + 2]) || 1;
+      const dz = (m.matNormal[i * 4 + 2] / l) * (1 - t) + t;
+      return (Math.hypot(m.matNormal[i * 4], m.matNormal[i * 4 + 1]) / l) * (1 - t) / Math.max(dz, 1e-3);
+    };
     let steep = 0, against = 0, againstFlipped = 0;
     let inSum = 0, inN = 0, outSum = 0, outN = 0;
     for (let y = 0; y < h; y++) {

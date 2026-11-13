@@ -72,16 +72,18 @@ export function Inspector() {
         </Row>
       </Section>
       <Section title={es.inspector.groove}>
-        <Row label={es.inspector.grooveWidth}>
+        <Row label={es.inspector.grooveWidth} hint={es.inspector.grooveWidthHint}>
           <NumField
             aria-label={es.inspector.grooveWidth}
+            title={es.inspector.grooveWidthHint}
             value={Math.round(g.widthM * 1e4) / 10}
             onCommit={(v) => v !== null && v >= 0 && setGroove({ widthM: v / 1000 })}
           />
         </Row>
-        <Row label={es.inspector.grooveBevel}>
+        <Row label={es.inspector.grooveBevel} hint={es.inspector.grooveBevelHint}>
           <NumField
             aria-label={es.inspector.grooveBevel}
+            title={es.inspector.grooveBevelHint}
             value={Math.round(g.bevelM * 1e4) / 10}
             onCommit={(v) => v !== null && v >= 0 && setGroove({ bevelM: v / 1000 })}
           />

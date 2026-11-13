@@ -50,7 +50,10 @@ export function ExportDialog() {
   const [preset, setPreset] = useState<ExportPreset>('unity-urp');
   // The output node holds the export resolution: the Checks panel and the export read the same value.
   const res = useProject((s) => outputNode(s.doc)?.params.resolutionPx ?? 4096);
-  const runoff = useProject((s) => (dirtNode(s.doc)?.params.runoff ?? 0) > 0);
+  const runoff = useProject((s) => {
+    const dirt = dirtNode(s.doc)?.params;
+    return !!dirt?.enabled && dirt.runoff > 0;
+  });
   const setRes = (r: number) => useProject.getState().updateNode<'output'>('output', { resolutionPx: r });
   const [busy, setBusy] = useState(false);
   const [checking, setChecking] = useState(false);
