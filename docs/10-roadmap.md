@@ -25,7 +25,10 @@ Falta para cerrar la v0.1 (planes v0.1-C/D):
 - **Vista 3D** de la vista principal (three.js).
 - **`.exe` portable** y **aviso de actualizaciones** (ver [08](08-distribution.md)).
 - Pasar el **análisis de estructura** (≈1.3 s) y **`runChecks`** (≈0.5–0.7 s) a un **Web Worker**: hoy bloquean el hilo principal.
-- Los menores M8, M9 y M10 de la revisión final de la v0.1-B (2026-11-13), aplazados a la v0.1-C.
+- Aplazado de la revisión final de la v0.1-B (2026-11-13):
+  - La pasada de color compila una pipeline nueva por cada longitud de escorrentía y resolución (la clave incluye `lookback`). Pasar `LOOKBACK_ROWS` y `CHUNK_ROWS` por uniform para que arrastrar "Longitud" no dé tirones.
+  - Quitar las esperas fijas de 200 ms de `structure.spec.ts` (comprobaciones negativas) y esperar a una señal de análisis terminado.
+  - `readbackRgba16f` a 2048 usa 32 MiB de staging y una copia Float32 de 64 MiB. Devolver la pendiente por píxel en lugar de los cuatro canales.
 - Guardar y abrir proyectos con la máscara B/N y el segundo material (hoy viven solo en el estado de la app, decisión 48).
 - Islas: marcar también las motas sueltas dentro de la franja `wEff` (decisión 51).
 - Comprobar en Anvil si `Can mirror` es un solo flag para los dos ejes (decisión 54).
