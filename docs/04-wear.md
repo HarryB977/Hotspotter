@@ -30,6 +30,50 @@ El daño se construye por capas de escala, todas en unidades del mundo:
 
 Cada capa resta del campo de altura. Una rotura siempre lleva su banda de fractura, para que nunca haya un corte limpio sin contexto. La profundidad tiene un límite físico: no se puede perder más de lo que mide la pieza.
 
+### Parámetros de la v0.1
+
+Viven en el nodo `wear` del documento (`packages/core/src/wear/params.ts`). Todas las longitudes se guardan en metros; la UI las muestra en cm o mm.
+
+| Parámetro | Por defecto | UI | Qué hace |
+|---|---|---|---|
+| `family` | según el material | Familia | Forma del daño (ver "Familias de la v0.1"). La propone `proposeFamily` hasta que el usuario elige una (`userSetFamily`) |
+| `intensity` | 0.5 (0–1) | Intensidad | Potencial de daño en el borde visible |
+| `widthM` | 0.04 (4 cm) | Alcance | Hasta dónde llega el daño desde el borde visible. Se limita a `wEff`; 0 apaga el desgaste de borde, también el borde mínimo (R30) |
+| `minEdgeM` | 0.004 (4 mm) | Borde mínimo | Borde que se pierde siempre, con contorno irregular |
+| `sizeM` | 0.03 (3 cm) | Tamaño de rotura | Escala del ruido y de las celdas; con piezas, distancia a la junta donde se concentra el daño |
+| `depthM` | 0.006 (6 mm) | Profundidad | Profundidad de la pérdida (entre 0.5 y 1 vez este valor, según ruido) |
+| `bandM` | 0.006 (6 mm) | Banda de fractura | Ancho de la transición alrededor de cada rotura |
+| `microM` | 0.0005 (0.5 mm) | Microdetalle | Amplitud de la rugosidad de la superficie rota |
+| `pieceBias` | 0.7 (0–1) | Sigue las piezas | Cuánto se concentra el daño junto a las juntas, con un peso por pieza |
+| `edgeTone` | 0.3 (0–1) | Tono de canto | Aclarado y pulido de los cantos |
+| `seed` | 0 | Semilla | Semilla del daño (u32, hash PCG en GPU) |
+| `mask` | apagada, fuerza 1, sin invertir | Máscara B/N | Ver la decisión 43 |
+| `substrate` | interior: tono 0°, saturación ×0.7, valor ×0.8, rugosidad +0.2 | Sustrato | Lo que queda debajo (ver "Pasada de color") |
+
+Suciedad (nodo `dirt`): `cavity` 0.4, `runoff` 0.3, `runoffLengthM` 0.4 m y `tint` [0.25, 0.22, 0.18].
+
+### Resumen del cálculo
+
+Por cada píxel de un rectángulo, en metros locales del rectángulo más un desplazamiento por rectángulo:
+
+```
+e     = distancia al borde visible (rect menos medio fondo de ranura)
+wEff  = min(widthM, 0.33 · lado menor visible)
+P     = intensity · (1 − smoothstep(0, wEff, e))           // borde
+      · mix(1, 2·máscara, strength)                        // máscara B/N (si hay)
+      · mix(1, cercaníaJunta · pesoPieza, pieceBias)       // solo con piezas
+q     = ruido deformado(local / sizeM)
+forma = mix(fbm(q), hash(celda Voronoi estirada, pieza), cellMix)
+pierde = forma < P  o  e < min(minEdgeM, 0.5·wEff) · (1 + 0.6·fbm)
+prof  = depthM · (0.5 + 0.5·fbm), en escalones si la familia los tiene
+border = distancia con signo al contorno de la pérdida (jump flooding)
+altura = hMat − prof · smoothstep(0, bandM, −border) + micro + grietas en la banda
+normal = Sobel(altura macro) + normal de detalle que se desvanece con wearMask
+AO     = AO_material · AO_altura;  color = sustrato, canto, cavidad y escorrentía
+```
+
+Las secciones siguientes detallan cada pasada.
+
 ### Pasada de pérdida (dónde se rompe)
 
 El motor decide primero qué píxeles pierden material y a qué profundidad objetivo (en metros). Ambos valores van en el mapa `loss` (r32uint con `pack2x16float(pérdida, profundidad)`). Sin desgaste, `loss` es un marcador de 1×1 a 0: un `loss` de 1×1 significa "sin desgaste". El export no escribe `loss`, `pieceId` ni `jointDistM` y los libera nada más componer.
@@ -85,7 +129,22 @@ Lo que aparece donde se pierde material sale de una de estas fuentes:
 
 Además del borde, la capa superior puede perderse **en manchas grandes** dentro del rectángulo, como el enlucido gastado que deja ver el ladrillo en `samples/examples/brick wall.jpg`. Las guía el ruido, la máscara B/N o la curvatura, y se esculpen en el mismo campo de altura con su banda de fractura, igual que el daño de borde. Ver [11-test-bench.md](11-test-bench.md).
 
-### Familias de daño
+### Familias de la v0.1
+
+Una familia por proyecto (sin mezcla todavía). Valores de `WEAR_FAMILIES`:
+
+| Familia | UI | `cellMix` | `anisotropy` | Escalones | Pierde capa | Pulido | Se propone para |
+|---|---|---|---|---|---|---|---|
+| `brittle` | Rotura frágil | 1 | 1 | 0 | sí | 0.2 | materiales con piezas |
+| `chipping` | Desconchado | 0.6 | 1 | 2 | sí | 0.1 | continuos con "paint"/"pintur" en el nombre |
+| `splinter` | Astillado | 1 | 4 | 0 | sí | 0.1 | materiales direccionales |
+| `erosion` | Erosión | 0 | 1 | 0 | sí | 0 | el resto de continuos |
+| `dent` | Abolladura y abrasión | 0.3 | 1 | 0 | no (hunde sin perder) | 0.6 | continuos con "metal", "steel", "iron" o "alumin" en el nombre |
+| `edgeOnly` | Solo cantos | 0 | 1 | 0 | no | 1 | — |
+
+El deshilachado (papel, tela, césped) queda para la v0.2: `grass 07` usa la familia que se le proponga.
+
+### Familias de daño (objetivo)
 
 Se combinan y se ponderan. El tipo de material propone una mezcla por defecto:
 
@@ -93,7 +152,7 @@ Se combinan y se ponderan. El tipo de material propone una mezcla por defecto:
 - Rotura frágil (cerámica, ladrillo, piedra, hormigón): fractura angulosa siguiendo piezas.
 - Astillado (madera): roturas alargadas en la dirección de la veta.
 - Abolladura y abrasión (metal, plástico): deformación suave, brillo pulido en los cantos y arañazos.
-- Deshilachado y rasgado (papel, tela, césped): bordes fibrosos, pérdida de opacidad.
+- Deshilachado y rasgado (papel, tela, césped): bordes fibrosos, pérdida de opacidad. Queda para la v0.2.
 - Erosión (cemento, mortero, piedra blanda): pérdida granular redondeada.
 - Desgaste de cantos sin pérdida (cualquier material): solo color, roughness y curvatura en las aristas.
 
@@ -147,6 +206,8 @@ Cada fila tiene un estado (correcto, aviso o error), un mensaje en español llan
 | Sustrato | Solo con segundo set y un material con piezas. Compara el color medio del BaseColor del segundo set con el color medio de las juntas del propio material superior, en espacio de material: su BaseColor al tamaño del análisis de estructura donde `pieceId` es 0, sin la suciedad ni el desgaste del atlas (R37). Se calcula una vez por material y estructura. La diferencia es ΔE76 en Lab (sRGB → lineal → XYZ D65 → Lab). Si pasa de 20, da aviso |
 
 Con el desgaste apagado (mapas de 1×1), con alcance 0 o con una familia que no quita material (`dent`, `edgeOnly`), la cobertura y las islas dan "correcto" y el mensaje lo explica.
+
+Las islas y las demás comprobaciones nunca bloquean: solo la coherencia de normal puede dar error, y aun así se puede exportar. `runChecks` y el análisis de estructura corren en el hilo principal (unos 0.5–0.7 s y 1.3 s); pasarlos a un Worker queda pendiente (ver [10](10-roadmap.md)).
 
 ## Variedad
 

@@ -1,7 +1,10 @@
-/** Raised when a pipeline (or its shader module) fails validation, e.g. a WGSL error. */
+/**
+ * Raised when a pipeline (or its shader module) fails validation, e.g. a WGSL error. The UI shows the message as is,
+ * so it leads with a Spanish sentence; the WebGPU detail after it stays in English.
+ */
 export class PipelineValidationError extends Error {
   constructor(readonly key: string, message: string) {
-    super(`Pipeline "${key}": ${message}`);
+    super(`Error interno de un shader ("${key}"): ${message}`);
     this.name = 'PipelineValidationError';
   }
 }
@@ -16,7 +19,11 @@ interface Entry {
 
 const caches = new WeakMap<GPUDevice, Map<string, Entry>>();
 
-/** The lists of the trackPipelines calls in progress, innermost last. */
+/**
+ * The lists of the trackPipelines calls in progress, innermost last. Global, so the window between trackPipelines()
+ * and its stop function must stay free of awaits: any compose that runs during an await would push its pipelines into
+ * this caller's list (and the caller's validation would wait on, or throw, the other compose's errors).
+ */
 const tracking: PipelineReady[][] = [];
 
 function cacheOf(device: GPUDevice): Map<string, Entry> {

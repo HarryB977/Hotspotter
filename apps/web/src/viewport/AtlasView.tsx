@@ -3,6 +3,7 @@ import { rectSizeM } from '@hotspotter/core';
 import type { HotspotLayout, ProportionIssue } from '@hotspotter/core';
 import { heightToRgba8 } from '@hotspotter/engine';
 import type { AtlasMaps } from '@hotspotter/engine';
+import { es } from '../i18n/es';
 import { useProject } from '../state/store';
 import type { ActiveMap } from '../state/store';
 
@@ -204,7 +205,22 @@ export function AtlasView({ maps, layout, activeMap, issues }: AtlasViewProps) {
         if (!stale) draw(temp);
         temp.destroy();
       },
-      (e) => console.error('height view failed', e),
+      (e) => {
+        console.error('height view failed', e);
+        if (stale) return;
+        // Never leave the previous map on screen under the Height tab: clear it and say why in the status bar.
+        const target = ctxRef.current;
+        if (target) {
+          const encoder = b.device.createCommandEncoder();
+          encoder.beginRenderPass({
+            colorAttachments: [{
+              view: target.getCurrentTexture().createView(), loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 1],
+            }],
+          }).end();
+          b.device.queue.submit([encoder.finish()]);
+        }
+        useProject.setState({ composeError: es.mapBar.composeFailed(e instanceof Error ? e.message : String(e)) });
+      },
     );
     return () => {
       stale = true;

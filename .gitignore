@@ -4,5 +4,6 @@ dist/
 .env
 *.log
 samples/
+samples/_bench/
 test-results/
 playwright-report/

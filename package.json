@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "concurrently -n server,web \"npm run dev -w @hotspotter/server\" \"npm run dev -w @hotspotter/web\"",
     "e2e": "npm run e2e -w @hotspotter/web",
+    "bench": "node scripts/bench.mjs",
     "test": "npm run typecheck && npm run test --workspaces --if-present",
     "build": "npm run build --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present"

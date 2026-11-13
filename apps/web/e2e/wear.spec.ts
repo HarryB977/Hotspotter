@@ -1383,5 +1383,7 @@ test('a WGSL error in a cached pipeline surfaces through checkPipelines, once, a
   });
   expect(r.err?.name).toBe('PipelineValidationError');
   expect(r.err?.message).toContain('"broken"');
+  // Shown to the user as is: it leads with a Spanish sentence.
+  expect(r.err?.message).toMatch(/^Error interno de un shader \("broken"\)/);
   expect(r).toMatchObject({ again: 'ok', recreated: true, reported: true, sameGood: true });
 });

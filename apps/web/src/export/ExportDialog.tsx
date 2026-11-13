@@ -100,7 +100,9 @@ export function ExportDialog() {
         }),
       );
     } catch (e) {
-      setError(e instanceof ExportUploadError ? es.export.serverError(e.message) : es.export.failed(String(e)));
+      // Error messages are shown as is (a PipelineValidationError leads with a Spanish sentence), without the name.
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(e instanceof ExportUploadError ? es.export.serverError(e.message) : es.export.failed(msg));
     } finally {
       setChecking(false);
       setBusy(false);

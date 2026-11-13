@@ -302,6 +302,8 @@ test('the export dialog blocks a resolution over the GPU buffer limit, with a re
   await page.keyboard.press('Escape');
   // A value already in the output node (e.g. from a saved project) is reported and blocks the export.
   await page.evaluate(() => window.__hs!.store.getState().updateNode<'output'>('output', { resolutionPx: 8192 }));
+  // The 8192 warning names the video memory it takes with wear (docs/09 #46).
+  await expect(page.getByTestId('export-warning')).toContainText('4–5 GB de memoria de vídeo');
   await expect(page.getByTestId('export-too-big')).toContainText('256 MiB');
   await expect(page.getByTestId('export-too-big')).toContainText('128 MiB');
   await expect(page.getByTestId('export-too-big')).toContainText('resolución menor');

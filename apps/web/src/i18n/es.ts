@@ -63,7 +63,7 @@ export const es = {
     preset: 'Preset',
     resolution: 'Resolución',
     run: 'Exportar',
-    bigWarning: '8192 px necesita unos 2 GB de RAM y puede tardar.',
+    bigWarning: '8192 px necesita unos 2 GB de RAM y, con desgaste, unos 4–5 GB de memoria de vídeo. Puede tardar.',
     exporting: 'Exportando…',
     writing: (i: number, n: number, name: string) => `Escribiendo ${i} de ${n}: ${name}`,
     done: (n: number) => `Exportación completa: ${n} archivos escritos.`,
