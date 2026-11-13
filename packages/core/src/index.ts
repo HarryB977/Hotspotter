@@ -39,3 +39,5 @@ export { syntheticBrick, syntheticFbm, syntheticGrain } from './structure/synthe
 export type { SyntheticBrickOptions } from './structure/synthetic';
 export { WEAR_FAMILIES, DEFAULT_WEAR, DEFAULT_DIRT, proposeFamily } from './wear/params';
 export type { WearFamily, FamilyShape, WearParams, DirtParams } from './wear/params';
+export { CHECK_IDS, runChecks, deltaE76, jointMeanRgb, meanRgb } from './checks';
+export type { CheckId, CheckStatus, CheckResult, EvalMaps, CheckContext } from './checks';

@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { es } from './i18n/es';
 import { useProject } from './state/store';
 import { MaterialPanel } from './panels/MaterialPanel';
+import { ChecksPanel } from './panels/ChecksPanel';
 import { TooltipProvider } from './components/ui/tooltip';
 import { Tabs, TabsList, TabsTrigger } from './components/ui/tabs';
 import { LayoutPanel } from './panels/LayoutPanel';
@@ -36,6 +37,11 @@ export function App() {
   const activeMap = useProject((s) => s.activeMap);
   const setActiveMap = useProject((s) => s.setActiveMap);
   const composeError = useProject((s) => s.composeError);
+  const checks = useProject((s) => s.checks);
+  const flagged = checks?.results.filter((r) => r.status !== 'ok') ?? [];
+  const flaggedClass = flagged.some((r) => r.status === 'error')
+    ? 'text-red-500'
+    : flagged.length > 0 ? 'text-amber-400' : undefined;
 
   useEffect(() => {
     void useProject.getState().initGpu();
@@ -62,6 +68,7 @@ export function App() {
         </header>
         <aside className="overflow-y-auto border-r border-zinc-800 bg-zinc-900" data-testid="left-column">
           <MaterialPanel />
+          <ChecksPanel />
           <LayoutPanel />
         </aside>
         <main className="flex min-w-0 flex-col bg-zinc-950">
@@ -94,6 +101,15 @@ export function App() {
             )}
             {atlas && (
               <>
+                {checks && (
+                  <span
+                    className={flaggedClass}
+                    title={es.checks.counter(flagged.length)}
+                    data-testid="checks-warnings"
+                  >
+                    {`${es.checks.title}: ${flagged.length}`}
+                  </span>
+                )}
                 <span
                   className={atlas.issues.length > 0 ? 'text-amber-400' : undefined}
                   title={es.mapBar.issues(atlas.issues.length, atlas.layoutIssues.length)}

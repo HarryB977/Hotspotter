@@ -188,6 +188,22 @@ export const es = {
     tint: 'Tinte',
     tintHint: 'Color de la suciedad. Multiplica el color del material: cuanto más oscuro, más se nota',
   },
+  checks: {
+    title: 'Comprobaciones',
+    names: {
+      coverage: 'Cobertura de borde',
+      islands: 'Islas',
+      normal: 'Coherencia de normal',
+      proportions: 'Proporciones',
+      bleed: 'Sangrado',
+      substrate: 'Sustrato',
+    },
+    status: { ok: 'Correcto', warn: 'Aviso', error: 'Error' },
+    pending: 'Comprobando…',
+    focusHint: 'Clic para ver el problema en el atlas',
+    failed: (msg: string) => `No se pudieron hacer las comprobaciones: ${msg}`,
+    counter: (n: number) => (n === 1 ? '1 comprobación con avisos' : `${n} comprobaciones con avisos`),
+  },
   mapBar: {
     empty: 'Sin mapas',
     rectId: 'IDs rect',

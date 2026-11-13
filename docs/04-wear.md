@@ -126,6 +126,28 @@ Se ejecutan en el render final (y en una versión barata en el preview). Se mues
 | Tileado de trims | una franja `tileU/V` no encaja en los extremos |
 | Pixel art | aparecen colores fuera de la paleta o píxeles que no siguen la rejilla |
 
+### Lo que hace la v0.1
+
+La v0.1 trae seis comprobaciones: cobertura, islas, normal, proporciones, sangrado y sustrato. El resto de la tabla queda para la v0.2. Las calcula `runChecks` (TS puro en `packages/core/src/checks`) sobre una **composición de evaluación a 2048 px** de ancho, la misma que el preview pero a esa resolución:
+
+- Si el preview ya está a 2048 px y al día (mismo documento, material, estructura, máscara y sustrato), se leen sus mapas. Si no, se compone aparte y esos mapas se liberan nada más leerlos.
+- Se lanza 600 ms después de cada recomposición y antes de exportar.
+- Nunca corre dos veces a la vez: las peticiones van en cola, una petición en cola a la que adelanta otra más nueva se salta, y un resultado que llega cuando ya hay otra petición o recomposición posterior no se guarda.
+- A 2048 px un atlas de 8 m mide 3.9 mm por píxel, así que el borde mínimo de 4 mm ocupa al menos un píxel. Todas las distancias se dan en metros y se pasan a píxeles con los px/m de la evaluación, de modo que el resultado no depende de la resolución.
+
+Cada fila tiene un estado (correcto, aviso o error), un mensaje en español llano, los rectángulos afectados y, si procede, puntos del atlas. Al hacer clic en una fila con puntos, la vista se centra en el primero.
+
+| Comprobación | Regla de la v0.1 |
+|---|---|
+| Cobertura de borde | Solo con `minEdgeM > 0`. Se recorre el perímetro visible de cada rectángulo (sin el fondo de ranura) y, en cada punto, la franja del borde mínimo hacia dentro, de ancho `max(min(minEdgeM, 0.5·wEff), 1 px)`. Si un tramo de más de 2 cm no tiene `wearMask` en esa franja, da aviso, con el punto medio de cada tramo |
+| Islas | Componentes 8-conexas de `wearMask > 127` dentro de un rectángulo que no llegan a la franja de desgaste (distancia al borde visible `< wEff`). Si hay alguna, da aviso, con el centroide de cada una |
+| Coherencia de normal | La misma definición que el test de la Task 9: Sobel sobre la altura macro (y hacia arriba), y donde la pendiente pasa de 0.2 se exige `dot(n.xy, −grad) ≥ 0`. Si falla más del 0.5 % de los píxeles inclinados, da error |
+| Proporciones | `checkProportions` con el periodo girado de cada rectángulo. Si hay problemas, da aviso, con el centro de cada rectángulo |
+| Sangrado | Si el fondo de ranura (`groove.widthM`) mide menos de 4 px a la resolución de exportación, da aviso: la ranura desaparece en mip 2. Con los valores por defecto (6 mm en 8 m a 4096 px son 3.1 px) avisa |
+| Sustrato | Solo con segundo set y un material con piezas. Compara el color medio del BaseColor del segundo set con el color medio de las juntas del atlas: píxeles con `pieceId 0` dentro de un rectángulo, fuera del fondo de ranura y sin desgaste. La diferencia es ΔE76 en Lab (sRGB → lineal → XYZ D65 → Lab). Si pasa de 20, da aviso. Las juntas del atlas ya llevan la suciedad de cavidad, así que salen algo más oscuras que en el material |
+
+Con el desgaste apagado (mapas de 1×1), con alcance 0 o con una familia que no quita material (`dent`, `edgeOnly`), la cobertura y las islas dan "correcto" y el mensaje lo explica.
+
 ## Variedad
 
 Seed global más seeds por rectángulo, desplazamiento del material por rectángulo, mezcla de familias, escalas y la máscara B/N. Dos proyectos con parámetros distintos deben dar atlas que no se parezcan: no puede haber patrones fijos, texturas de ruido incluidas que se repitan ni formas de rotura de una biblioteca pequeña. Todo el ruido es procedural y se evalúa en coordenadas del mundo con dominio deformado.

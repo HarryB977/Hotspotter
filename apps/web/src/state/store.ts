@@ -1,16 +1,17 @@
 import { create } from 'zustand';
 import {
   CONTINUOUS, analyzeStructure, chooseMaps, classifyMapFile, composeInputsFromDoc, createDefaultDoc, downsample,
-  proposeFamily, resolveMaterialName, toGray, updateNodeParams, validateLayout,
+  jointMeanRgb, meanRgb, proposeFamily, resolveMaterialName, runChecks, toGray, updateNodeParams, validateLayout,
 } from '@hotspotter/core';
 import type {
-  DocNode, GrayImage, HotspotLayout, LayoutIssue, MapKind, MaterialSettings, MaterialType, NodeParams, NodeType,
-  ProjectDoc, ProportionIssue, RectPlacement, StructureResult,
+  CheckResult, DocNode, GrayImage, HotspotLayout, LayoutIssue, MapKind, MaterialSettings, MaterialType, NodeParams,
+  NodeType, ProjectDoc, ProportionIssue, RectPlacement, StructureResult,
 } from '@hotspotter/core';
 import {
-  composeAtlas, hasMapFromFiles, initGpu, uploadMaterial, uploadRgba8, uploadStructure, WebGpuUnavailableError,
+  composeAtlas, hasMapFromFiles, initGpu, readbackR32, readbackRgba8, uploadMaterial, uploadRgba8, uploadStructure,
+  WebGpuUnavailableError,
 } from '@hotspotter/engine';
-import type { AtlasMaps, GpuContext, GpuMaterial, GpuStructure, LoadedMaterial } from '@hotspotter/engine';
+import type { AtlasMaps, ComposeInput, GpuContext, GpuMaterial, GpuStructure, LoadedMaterial } from '@hotspotter/engine';
 import { es } from '../i18n/es';
 
 export type PreviewRes = 512 | 1024 | 2048;
@@ -45,8 +46,10 @@ export interface SubstrateState {
 /** A composed atlas with the layout and checks it was composed from. */
 export interface AtlasResult {
   maps: AtlasMaps;
-  /** Document, mask and substrate the atlas was composed from (by identity, to tell whether it is current). */
+  /** Inputs the atlas was composed from (by identity, to tell whether it is current). */
   doc: ProjectDoc;
+  gpuMaterial: GpuMaterial;
+  structure: StructureState | null;
   mask: MaskState | null;
   substrate: SubstrateState | null;
   layout: HotspotLayout;
@@ -56,6 +59,20 @@ export interface AtlasResult {
   layoutIssues: LayoutIssue[];
   resolutionPx: number;
   gpuMs: number;
+}
+
+/** Results of the last automatic checks and the evaluation size their points refer to. */
+export interface ChecksState {
+  results: CheckResult[];
+  width: number;
+  height: number;
+}
+
+/** A request to centre the atlas view on a point (atlas UV, 0..1); `seq` changes on every request. */
+export interface ViewFocus {
+  u: number;
+  v: number;
+  seq: number;
 }
 
 export interface ProjectState {
@@ -83,6 +100,20 @@ export interface ProjectState {
   substrate: SubstrateState | null;
   /** Last mask or substrate import failure, shown in the wear section; cleared by the next success. */
   wearError: string | null;
+  checks: ChecksState | null;
+  /** Last evaluation failure, shown in the checks panel; cleared by the next success. */
+  checksError: string | null;
+  viewFocus: ViewFocus | null;
+  /** Centres the atlas view on atlas UV (u, v). */
+  focusAtlas(u: number, v: number): void;
+  /**
+   * Composes at EVAL_RES (or reuses the preview atlas when it is at that resolution and current), reads the maps back
+   * and runs the automatic checks. Never runs concurrently with itself: requests queue, and a queued request that a
+   * newer one supersedes is skipped (resolves null). The results are stored only if no newer request or
+   * recomposition came meanwhile, and are returned to the caller either way. `exportResolutionPx` defaults to the
+   * output node's.
+   */
+  runEvaluation(opts?: { exportResolutionPx?: number }): Promise<CheckResult[] | null>;
   setPreviewRes(r: PreviewRes): void;
   setActiveMap(m: ActiveMap): void;
   /** Shallow-merges params into a node. */
@@ -353,6 +384,17 @@ export const useProject = create<ProjectState>()((set, get) => ({
   mask: null,
   substrate: null,
   wearError: null,
+  checks: null,
+  checksError: null,
+  viewFocus: null,
+
+  focusAtlas(u, v) {
+    set({ viewFocus: { u, v, seq: (get().viewFocus?.seq ?? 0) + 1 } });
+  },
+
+  runEvaluation(opts) {
+    return requestEvaluation(opts);
+  },
 
   setPreviewRes(r) {
     set({ previewRes: r });
@@ -744,6 +786,23 @@ async function runCompose(): Promise<void> {
   }
 }
 
+/** Compose input for the current state at `resolutionPx`: preview and evaluation compose the same atlas. */
+function composeInputFor(
+  s: Pick<ProjectState, 'structure' | 'mask' | 'substrate'> & { doc: ProjectDoc; gpuMaterial: GpuMaterial },
+  inputs: { layout: HotspotLayout; placements: RectPlacement[] },
+  resolutionPx: number,
+): ComposeInput {
+  const { doc, gpuMaterial, structure, mask, substrate } = s;
+  return {
+    layout: inputs.layout, material: gpuMaterial, placements: inputs.placements, resolutionPx, structure: structure?.gpu,
+    wear: wearNode(doc)?.params,
+    dirt: dirtNode(doc)?.params,
+    mask: mask?.texture,
+    substrateMaterial: substrate?.gpu,
+    grainAxis: structure?.result.grainAxis ?? null,
+  };
+}
+
 async function recompose(): Promise<void> {
   const { doc, gpuMaterial, gpu, previewRes, structure, mask, substrate } = useProject.getState();
   const mine = ++composeGen;
@@ -754,14 +813,9 @@ async function recompose(): Promise<void> {
     const t0 = performance.now();
     // composeAtlas binds every texture (structure, mask, substrate) before its first await, so a later replacement
     // may destroy them.
-    maps = await composeAtlas(gpu, {
-      layout, material: gpuMaterial, placements, resolutionPx: previewRes, structure: structure?.gpu,
-      wear: wearNode(doc)?.params,
-      dirt: dirtNode(doc)?.params,
-      mask: mask?.texture,
-      substrateMaterial: substrate?.gpu,
-      grainAxis: structure?.result.grainAxis ?? null,
-    });
+    maps = await composeAtlas(
+      gpu, composeInputFor({ doc, gpuMaterial, structure, mask, substrate }, { layout, placements }, previewRes),
+    );
     await gpu.device.queue.onSubmittedWorkDone();
     const gpuMs = performance.now() - t0;
     if (mine !== composeGen) {
@@ -771,7 +825,8 @@ async function recompose(): Promise<void> {
     const prev = useProject.getState().atlas;
     useProject.setState({
       atlas: {
-        maps, doc, mask, substrate, layout, placements, issues, layoutIssues: validateLayout(layout),
+        maps, doc, gpuMaterial, structure, mask, substrate, layout, placements, issues,
+        layoutIssues: validateLayout(layout),
         resolutionPx: previewRes, gpuMs,
       },
       composeError: null,
@@ -795,4 +850,104 @@ useProject.subscribe((s, prev) => {
   }
   clearTimeout(composeTimer);
   composeTimer = setTimeout(() => void runCompose(), RECOMPOSE_DEBOUNCE_MS);
+});
+
+/** Resolution of the evaluation composition the checks run on (docs/04-wear.md). */
+export const EVAL_RES = 2048;
+const EVALUATION_DEBOUNCE_MS = 600;
+let evalTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** Bumped by every evaluation request and by every recomposition; only the latest request may store its results. */
+let evalGen = 0;
+
+/** Evaluations run one after another on this chain, never concurrently. */
+let evalChain: Promise<unknown> = Promise.resolve();
+
+/** Mean base colour of each second set, read back once. */
+const substrateMeans = new WeakMap<GpuMaterial, Promise<[number, number, number]>>();
+
+function substrateMean(gpu: GpuContext, m: GpuMaterial): Promise<[number, number, number]> {
+  let p = substrateMeans.get(m);
+  if (!p) {
+    p = readbackRgba8(gpu, m.textures.baseColor).then((r) => meanRgb(r.data));
+    substrateMeans.set(m, p);
+  }
+  return p;
+}
+
+function requestEvaluation(opts?: { exportResolutionPx?: number }): Promise<CheckResult[] | null> {
+  const mine = ++evalGen;
+  const run = evalChain.then(() => evaluate(mine, opts));
+  evalChain = run.catch(() => undefined);
+  return run;
+}
+
+async function evaluate(mine: number, opts?: { exportResolutionPx?: number }): Promise<CheckResult[] | null> {
+  // A newer request is queued behind this one and will evaluate a fresher state.
+  if (mine !== evalGen) return null;
+  const { doc, gpuMaterial, gpu, structure, mask, substrate, atlas } = useProject.getState();
+  if (!doc || !gpuMaterial || !gpu) return null;
+  try {
+    const inputs = composeInputsFromDoc(doc);
+    const current =
+      atlas !== null && atlas.resolutionPx === EVAL_RES && atlas.doc === doc && atlas.gpuMaterial === gpuMaterial &&
+      atlas.structure === structure && atlas.mask === mask && atlas.substrate === substrate;
+    const maps = current
+      ? atlas.maps
+      : await composeAtlas(gpu, composeInputFor({ doc, gpuMaterial, structure, mask, substrate }, inputs, EVAL_RES));
+    const compareSubstrate =
+      inputs.wear.substrate.source === 'secondSet' && substrate !== null && structure?.result.type === 'pieces';
+    // Every copy is submitted before the first await, so the maps may be destroyed (ours right below, the preview's
+    // by a recomposition) while the reads are in flight.
+    let reads;
+    try {
+      reads = Promise.all([
+        readbackR32(gpu, maps.rectId),
+        readbackR32(gpu, maps.macroHeight),
+        readbackRgba8(gpu, maps.normal),
+        readbackRgba8(gpu, maps.wearMask),
+        compareSubstrate ? readbackR32(gpu, maps.pieceId) : null,
+        compareSubstrate ? readbackRgba8(gpu, maps.baseColor) : null,
+        compareSubstrate ? substrateMean(gpu, substrate.gpu) : null,
+      ]);
+    } finally {
+      if (!current) destroyMaps(maps);
+    }
+    const [rectId, macro, normal, wearRgba, pieceId, baseColor, subMean] = await reads;
+    const { width, height } = rectId;
+    // The grey wearMask's red channel; a 1 × 1 placeholder (wear off) stays 1 byte long.
+    const wearMask = new Uint8Array(wearRgba.data.length / 4);
+    for (let i = 0; i < wearMask.length; i++) wearMask[i] = wearRgba.data[i * 4];
+    const maps8 = {
+      width, height, rectId: rectId.data as Uint32Array, wearMask, macroHeight: macro.data as Float32Array,
+      normal: normal.data,
+    };
+    const joints = pieceId && baseColor
+      ? jointMeanRgb({ ...maps8, pieceId: pieceId.data as Uint32Array, baseColor: baseColor.data }, inputs.layout)
+      : null;
+    const output = doc.nodes.find((n): n is DocNode<'output'> => n.type === 'output');
+    const results = runChecks({
+      layout: inputs.layout, rotations: inputs.rotations, material: inputs.material, wear: inputs.wear,
+      exportResolutionPx: opts?.exportResolutionPx ?? output?.params.resolutionPx ?? EVAL_RES,
+      maps: maps8,
+      substrateMeanRgb: joints && subMean ? subMean : undefined,
+      jointMeanRgb: joints && subMean ? joints : undefined,
+    });
+    if (mine === evalGen) useProject.setState({ checks: { results, width, height }, checksError: null });
+    return results;
+  } catch (e) {
+    console.error('evaluation failed', e);
+    if (mine === evalGen) {
+      useProject.setState({ checksError: es.checks.failed(e instanceof Error ? e.message : String(e)) });
+    }
+    return null;
+  }
+}
+
+useProject.subscribe((s, prev) => {
+  if (s.atlas === prev.atlas || !s.atlas) return;
+  // An evaluation in flight describes an older atlas: its results are not stored.
+  evalGen++;
+  clearTimeout(evalTimer);
+  evalTimer = setTimeout(() => void requestEvaluation(), EVALUATION_DEBOUNCE_MS);
 });

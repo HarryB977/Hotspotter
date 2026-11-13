@@ -636,6 +636,7 @@ test.describe('wear and dirt controls (bricks wall 13)', () => {
         const s = hs.store.getState();
         const wm = (await hs.engine.readbackRgba8(s.gpu!, s.atlas!.maps.wearMask)).data;
         const W = s.atlas!.maps.wearMask.width;
+        const H = s.atlas!.maps.wearMask.height;
         const bmp = await createImageBitmap(await (await fetch(`data:image/png;base64,${b64}`)).blob());
         const g = new OffscreenCanvas(bmp.width, bmp.height).getContext('2d')!;
         g.drawImage(bmp, 0, 0);
@@ -646,7 +647,7 @@ test.describe('wear and dirt controls (bricks wall 13)', () => {
             const v = px[(y * bmp.width + x) * 4];
             all += v;
             const tx = Math.floor(((x + 0.5) / bmp.width) * W);
-            const ty = Math.floor(((y + 0.5) / bmp.height) * W);
+            const ty = Math.floor(((y + 0.5) / bmp.height) * H);
             const m = wm[(ty * W + tx) * 4];
             if (m > 128) { hi += v; nHi++; } else if (m === 0) { lo += v; nLo++; }
           }

@@ -78,6 +78,8 @@ interface View { k: number; tx: number; ty: number }
 
 const MIN_ZOOM = 0.2;
 const MAX_ZOOM = 40;
+/** Zoom a check focus brings the view to, at least. */
+const FOCUS_ZOOM = 4;
 
 export function AtlasView({ maps, layout, activeMap, issues }: AtlasViewProps) {
   const gpu = useProject((s) => s.gpu);
@@ -127,6 +129,18 @@ export function AtlasView({ maps, layout, activeMap, issues }: AtlasViewProps) {
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
   }, []);
+
+  // Centre a requested point (atlas UV), zooming in to at least FOCUS_ZOOM.
+  const focus = useProject((s) => s.viewFocus);
+  useEffect(() => {
+    if (!focus) return;
+    setView((v) => {
+      const k = Math.min(MAX_ZOOM, Math.max(v.k, FOCUS_ZOOM));
+      return { k, tx: box.w / 2 - focus.u * stageW * k, ty: box.h / 2 - focus.v * stageH * k };
+    });
+    // Only a new request moves the view; resizes keep it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focus?.seq]);
 
   const drag = useRef<{ x: number; y: number } | null>(null);
 
@@ -217,6 +231,7 @@ export function AtlasView({ maps, layout, activeMap, issues }: AtlasViewProps) {
     >
       <div
         className="absolute left-0 top-0 origin-top-left"
+        data-testid="atlas-stage"
         style={{
           width: stageW,
           height: stageH,
