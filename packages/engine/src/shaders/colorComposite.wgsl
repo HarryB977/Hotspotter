@@ -10,12 +10,14 @@
 //                 its own tileSizeM
 //   edge tone (wear, wEff > 0):  edge = max(bevel profile, 1 − smoothstep(0, bandM, |border|))
 //                 v = mix(v, 1, edgeTone · polish · edge), roughness −= 0.3 · edgeTone · polish · edge
-//   height AO:    aoH = 1 − clamp(AO_K · Σ_r max(0, mean_8(h at radius r) − h) / r), r = 5, 20, 60 mm
+//   height AO:    aoH = 1 − clamp(AO_K · Σ_r max(0, mean_8(h at radius r) − h) / r), r = 5, 20, 60 mm, on the full
+//                 height, or on the macro height (groove, bevel, wear) when the material ships a real AO map, whose
+//                 baked AO already holds the material relief (R33, AO_ON_MACRO)
 //   AO:           ao = aoMaterial · aoH
 //   runoff:       below the visible top edge of each rect and below each loss of the same rect, within runoffLengthM:
 //                 amount = runoff · (1 − smoothstep(0, L, distance below the origin)) · fbm(local.x / 1 cm, local.y / L)
 //                 colour = mix(colour, tint · colour, amount)
-//   cavity:       k = cavity · (1 − aoH); colour = mix(colour, tint · colour, k), roughness + 0.1 · k
+//   cavity:       k = cavity · (1 − aoMaterial · aoH); colour = mix(colour, tint · colour, k), roughness + 0.1 · k
 //
 // The groove (rect id 0) and the groove floor inside a rect (lossR < 0, R31) get neither substrate, edge tone nor
 // runoff; height AO and cavity dirt apply everywhere.
@@ -47,11 +49,15 @@
 @group(0) @binding(18) var outRoughness: texture_storage_2d<rgba8unorm, write>;
 @group(0) @binding(19) var outMetallic: texture_storage_2d<rgba8unorm, write>;
 @group(0) @binding(20) var outAo: texture_storage_2d<rgba8unorm, write>;
+// Final macro height (r32float): groove, bevel and wear without the intact material relief.
+@group(0) @binding(21) var macroTex: texture_2d<f32>;
 
 // bandM floor (MIN_BAND_M in wear.ts), and the column walk (see the header).
 override MIN_BAND_M: f32;
 override CHUNK_ROWS: u32;
 override LOOKBACK_ROWS: u32;
+// Height AO on macroTex instead of heightTex: the material ships a real AO map (R33).
+override AO_ON_MACRO: bool;
 
 // Height AO strength: a sharp 4 mm groove with a 3 mm bevel comes out near 0.5 on its floor, as v0.1-A's 1 − 0.5·prof.
 const AO_K = 0.7;
@@ -84,21 +90,22 @@ fn hsv2rgb(c: vec3<f32>) -> vec3<f32> {
 }
 
 // Bilinear height at a continuous output-px position (texel centres at i + 0.5), clamped to the texture.
-fn heightAt(p: vec2<f32>) -> f32 {
-  let size = vec2<i32>(textureDimensions(heightTex)) - 1;
+fn heightAt(src: texture_2d<f32>, p: vec2<f32>) -> f32 {
+  let size = vec2<i32>(textureDimensions(src)) - 1;
   let q = p - 0.5;
   let i = vec2<i32>(floor(q));
   let f = q - floor(q);
   let lo = clamp(i, vec2<i32>(0), size);
   let hi = clamp(i + 1, vec2<i32>(0), size);
-  let a = textureLoad(heightTex, lo, 0).r;
-  let b = textureLoad(heightTex, vec2<i32>(hi.x, lo.y), 0).r;
-  let c = textureLoad(heightTex, vec2<i32>(lo.x, hi.y), 0).r;
-  let d = textureLoad(heightTex, hi, 0).r;
+  let a = textureLoad(src, lo, 0).r;
+  let b = textureLoad(src, vec2<i32>(hi.x, lo.y), 0).r;
+  let c = textureLoad(src, vec2<i32>(lo.x, hi.y), 0).r;
+  let d = textureLoad(src, hi, 0).r;
   return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
 
-fn heightAo(c: vec2<i32>, h: f32) -> f32 {
+fn heightAo(src: texture_2d<f32>, c: vec2<i32>) -> f32 {
+  let h = textureLoad(src, c, 0).r;
   let pxPerM = P.ppmRef * P.refScale;
   let centre = vec2<f32>(c) + 0.5;
   var radii = array<f32, 3>(0.005, 0.02, 0.06);
@@ -109,7 +116,7 @@ fn heightAo(c: vec2<i32>, h: f32) -> f32 {
     for (var t = 0u; t < 8u; t++) {
       // Each radius turns its 8 taps by a third of their spacing so they do not line up.
       let a = (f32(t) + f32(k) / 3.0) * (PI / 4.0);
-      sum += heightAt(centre + rPx * vec2<f32>(cos(a), sin(a)));
+      sum += heightAt(src, centre + rPx * vec2<f32>(cos(a), sin(a)));
     }
     occ += max(0.0, sum / 8.0 - h) / radii[k];
   }
@@ -138,8 +145,12 @@ fn shade(c: vec2<i32>, id: u32, lossR: f32, lastLoss: i32) {
   var rough = readRough(mRoughness, uv, P.roughnessIsGloss != 0u);
   var metal = textureSampleLevel(mMetallic, samp, uv, 0.0).r;
   var aoMat = textureSampleLevel(mAo, samp, uv, 0.0).r;
-  let h = textureLoad(heightTex, c, 0).r;
-  let aoH = heightAo(c, h);
+  var aoH: f32;
+  if (AO_ON_MACRO) {
+    aoH = heightAo(macroTex, c);
+  } else {
+    aoH = heightAo(heightTex, c);
+  }
   let tint = vec3<f32>(W.tintR, W.tintG, W.tintB);
 
   if (!groove) {
@@ -217,7 +228,7 @@ fn shade(c: vec2<i32>, id: u32, lossR: f32, lastLoss: i32) {
   }
 
   if (W.cavity > 0.0) {
-    let k = W.cavity * (1.0 - aoH);
+    let k = W.cavity * (1.0 - aoMat * aoH);
     col = vec4<f32>(mix(col.rgb, tint * col.rgb, k), col.a);
     rough = min(rough + 0.1 * k, 1.0);
   }

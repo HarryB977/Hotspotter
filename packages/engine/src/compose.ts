@@ -230,6 +230,7 @@ export async function composeAtlas(ctx: GpuContext, input: ComposeInput): Promis
   const wearUniforms = createWearUniforms(device, input.wear, input.dirt, {
     hasPieces: structure.hasPieces, grainAxis: input.grainAxis ?? null, maskBound: !!input.mask,
     substrate: sub ? { tileSizeM: sub.settings.tileSizeM, roughnessIsGloss: sub.settings.roughnessIsGloss } : undefined,
+    atlasHeightM: layout.heightPx / pxPerMetre(layout),
   });
   const metresPerPx = layout.widthPx / (pxPerMetre(layout) * resolutionPx);
   const wearResources: { destroy(): void }[] = [];
@@ -312,7 +313,7 @@ export async function composeAtlas(ctx: GpuContext, input: ComposeInput): Promis
 
     // Pass 3: colour composite (substrate, edge tone, height AO, dirt) on the final height, with and without wear.
     encodeColorComposite(device, encoder, {
-      params, rects, wear: wearUniforms.buffer, rectId, height, loss, border, wearMask,
+      params, rects, wear: wearUniforms.buffer, rectId, height, macroHeight, aoOnMacro: material.hasMap.ao, loss, border, wearMask,
       material: t, substrate: sub?.textures, lossRunoffM: wearUniforms.lossRunoffM, metresPerPx,
       out: { baseColor, roughness, metallic, ao },
     });

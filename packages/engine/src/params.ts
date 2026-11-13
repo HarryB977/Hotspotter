@@ -87,6 +87,8 @@ export interface WearExtra {
   maskBound: boolean;
   /** The second PBR set bound as substrate (ComposeInput.substrateMaterial); `secondSet` falls back to the interior without it. */
   substrate?: { tileSizeM: [number, number]; roughnessIsGloss: boolean };
+  /** Atlas height in metres; runoffLengthM is clamped to it (R33). */
+  atlasHeightM?: number;
 }
 
 const GRAIN_CODE = { x: 1, y: 2 } as const;
@@ -155,7 +157,7 @@ export function packWear(w: WearParams, d: DirtParams, shape: FamilyShape, extra
   u[17] = Math.round(num(shape.steps, 0, 0, 255));
   u[WEAR_U_LOSES] = shape.loses ? 1 : 0;
   f[19] = num(shape.polish, 0, 0, 1);
-  writeDirt(f, d);
+  writeDirt(f, d, extra.atlasHeightM);
   u[26] = FAMILY_CODE[w.family] ?? FAMILY_CODE[W.family];
   const sub = { ...W.substrate, ...(w.substrate ?? {}) };
   const second = sub.source === 'secondSet' && extra.substrate !== undefined;
@@ -172,12 +174,15 @@ export function packWear(w: WearParams, d: DirtParams, shape: FamilyShape, extra
   return data;
 }
 
-/** Packs the dirt fields of the Wear block (bytes 80–103). Dirt applies with and without wear. */
-function writeDirt(f: Float32Array, d: DirtParams): void {
+/**
+ * Packs the dirt fields of the Wear block (bytes 80–103). Dirt applies with and without wear. runoffLengthM is
+ * clamped to the atlas height: a longer reach changes nothing and only lengthens the colour pass's walk above each chunk.
+ */
+function writeDirt(f: Float32Array, d: DirtParams, atlasHeightM = Infinity): void {
   const D = DEFAULT_DIRT;
   f[20] = num(d.cavity, D.cavity, 0, 1);
   f[WEAR_F_RUNOFF] = num(d.runoff, D.runoff, 0, 1);
-  f[WEAR_F_RUNOFF_LENGTH] = num(d.runoffLengthM, D.runoffLengthM, 0);
+  f[WEAR_F_RUNOFF_LENGTH] = Math.min(num(d.runoffLengthM, D.runoffLengthM, 0), num(atlasHeightM, Infinity, 0));
   for (let i = 0; i < 3; i++) f[23 + i] = num(d.tint?.[i], D.tint[i], 0, 1);
 }
 
@@ -185,8 +190,8 @@ function writeDirt(f: Float32Array, d: DirtParams): void {
 export const NO_DIRT: DirtParams = { ...DEFAULT_DIRT, cavity: 0, runoff: 0 };
 
 /** The Wear block without wear (enabled 0): only the dirt fields are set. */
-export function packNoWear(d: DirtParams): ArrayBuffer {
+export function packNoWear(d: DirtParams, atlasHeightM?: number): ArrayBuffer {
   const data = new ArrayBuffer(WEAR_BYTES);
-  writeDirt(new Float32Array(data), d);
+  writeDirt(new Float32Array(data), d, atlasHeightM);
   return data;
 }

@@ -25,7 +25,9 @@ export function createWearUniforms(
   device: GPUDevice, wear: WearParams | undefined, dirt: DirtParams | undefined, extra: WearExtra,
 ): WearUniforms {
   const d = dirt ?? NO_DIRT;
-  const data = wear ? packWear(wear, d, WEAR_FAMILIES[wear.family] ?? WEAR_FAMILIES.brittle, extra) : packNoWear(d);
+  const data = wear
+    ? packWear(wear, d, WEAR_FAMILIES[wear.family] ?? WEAR_FAMILIES.brittle, extra)
+    : packNoWear(d, extra.atlasHeightM);
   const buffer = device.createBuffer({ size: WEAR_BYTES, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   device.queue.writeBuffer(buffer, 0, data);
   const f = new Float32Array(data);
@@ -243,8 +245,11 @@ export interface ColorCompositeInput {
   rects: GPUBuffer;
   wear: GPUBuffer;
   rectId: GPUTexture;
-  /** Final height (r32float). */
+  /** Final height and final macro height (r32float). */
   height: GPUTexture;
+  macroHeight: GPUTexture;
+  /** The material ships a real AO map: height AO runs on the macro height only (R33). */
+  aoOnMacro: boolean;
   /** 1 × 1 placeholders without wear, never read then. */
   loss: GPUTexture;
   border: GPUTexture;
@@ -262,19 +267,20 @@ export interface ColorCompositeInput {
 /**
  * Encodes the colour composite (colorComposite.wgsl): final baseColor, roughness, metallic and AO. Each invocation
  * walks a chunk of one column top to bottom, so it knows the latest loss above it; chunks are half the runoff reach
- * (at least 32 rows) and first walk that reach above themselves, so the extra reads stay near 2× the light loss and
- * rect-id loads, and a tall atlas still splits into many invocations.
+ * (32 to 128 rows) and first walk that reach above themselves, reading only rect id and loss, so a tall atlas still
+ * splits into many invocations.
  */
 export function encodeColorComposite(device: GPUDevice, encoder: GPUCommandEncoder, input: ColorCompositeInput): void {
   const { width: w, height: h } = input.height;
   const lookback = input.lossRunoffM > 0 ? Math.ceil(input.lossRunoffM / input.metresPerPx) : 0;
-  const chunk = lookback > 0 ? Math.max(32, Math.ceil(lookback / 2)) : 8;
+  // Half the reach, kept to 32..128 rows: short chunks re-walk too much, long ones leave the GPU idle (R33).
+  const chunk = lookback > 0 ? Math.min(128, Math.max(32, Math.ceil(lookback / 2))) : 8;
   const pipeline = device.createComputePipeline({
     layout: 'auto',
     compute: {
       module: device.createShaderModule({ code: withCommon(colorCompositeWgsl) }),
       entryPoint: 'main',
-      constants: { MIN_BAND_M, CHUNK_ROWS: chunk, LOOKBACK_ROWS: lookback },
+      constants: { MIN_BAND_M, CHUNK_ROWS: chunk, LOOKBACK_ROWS: lookback, AO_ON_MACRO: input.aoOnMacro ? 1 : 0 },
     },
   });
   const sub = input.substrate ?? input.material;
@@ -301,6 +307,7 @@ export function encodeColorComposite(device: GPUDevice, encoder: GPUCommandEncod
       ...maps(9, input.material),
       ...maps(13, sub),
       ...maps(17, input.out),
+      { binding: 21, resource: input.macroHeight.createView() },
     ],
   });
   const pass = encoder.beginComputePass();

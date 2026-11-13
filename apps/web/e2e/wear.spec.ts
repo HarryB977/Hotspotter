@@ -34,6 +34,8 @@ interface ComposeOpts {
   substrate?: 'red' | 'checker';
   /** tileSizeM of the substrate set (square), default 1. */
   substrateTileM?: number;
+  /** Also upload the grey brick image as the AO map (the same image as the non-colour albedo). */
+  aoMap?: boolean;
 }
 
 interface WearProbe {
@@ -162,7 +164,7 @@ test.beforeEach(async ({ page }) => {
     window.__t8 = {
       async compose({
         material = 'brick', structure, layout: kind = 'pair', resolutionPx = 1024, wear = {}, mask, grainAxis = null, rotate,
-        normalMap = false, colour = false, dirt, substrate, substrateTileM = 1,
+        normalMap = false, colour = false, dirt, substrate, substrateTileM = 1, aoMap = false,
       }) {
         const ctx = await (ctxP ??= engine.initGpu());
         const groove = core.DEFAULT_GROOVE;
@@ -193,11 +195,12 @@ test.beforeEach(async ({ page }) => {
         const albedo = colour ? colourBrick.rgba : brick.rgba;
         const bmp = await toBitmap(brick.rgba, 256, 256);
         const albedoBmp = colour ? await toBitmap(albedo, 256, 256) : bmp;
-        const images: Partial<Record<'baseColor' | 'height' | 'normal', ImageBitmap>> = {
+        const images: Partial<Record<'baseColor' | 'height' | 'normal' | 'ao', ImageBitmap>> = {
           baseColor: material === 'flat' ? await toBitmap(flatGrey, 16, 16) : albedoBmp,
         };
         if (material === 'brick') images.height = bmp;
         if (normalMap) images.normal = await toBitmap(normalRgba, 64, 64);
+        if (aoMap) images.ao = bmp;
         const gpuMaterial = engine.uploadMaterial(ctx, { settings, images });
         const substrateMaterial = substrate
           ? engine.uploadMaterial(ctx, {
@@ -916,9 +919,9 @@ test('R31: the groove floor is never worn and no break digs below it', async ({ 
     return out;
   });
   for (const v of r) {
-    // The rect-id raster already excludes the floor, so the marker only covers raster / analytic-edge disagreements.
+    // The rect-id raster already excludes the floor and applies the same pixel-centre test as the analytic edge, so the
+    // marker only catches float-rounding disagreements; it cannot be triggered reliably, hence an annotation only.
     testInfo.annotations.push({ type: 'floorMarked', description: `${v.floorMarked} of ${v.floorPx} floor pixels` });
-    expect(v.floorMarked).toBeLessThanOrEqual(v.floorPx);
     expect(v.floorPx).toBeGreaterThan(1000);
     expect(v.markerOutside).toBe(0);
     expect(v.floorLoss).toBe(0);
@@ -1113,22 +1116,148 @@ test('edgeOnly reveals no substrate (wearMask 0) and polishes the edge: lower ro
   const r = await page.evaluate(async ({ bevelM }) => {
     // At 2048 px (0.98 mm) the 3 mm bevel spans three pixels.
     const m = await window.__t8!.compose({ material: 'flat', resolutionPx: 2048, wear: { family: 'edgeOnly' } });
-    let edgeSum = 0, edgeN = 0, centreSum = 0, centreN = 0;
+    let edgeSum = 0, edgeN = 0, centreSum = 0, centreN = 0, edgeValue = 0, centreValue = 0;
+    const value = (i: number) => Math.max(m.bytes.baseColor[4 * i], m.bytes.baseColor[4 * i + 1], m.bytes.baseColor[4 * i + 2]);
     for (let y = 0; y < m.h; y++) {
       for (let x = 0; x < m.w; x++) {
         const i = y * m.w + x;
         const e = m.edgeM(x, y);
         if (m.rectId[i] === 0 || e < 0) continue;
-        if (e < bevelM) { edgeSum += m.bytes.roughness[4 * i]; edgeN++; } else if (e > 0.1) { centreSum += m.bytes.roughness[4 * i]; centreN++; }
+        if (e < bevelM) {
+          edgeSum += m.bytes.roughness[4 * i]; edgeValue += value(i); edgeN++;
+        } else if (e > 0.1) {
+          centreSum += m.bytes.roughness[4 * i]; centreValue += value(i); centreN++;
+        }
       }
     }
     return {
       maskMax: m.wearMask!.reduce((a, v) => Math.max(a, v), 0), maskSize: m.wearMaskSize,
       edge: edgeSum / edgeN, edgeN, centre: centreSum / centreN,
+      edgeValue: edgeValue / edgeN, centreValue: centreValue / centreN,
     };
   }, { bevelM: BEVEL_M });
   expect(r.maskSize).toEqual([2048, 2048]);
   expect(r.maskMax).toBe(0);
   expect(r.edgeN).toBeGreaterThan(1000);
   expect(r.edge).toBeLessThan(r.centre - 5);
+  // The HSV value rises towards 1 on the edge.
+  expect(r.edgeValue).toBeGreaterThan(r.centreValue + 5);
+});
+
+test('interior substrate hueShift 180 turns the hue of the lost pixels half a circle', async ({ page }) => {
+  const r = await page.evaluate(async ({ bevelM }) => {
+    const { core } = window.__hs!;
+    const plain = await window.__t8!.compose({ colour: true, wear: null });
+    const m = await window.__t8!.compose({
+      colour: true,
+      wear: { intensity: 0.8, substrate: { ...core.DEFAULT_WEAR.substrate, hueShift: 180, satMul: 1, valMul: 1, roughAdd: 0 } },
+    });
+    const hsv = (c: Uint8Array, i: number) => {
+      const [r, g, b] = [c[4 * i], c[4 * i + 1], c[4 * i + 2]].map((v) => v / 255);
+      const mx = Math.max(r, g, b), d = mx - Math.min(r, g, b);
+      let h = 0;
+      if (d > 0) h = mx === r ? (g - b) / d : mx === g ? 2 + (b - r) / d : 4 + (r - g) / d;
+      return { h: (((h / 6) % 1) + 1) % 1, s: mx > 0 ? d / mx : 0 };
+    };
+    let n = 0, errSum = 0, errMax = 0;
+    for (let y = 0; y < m.h; y++) {
+      for (let x = 0; x < m.w; x++) {
+        const i = y * m.w + x;
+        if (m.rectId[i] === 0 || m.wearMask![i] < 250 || m.edgeM(x, y) < bevelM + m.mpp) continue;
+        const before = hsv(plain.bytes.baseColor, i);
+        // Hue is ill-defined on near-grey pixels (the light joints).
+        if (before.s < 0.3) continue;
+        const after = hsv(m.bytes.baseColor, i);
+        const d = (((after.h - before.h - 0.5) % 1) + 1) % 1;
+        const err = Math.min(d, 1 - d);
+        n++;
+        errSum += err;
+        errMax = Math.max(errMax, err);
+      }
+    }
+    return { n, mean: errSum / n, max: errMax };
+  }, { bevelM: BEVEL_M });
+  expect(r.n).toBeGreaterThan(1000);
+  expect(r.mean).toBeLessThan(0.02);
+  expect(r.max).toBeLessThan(0.1);
+});
+
+test('height AO: material joints are darker than brick faces (no AO map)', async ({ page }) => {
+  const r = await page.evaluate(async () => {
+    const m = await window.__t8!.compose({ wear: null });
+    let jSum = 0, jN = 0, fSum = 0, fN = 0;
+    for (let y = 0; y < m.h; y++) {
+      for (let x = 0; x < m.w; x++) {
+        const i = y * m.w + x;
+        // Away from the groove, so only the material relief occludes.
+        if (m.rectId[i] === 0 || m.edgeM(x, y) < 0.07) continue;
+        if (m.jointDistM[i] < 0.002) { jSum += m.bytes.ao[4 * i]; jN++; } else if (m.jointDistM[i] > 0.04) { fSum += m.bytes.ao[4 * i]; fN++; }
+      }
+    }
+    return { joint: jSum / jN, jN, face: fSum / fN, fN };
+  });
+  expect(r.jN).toBeGreaterThan(1000);
+  expect(r.fN).toBeGreaterThan(1000);
+  expect(r.joint).toBeLessThan(r.face - 20);
+});
+
+test('height AO: the loss is more occluded than its intact neighbours', async ({ page }) => {
+  const r = await page.evaluate(async ({ bandM, bevelM }) => {
+    const m = await window.__t8!.compose({ material: 'flat', wear: { intensity: 0.8, depthM: 0.006 } });
+    let lostSum = 0, lostN = 0, nearSum = 0, nearN = 0;
+    for (let y = 0; y < m.h; y++) {
+      for (let x = 0; x < m.w; x++) {
+        const i = y * m.w + x;
+        if (m.rectId[i] === 0 || m.edgeM(x, y) < bevelM + m.mpp) continue;
+        const b = m.border![i];
+        if (m.wearMask![i] >= 250) { lostSum += m.bytes.ao[4 * i]; lostN++; } else if (b > bandM && b < 3 * bandM) { nearSum += m.bytes.ao[4 * i]; nearN++; }
+      }
+    }
+    return { lost: lostSum / lostN, lostN, near: nearSum / nearN, nearN };
+  }, { bandM: BAND_M, bevelM: BEVEL_M });
+  expect(r.lostN).toBeGreaterThan(1000);
+  expect(r.nearN).toBeGreaterThan(1000);
+  expect(r.lost).toBeLessThan(r.near - 5);
+});
+
+test('height AO on the groove floor matches at 1024 and 2048 (metre radii)', async ({ page }) => {
+  const r = await page.evaluate(async () => {
+    const lo = await window.__t8!.compose({ material: 'flat', wear: null, resolutionPx: 1024 });
+    const hi = await window.__t8!.compose({ material: 'flat', wear: null, resolutionPx: 2048 });
+    // Pixel centres half a pixel left of the groove centre line (x = 1 m), at mid height.
+    return {
+      lo: lo.bytes.ao[4 * (512 * lo.w + 511)], loId: lo.rectId[512 * lo.w + 511],
+      hi: hi.bytes.ao[4 * (1024 * hi.w + 1023)], hiId: hi.rectId[1024 * hi.w + 1023],
+    };
+  });
+  expect(r.loId).toBe(0);
+  expect(r.hiId).toBe(0);
+  expect(r.lo).toBeLessThan(230);
+  expect(Math.abs(r.lo - r.hi)).toBeLessThanOrEqual(10);
+});
+
+test('R33: with a real AO map the material relief is not occluded twice', async ({ page }) => {
+  const r = await page.evaluate(async () => {
+    const scan = async (aoMap: boolean) => {
+      const m = await window.__t8!.compose({ wear: null, aoMap });
+      let n = 0, sum = 0, offMap = 0;
+      for (let y = 0; y < m.h; y++) {
+        for (let x = 0; x < m.w; x++) {
+          const i = y * m.w + x;
+          if (m.rectId[i] === 0 || m.edgeM(x, y) < 0.07 || m.jointDistM[i] >= 0.002) continue;
+          n++;
+          sum += m.bytes.ao[4 * i];
+          // The AO map is the same image as the albedo, sampled at the same uv: baked AO = baseColor R.
+          if (Math.abs(m.bytes.ao[4 * i] - m.bytes.baseColor[4 * i]) > 1) offMap++;
+        }
+      }
+      return { n, mean: sum / n, offMap };
+    };
+    return { withMap: await scan(true), without: await scan(false) };
+  });
+  // Without a map the joints get relief AO; with one, far from the groove the AO is the baked map alone.
+  expect(r.without.n).toBeGreaterThan(1000);
+  expect(r.without.mean).toBeLessThan(235);
+  expect(r.withMap.n).toBeGreaterThan(1000);
+  expect(r.withMap.offMap).toBe(0);
 });
