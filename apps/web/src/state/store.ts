@@ -4,8 +4,8 @@ import {
   proposeFamily, resolveMaterialName, toGray, updateNodeParams, validateLayout,
 } from '@hotspotter/core';
 import type {
-  DocNode, GrayImage, HotspotLayout, LayoutIssue, MapKind, MaterialSettings, NodeParams, NodeType, ProjectDoc,
-  ProportionIssue, RectPlacement, StructureResult,
+  DocNode, GrayImage, HotspotLayout, LayoutIssue, MapKind, MaterialSettings, MaterialType, NodeParams, NodeType,
+  ProjectDoc, ProportionIssue, RectPlacement, StructureResult,
 } from '@hotspotter/core';
 import {
   composeAtlas, hasMapFromFiles, initGpu, uploadMaterial, uploadRgba8, uploadStructure, WebGpuUnavailableError,
@@ -115,6 +115,8 @@ export interface ProjectState {
   /** Loads a second PBR set (same map classification as the material, no document of its own) as the substrate. */
   importSubstrate(files: File[]): Promise<void>;
   clearSubstrate(): void;
+  /** Real size (m) one repeat of the second material covers; recomposes without re-uploading. */
+  setSubstrateTileSize(t: [number, number]): void;
 }
 
 // TGA and TIFF are not listed: createImageBitmap cannot decode them, so they are ignored.
@@ -143,6 +145,16 @@ let maskGen = 0;
 
 /** Bumped by substrate imports and clears and by material replacement; only the latest substrate import may apply. */
 let substrateGen = 0;
+
+/**
+ * maskGen / substrateGen as last bumped by a material replace. An import discarded while its gen still equals this
+ * was dropped by the replace (not by a newer import or a clear) and says so, like R21.
+ */
+let maskReplacedGen = -1;
+let substrateReplacedGen = -1;
+
+/** Map kinds of the second material that the colour pass reads (Task 10); the rest is never uploaded. */
+const SUBSTRATE_KINDS: MapKind[] = ['baseColor', 'roughness', 'metallic', 'ao'];
 
 /** Longest side read back from a bitmap for the analysis, before the box downsample to ANALYSIS_SIDE. */
 const MAX_READ_SIDE = 2048;
@@ -175,6 +187,14 @@ function wearNode(doc: ProjectDoc): DocNode<'wear'> | undefined {
 
 function dirtNode(doc: ProjectDoc): DocNode<'dirt'> | undefined {
   return doc.nodes.find((n): n is DocNode<'dirt'> => n.type === 'dirt');
+}
+
+/** Sets the proposed wear family unless the user picked one; returns `doc` itself when nothing changes. */
+function withProposedFamily(doc: ProjectDoc, type: MaterialType, materialName: string): ProjectDoc {
+  const wear = wearNode(doc);
+  if (!wear || wear.params.userSetFamily) return doc;
+  const family = proposeFamily(type, materialName);
+  return family === wear.params.family ? doc : updateNodeParams<'wear'>(doc, wear.id, { family });
 }
 
 async function decode(file: File): Promise<ImageBitmap> {
@@ -411,8 +431,8 @@ export const useProject = create<ProjectState>()((set, get) => ({
       bitmaps = fresh;
       const { structure: oldStructure, mask: oldMask, substrate: oldSubstrate } = get();
       // A new material starts a new document: its mask and substrate go too, and imports still in flight are dropped.
-      maskGen++;
-      substrateGen++;
+      maskReplacedGen = ++maskGen;
+      substrateReplacedGen = ++substrateGen;
       set({
         sources: images, material, gpuMaterial, doc: createDefaultDoc(settings), importing: false,
         structure: null, structureError: null, mask: null, substrate: null, wearError: null,
@@ -475,6 +495,9 @@ export const useProject = create<ProjectState>()((set, get) => ({
       const gm = get().gpuMaterial;
       next.gpuMaterial = gm ? { ...gm, settings } : gm;
     }
+    if (patch.name !== undefined && next.doc) {
+      next.doc = withProposedFamily(next.doc, get().structure?.result.type ?? 'continuous', settings.name);
+    }
     set(next);
     const images = next.material?.images;
     const tile = material.settings.tileSizeM;
@@ -524,10 +547,10 @@ export const useProject = create<ProjectState>()((set, get) => ({
       if (!input) {
         // Neither height nor albedo left: drop the structure of the removed maps (continuous).
         const old = get().structure;
-        if (old) {
-          set({ structure: null, doc: node ? updateNodeParams(doc, node.id, { analyzed: false }) : doc });
-          old.gpu.destroy();
-        }
+        let nextDoc = old && node ? updateNodeParams(doc, node.id, { analyzed: false }) : doc;
+        nextDoc = withProposedFamily(nextDoc, 'continuous', material.settings.name);
+        if (old || nextDoc !== doc) set({ structure: null, doc: nextDoc });
+        old?.gpu.destroy();
         return;
       }
       source = input.source;
@@ -552,11 +575,7 @@ export const useProject = create<ProjectState>()((set, get) => ({
     }
     let nextDoc = settings === material.settings ? doc : withMaterialNode(doc, settings);
     if (node) nextDoc = updateNodeParams(nextDoc, node.id, { type: result.type, analyzed: true });
-    const wear = wearNode(nextDoc);
-    if (wear && !wear.params.userSetFamily) {
-      const family = proposeFamily(result.type, settings.name);
-      if (family !== wear.params.family) nextDoc = updateNodeParams<'wear'>(nextDoc, wear.id, { family });
-    }
+    nextDoc = withProposedFamily(nextDoc, result.type, settings.name);
     const prev = get().structure;
     const next: Partial<ProjectState> = {
       structure: { result, gpu: gpuStructure, source },
@@ -590,11 +609,13 @@ export const useProject = create<ProjectState>()((set, get) => ({
       bmp = await decode(file);
     } catch {
       if (mine === maskGen) set({ wearError: es.material.decodeFailed(file.name) });
+      else if (maskGen === maskReplacedGen) set({ wearError: es.wear.maskDiscarded });
       return;
     }
     const doc = get().doc;
     if (mine !== maskGen || !doc) {
       bmp.close();
+      if (maskGen === maskReplacedGen) set({ wearError: es.wear.maskDiscarded });
       return;
     }
     const texture = uploadRgba8(gpu, bmp, { srgb: false });
@@ -627,21 +648,27 @@ export const useProject = create<ProjectState>()((set, get) => ({
     if (!gpu || !get().doc) return;
     const images = files.filter((f) => IMAGE_EXT.test(f.name));
     const names = images.map((f) => f.name);
-    const { files: chosen, normalConvention } = chooseMaps(names);
-    const mine = ++substrateGen;
+    const all = chooseMaps(names).files;
+    const chosen: MaterialSettings['files'] = {};
+    for (const k of SUBSTRATE_KINDS) if (all[k]) chosen[k] = all[k];
+    // Without colour maps there is nothing to reveal; an import in flight is kept.
     if (Object.keys(chosen).length === 0) {
       set({ wearError: es.material.noMaps });
       return;
     }
+    const mine = ++substrateGen;
     const fresh = new Map<string, ImageBitmap>();
     try {
       const loaded = await buildImages(chosen, images, new Map(), fresh);
-      if (mine !== substrateGen) return;
+      if (mine !== substrateGen) {
+        if (substrateGen === substrateReplacedGen) set({ wearError: es.wear.substrateDiscarded });
+        return;
+      }
       const rough = chosen.roughness;
       const settings: MaterialSettings = {
         name: resolveMaterialName(names, folderOf(files)),
         files: chosen,
-        normalConvention,
+        normalConvention: 'gl',
         roughnessIsGloss: rough ? classifyMapFile(rough)?.isGloss === true : false,
         tileSizeM: [1, 1],
         heightScaleM: 0.02,
@@ -655,6 +682,7 @@ export const useProject = create<ProjectState>()((set, get) => ({
       if (prev) destroyTextures(prev.gpu);
     } catch (e) {
       if (mine === substrateGen) set({ wearError: e instanceof Error ? e.message : String(e) });
+      else if (substrateGen === substrateReplacedGen) set({ wearError: es.wear.substrateDiscarded });
     } finally {
       // The bitmaps were copied into textures at upload; the substrate never re-reads them.
       closeAll(fresh);
@@ -666,6 +694,14 @@ export const useProject = create<ProjectState>()((set, get) => ({
     const { substrate } = get();
     set({ substrate: null });
     if (substrate) destroyTextures(substrate.gpu);
+  },
+
+  setSubstrateTileSize(t) {
+    const { substrate } = get();
+    if (!substrate || !(t[0] > 0 && t[1] > 0)) return;
+    // Same textures, new identities: the subscription recomposes and nothing is destroyed.
+    const gpu = { ...substrate.gpu, settings: { ...substrate.gpu.settings, tileSizeM: t } };
+    set({ substrate: { ...substrate, gpu } });
   },
 }));
 

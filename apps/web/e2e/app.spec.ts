@@ -517,6 +517,11 @@ test.describe('wear and dirt controls (bricks wall 13)', () => {
     expect(after.max).toBeGreaterThan(0);
     expect(after.max).toBeLessThanOrEqual(bound);
 
+    // Inverted, the black mask doubles the damage instead.
+    await page.getByLabel('Invertir', { exact: true }).check();
+    await settled(page);
+    expect((await maxDepthM()).max).toBeGreaterThan(bound * 1.5);
+
     await page.getByTestId('wear-mask-clear').click();
     await settled(page);
     expect((await maxDepthM()).max).toBeCloseTo(before.max, 6);
@@ -533,12 +538,16 @@ test.describe('wear and dirt controls (bricks wall 13)', () => {
         const bc = (await hs.engine.readbackRgba8(s.gpu!, s.atlas!.maps.baseColor)).data;
         const sum = [0, 0, 0];
         let n = 0;
+        let hash = 0x811c9dc5;
         for (let i = 0; i < wm.length; i += 4) {
           if (wm[i] < 200) continue;
-          for (let c = 0; c < 3; c++) sum[c] += bc[i + c];
+          for (let c = 0; c < 3; c++) {
+            sum[c] += bc[i + c];
+            hash = Math.imul(hash ^ bc[i + c], 0x01000193) >>> 0;
+          }
           n++;
         }
-        return { n, rgb: sum.map((v) => v / Math.max(1, n)) };
+        return { n, hash, rgb: sum.map((v) => v / Math.max(1, n)) };
       });
     await page.getByTestId('substrate-source').click();
     await page.getByRole('option', { name: 'Segundo material' }).click();
@@ -553,6 +562,31 @@ test.describe('wear and dirt controls (bricks wall 13)', () => {
     expect(second.n).toBe(interior.n);
     const diff = Math.max(...second.rgb.map((v, c) => Math.abs(v - interior.rgb[c])));
     expect(diff).toBeGreaterThan(8);
+
+    // Its own tile size (R34): at 2 m the revealed colour changes, the loss itself does not.
+    await setField(page, 'Tamaño (m) X', '2');
+    await setField(page, 'Tamaño (m) Y', '2');
+    expect(await page.evaluate(() => window.__hs!.store.getState().substrate!.gpu.settings.tileSizeM)).toEqual([2, 2]);
+    const scaled = await lossColour();
+    expect(scaled.n).toBe(second.n);
+    expect(scaled.hash).not.toBe(second.hash);
+  });
+
+  test('replacing the material drops the mask and disables it', async ({ page }, testInfo) => {
+    mkdirSync(testInfo.outputPath(), { recursive: true });
+    const png = testInfo.outputPath('grey-mask.png');
+    writeFileSync(png, greyPng(16, 16, 128));
+    await page.getByTestId('wear-mask-input').setInputFiles(png);
+    await expect(page.getByTestId('wear-mask-name')).toHaveText('grey-mask.png');
+    await page.getByTestId('folder-input').setInputFiles(SAMPLE_DIR);
+    await page.getByTestId('import-replace').click();
+    await expect(page.getByTestId('wear-mask-name')).toHaveText('Sin máscara');
+    await settled(page);
+    expect(await page.evaluate(() => {
+      const s = window.__hs!.store.getState();
+      const w = s.doc!.nodes.find((n) => n.id === 'wear')!.params as { mask: { enabled: boolean } };
+      return { mask: s.mask, enabled: w.mask.enabled };
+    })).toEqual({ mask: null, enabled: false });
   });
 
   test('runoff 0 leaves the strips under the top edges untouched', async ({ page }) => {
@@ -593,5 +627,26 @@ test.describe('wear and dirt controls (bricks wall 13)', () => {
     await page.getByRole('tab', { name: 'Desgaste' }).click();
     await expect(page.getByRole('tab', { name: 'Desgaste' })).toHaveAttribute('data-state', 'active');
     expect(await page.evaluate(() => window.__hs!.store.getState().activeMap)).toBe('wearMask');
+    // The canvas (same size as the maps) shows the wear mask, not the base colour. drawImage goes through the
+    // canvas colour handling, so the match is relative rather than exact.
+    await expect.poll(() =>
+      page.evaluate(async () => {
+        const hs = window.__hs!;
+        const s = hs.store.getState();
+        const wm = (await hs.engine.readbackRgba8(s.gpu!, s.atlas!.maps.wearMask)).data;
+        const bc = (await hs.engine.readbackRgba8(s.gpu!, s.atlas!.maps.baseColor)).data;
+        const cv = document.querySelector<HTMLCanvasElement>('[data-testid="atlas-canvas"]')!;
+        const g = new OffscreenCanvas(cv.width, cv.height).getContext('2d')!;
+        g.drawImage(cv, 0, 0);
+        const px = g.getImageData(0, 0, cv.width, cv.height).data;
+        let toWear = 0;
+        let toBase = 0;
+        for (let i = 0; i < px.length; i += 4) {
+          toWear += Math.abs(px[i] - wm[i]);
+          toBase += Math.abs(px[i] - bc[i]);
+        }
+        const n = px.length / 4;
+        return { wear: toWear / n < 10, ratio: toWear / Math.max(1, toBase) < 0.1 };
+      })).toEqual({ wear: true, ratio: true });
   });
 });

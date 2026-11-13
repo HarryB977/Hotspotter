@@ -14,16 +14,21 @@ const FAMILIES = Object.keys(WEAR_FAMILIES) as WearFamily[];
 const round = (v: number, digits = 3) => Math.round(v * 10 ** digits) / 10 ** digits;
 
 /** Slider plus numeric field on one row; the field rejects values outside [min, max]. */
-export function SliderField({ label, hint, value, min, max, step, onChange }: {
+export function SliderField({ label, hint, value, min, max, step, onChange, disabled }: {
   label: string; hint: string; value: number; min: number; max: number; step: number; onChange(v: number): void;
+  disabled?: boolean;
 }) {
   return (
     <Row label={label} hint={hint}>
-      <Slider min={min} max={max} step={step} value={[value]} onValueChange={([v]) => onChange(v)} />
+      <Slider
+        min={min} max={max} step={step} value={[value]} disabled={disabled} className={disabled ? 'opacity-40' : undefined}
+        onValueChange={([v]) => onChange(v)}
+      />
       <NumField
         className="w-12 shrink-0"
         aria-label={label}
         title={hint}
+        disabled={disabled}
         value={round(value)}
         onCommit={(v) => v !== null && v >= min && v <= max && onChange(v)}
       />
@@ -44,6 +49,8 @@ export function LengthField({ label, hint, valueM, unit, onChange }: {
         value={round(valueM * k, 2)}
         onCommit={(v) => v !== null && v >= 0 && onChange(v / k)}
       />
+      {/* The label may be truncated; the unit stays visible here. */}
+      <span className="w-5 shrink-0 text-zinc-500">{unit}</span>
     </Row>
   );
 }
@@ -59,6 +66,7 @@ export function WearSection() {
   const clearMask = useProject((s) => s.clearMask);
   const importSubstrate = useProject((s) => s.importSubstrate);
   const clearSubstrate = useProject((s) => s.clearSubstrate);
+  const setSubstrateTileSize = useProject((s) => s.setSubstrateTileSize);
   const maskRef = useRef<HTMLInputElement>(null);
   const subRef = useRef<HTMLInputElement>(null);
   if (!node) return null;
@@ -68,6 +76,8 @@ export function WearSection() {
   const setMask = (patch: Partial<WearParams['mask']>) => set({ mask: { ...w.mask, ...patch } });
   const setSub = (patch: Partial<WearParams['substrate']>) => set({ substrate: { ...w.substrate, ...patch } });
   const t = es.wear;
+  // Hue, saturation, value and roughness shape only the interior; a loaded second material replaces it.
+  const interiorOff = w.substrate.source === 'secondSet' && substrate !== null;
 
   return (
     <Section title={t.title}>
@@ -216,20 +226,36 @@ export function WearSection() {
           />
         </Row>
       )}
+      {w.substrate.source === 'secondSet' && substrate && (
+        <Row label={t.substrateTile} hint={t.substrateTileHint}>
+          <NumField
+            aria-label={`${t.substrateTile} X`}
+            title={t.substrateTileHint}
+            value={substrate.gpu.settings.tileSizeM[0]}
+            onCommit={(v) => v !== null && v > 0 && setSubstrateTileSize([v, substrate.gpu.settings.tileSizeM[1]])}
+          />
+          <NumField
+            aria-label={`${t.substrateTile} Y`}
+            title={t.substrateTileHint}
+            value={substrate.gpu.settings.tileSizeM[1]}
+            onCommit={(v) => v !== null && v > 0 && setSubstrateTileSize([substrate.gpu.settings.tileSizeM[0], v])}
+          />
+        </Row>
+      )}
       <SliderField
-        label={t.hue} hint={t.hueHint} value={w.substrate.hueShift} min={-180} max={180} step={1}
+        label={t.hue} hint={t.hueHint} disabled={interiorOff} value={w.substrate.hueShift} min={-180} max={180} step={1}
         onChange={(v) => setSub({ hueShift: v })}
       />
       <SliderField
-        label={t.sat} hint={t.satHint} value={w.substrate.satMul} min={0} max={2} step={0.01}
+        label={t.sat} hint={t.satHint} disabled={interiorOff} value={w.substrate.satMul} min={0} max={2} step={0.01}
         onChange={(v) => setSub({ satMul: v })}
       />
       <SliderField
-        label={t.val} hint={t.valHint} value={w.substrate.valMul} min={0} max={2} step={0.01}
+        label={t.val} hint={t.valHint} disabled={interiorOff} value={w.substrate.valMul} min={0} max={2} step={0.01}
         onChange={(v) => setSub({ valMul: v })}
       />
       <SliderField
-        label={t.rough} hint={t.roughHint} value={w.substrate.roughAdd} min={-1} max={1} step={0.01}
+        label={t.rough} hint={t.roughHint} disabled={interiorOff} value={w.substrate.roughAdd} min={-1} max={1} step={0.01}
         onChange={(v) => setSub({ roughAdd: v })}
       />
       {wearError && <div className="text-red-400" data-testid="wear-error">{wearError}</div>}
