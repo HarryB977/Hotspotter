@@ -624,29 +624,47 @@ test.describe('wear and dirt controls (bricks wall 13)', () => {
   });
 
   test('the Desgaste tab shows the wear mask', async ({ page }) => {
-    await page.getByRole('tab', { name: 'Desgaste' }).click();
-    await expect(page.getByRole('tab', { name: 'Desgaste' })).toHaveAttribute('data-state', 'active');
-    expect(await page.evaluate(() => window.__hs!.store.getState().activeMap)).toBe('wearMask');
-    // The canvas (same size as the maps) shows the wear mask, not the base colour. drawImage goes through the
-    // canvas colour handling, so the match is relative rather than exact.
-    await expect.poll(() =>
-      page.evaluate(async () => {
+    // Big enough that the atlas is drawn at least 1:1, so every map texel has its own screen pixels.
+    await page.setViewportSize({ width: 1920, height: 1400 });
+    await setField(page, 'Intensidad', '1');
+    await page.getByTestId('atlas-overlay').evaluate((el) => { (el as unknown as HTMLElement).style.visibility = 'hidden'; });
+    /** Screenshot of the canvas, split by the wearMask value at the texel each screen pixel shows (red channel). */
+    const shot = async () => {
+      const png = (await page.getByTestId('atlas-canvas').screenshot()).toString('base64');
+      return page.evaluate(async (b64) => {
         const hs = window.__hs!;
         const s = hs.store.getState();
         const wm = (await hs.engine.readbackRgba8(s.gpu!, s.atlas!.maps.wearMask)).data;
-        const bc = (await hs.engine.readbackRgba8(s.gpu!, s.atlas!.maps.baseColor)).data;
-        const cv = document.querySelector<HTMLCanvasElement>('[data-testid="atlas-canvas"]')!;
-        const g = new OffscreenCanvas(cv.width, cv.height).getContext('2d')!;
-        g.drawImage(cv, 0, 0);
-        const px = g.getImageData(0, 0, cv.width, cv.height).data;
-        let toWear = 0;
-        let toBase = 0;
-        for (let i = 0; i < px.length; i += 4) {
-          toWear += Math.abs(px[i] - wm[i]);
-          toBase += Math.abs(px[i] - bc[i]);
+        const W = s.atlas!.maps.wearMask.width;
+        const bmp = await createImageBitmap(await (await fetch(`data:image/png;base64,${b64}`)).blob());
+        const g = new OffscreenCanvas(bmp.width, bmp.height).getContext('2d')!;
+        g.drawImage(bmp, 0, 0);
+        const px = g.getImageData(0, 0, bmp.width, bmp.height).data;
+        let hi = 0, nHi = 0, lo = 0, nLo = 0, all = 0;
+        for (let y = 0; y < bmp.height; y++) {
+          for (let x = 0; x < bmp.width; x++) {
+            const v = px[(y * bmp.width + x) * 4];
+            all += v;
+            const tx = Math.floor(((x + 0.5) / bmp.width) * W);
+            const ty = Math.floor(((y + 0.5) / bmp.height) * W);
+            const m = wm[(ty * W + tx) * 4];
+            if (m > 128) { hi += v; nHi++; } else if (m === 0) { lo += v; nLo++; }
+          }
         }
-        const n = px.length / 4;
-        return { wear: toWear / n < 10, ratio: toWear / Math.max(1, toBase) < 0.1 };
-      })).toEqual({ wear: true, ratio: true });
+        return { w: bmp.width, hi: hi / Math.max(1, nHi), nHi, lo: lo / Math.max(1, nLo), mean: all / (bmp.width * bmp.height) };
+      }, png);
+    };
+    await page.getByRole('tab', { name: 'Desgaste' }).click();
+    await expect(page.getByRole('tab', { name: 'Desgaste' })).toHaveAttribute('data-state', 'active');
+    expect(await page.evaluate(() => window.__hs!.store.getState().activeMap)).toBe('wearMask');
+    const wear = await shot();
+    expect(wear.w).toBeGreaterThanOrEqual(1024);
+    expect(wear.nHi).toBeGreaterThan(1000);
+    expect(wear.hi).toBeGreaterThan(100);
+    expect(wear.lo).toBeLessThan(20);
+
+    await page.getByRole('tab', { name: 'BaseColor' }).click();
+    const base = await shot();
+    expect(base.mean).toBeGreaterThan(wear.mean + 30);
   });
 });

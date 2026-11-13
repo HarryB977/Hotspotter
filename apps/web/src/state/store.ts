@@ -665,12 +665,15 @@ export const useProject = create<ProjectState>()((set, get) => ({
         return;
       }
       const rough = chosen.roughness;
+      const name = resolveMaterialName(names, folderOf(files));
+      // Re-importing the same set keeps the size the user gave it (R34); a different set starts at 1 m.
+      const current = get().substrate;
       const settings: MaterialSettings = {
-        name: resolveMaterialName(names, folderOf(files)),
+        name,
         files: chosen,
         normalConvention: 'gl',
         roughnessIsGloss: rough ? classifyMapFile(rough)?.isGloss === true : false,
-        tileSizeM: [1, 1],
+        tileSizeM: current?.name === name ? current.gpu.settings.tileSizeM : [1, 1],
         heightScaleM: 0.02,
         period: { ...CONTINUOUS },
         allowRotation: false,
