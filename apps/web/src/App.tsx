@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { es } from './i18n/es';
 import { useProject } from './state/store';
 import { MaterialPanel } from './panels/MaterialPanel';
+import { ChecksPanel } from './panels/ChecksPanel';
 import { TooltipProvider } from './components/ui/tooltip';
 import { Tabs, TabsList, TabsTrigger } from './components/ui/tabs';
 import { LayoutPanel } from './panels/LayoutPanel';
@@ -10,7 +11,16 @@ import { AtlasView } from './viewport/AtlasView';
 import { ExportDialog } from './export/ExportDialog';
 import type { ActiveMap } from './state/store';
 
-const MAP_TABS: ActiveMap[] = ['baseColor', 'normal', 'height', 'roughness', 'metallic', 'ao', 'rectId'];
+const MAP_TABS: ActiveMap[] = [
+  'baseColor', 'normal', 'height', 'roughness', 'metallic', 'ao', 'wearMask', 'rectId', 'pieceId',
+];
+
+function tabLabel(k: ActiveMap): string {
+  if (k === 'rectId') return es.mapBar.rectId;
+  if (k === 'pieceId') return es.mapBar.pieceId;
+  if (k === 'wearMask') return es.mapBar.wearMask;
+  return es.material.mapKinds[k];
+}
 
 function PanelTitle({ children }: { children: React.ReactNode }) {
   return (
@@ -27,6 +37,11 @@ export function App() {
   const activeMap = useProject((s) => s.activeMap);
   const setActiveMap = useProject((s) => s.setActiveMap);
   const composeError = useProject((s) => s.composeError);
+  const checks = useProject((s) => s.checks);
+  const flagged = checks?.results.filter((r) => r.status !== 'ok') ?? [];
+  const flaggedClass = flagged.some((r) => r.status === 'error')
+    ? 'text-red-500'
+    : flagged.length > 0 ? 'text-amber-400' : undefined;
 
   useEffect(() => {
     void useProject.getState().initGpu();
@@ -45,17 +60,18 @@ export function App() {
 
   return (
     <TooltipProvider delayDuration={400}>
-      <div className="grid h-full grid-cols-[240px_1fr_280px] grid-rows-[30px_1fr_28px]">
+      <div className="grid h-full grid-cols-[240px_minmax(0,1fr)_280px] grid-rows-[30px_minmax(0,1fr)_28px] overflow-hidden">
         <header className="col-span-3 flex items-center gap-3 border-b border-zinc-800 bg-zinc-900 px-2">
           <span className="font-semibold text-zinc-100">{es.appName}</span>
           <span className="text-zinc-500">{es.topBar.project}</span>
           <span className="ml-auto"><ExportDialog /></span>
         </header>
-        <aside className="overflow-y-auto border-r border-zinc-800 bg-zinc-900" data-testid="left-column">
+        <aside className="min-h-0 overflow-y-auto border-r border-zinc-800 bg-zinc-900" data-testid="left-column">
           <MaterialPanel />
+          <ChecksPanel />
           <LayoutPanel />
         </aside>
-        <main className="flex min-w-0 flex-col bg-zinc-950">
+        <main className="flex min-h-0 min-w-0 flex-col bg-zinc-950">
           <PanelTitle>{es.atlas.title}</PanelTitle>
           {atlas ? (
             <AtlasView maps={atlas.maps} layout={atlas.layout} activeMap={activeMap} issues={atlas.issues} />
@@ -63,16 +79,16 @@ export function App() {
             <div className="flex flex-1 items-center justify-center text-zinc-600">{es.atlas.empty}</div>
           )}
         </main>
-        <aside className="flex flex-col border-l border-zinc-800 bg-zinc-900">
+        <aside className="flex min-h-0 flex-col border-l border-zinc-800 bg-zinc-900">
           <PanelTitle>{es.inspector.title}</PanelTitle>
           <Inspector />
         </aside>
-        <footer className="col-span-3 flex items-stretch justify-between border-t border-zinc-800 bg-zinc-900">
+        <footer className="col-span-3 flex min-w-0 items-stretch justify-between overflow-hidden border-t border-zinc-800 bg-zinc-900">
           <Tabs value={activeMap} onValueChange={(v) => setActiveMap(v as ActiveMap)} className="h-full">
             <TabsList className="h-full">
               {MAP_TABS.map((k) => (
                 <TabsTrigger key={k} value={k} disabled={!atlas}>
-                  {k === 'rectId' ? es.mapBar.rectId : es.material.mapKinds[k]}
+                  {tabLabel(k)}
                 </TabsTrigger>
               ))}
             </TabsList>
@@ -85,6 +101,15 @@ export function App() {
             )}
             {atlas && (
               <>
+                {checks && (
+                  <span
+                    className={flaggedClass}
+                    title={es.checks.counter(flagged.length)}
+                    data-testid="checks-warnings"
+                  >
+                    {`${es.checks.title}: ${flagged.length}`}
+                  </span>
+                )}
                 <span
                   className={atlas.issues.length > 0 ? 'text-amber-400' : undefined}
                   title={es.mapBar.issues(atlas.issues.length, atlas.layoutIssues.length)}

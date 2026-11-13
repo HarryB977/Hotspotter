@@ -1,7 +1,14 @@
 export { initGpu, WebGpuUnavailableError } from './gpu';
 export type { GpuContext } from './gpu';
-export { uploadRgba8, createConstTexture, readbackRgba8 } from './textures';
-export { uploadMaterial } from './material';
+export { uploadRgba8, createConstTexture, readbackRgba8, readbackR32, readbackRgba16f } from './textures';
+export { uploadMaterial, hasMapFromFiles } from './material';
 export type { LoadedMaterial, GpuMaterial } from './material';
 export { composeAtlas, heightToRgba8 } from './compose';
+export { cached, checkPipelines, PipelineValidationError } from './pipelines';
 export type { ComposeInput, AtlasMaps } from './compose';
+export { uploadStructure } from './structure';
+export { encodeBorder } from './wear';
+export type { BorderInput } from './wear';
+export type { GpuStructure } from './structure';
+export { packParams, packWear, withCommon, FAMILY_CODE } from './params';
+export type { ParamsInput, WearExtra } from './params';

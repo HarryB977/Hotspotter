@@ -1,3 +1,4 @@
+import type { MaterialOrientation } from './orientation';
 import type { MaterialPeriod } from './period';
 
 export type MapKind = 'baseColor' | 'normal' | 'height' | 'roughness' | 'metallic' | 'ao' | 'opacity';
@@ -17,6 +18,9 @@ export interface MaterialSettings {
   heightScaleM: number; // default 0.02
   period: MaterialPeriod;
   allowRotation: boolean;
+  orientation: MaterialOrientation;
+  /** True once the user edits the period; the structure analysis then stops proposing one. */
+  periodUserSet?: boolean;
 }
 
 /**

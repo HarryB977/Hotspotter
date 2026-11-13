@@ -1,6 +1,7 @@
 import { MAP_DEFAULTS } from '@hotspotter/core';
 import type { MapKind, MaterialSettings } from '@hotspotter/core';
 import type { GpuContext } from './gpu';
+import { cached } from './pipelines';
 import { createConstTexture, uploadRgba8 } from './textures';
 import flipGreenWgsl from './shaders/flipGreen.wgsl?raw';
 
@@ -15,9 +16,19 @@ export interface GpuMaterial {
   settings: MaterialSettings;
   /** True when a normal map was uploaded (not the flat default); the normal pass then skips material relief. */
   hasNormalMap: boolean;
+  /**
+   * Which maps were uploaded; false where a 1×1 MAP_DEFAULTS constant stands in. With a real AO map the height AO
+   * leaves the material relief out (R33): the baked AO already holds it.
+   */
+  hasMap: Record<MapKind, boolean>;
 }
 
 const KINDS: MapKind[] = ['baseColor', 'normal', 'height', 'roughness', 'metallic', 'ao', 'opacity'];
+
+/** GpuMaterial.hasMap for a material whose maps are exactly `files`. */
+export function hasMapFromFiles(files: Partial<Record<MapKind, unknown>>): Record<MapKind, boolean> {
+  return Object.fromEntries(KINDS.map((k) => [k, files[k] !== undefined])) as Record<MapKind, boolean>;
+}
 
 const toByte = (v: number): number => Math.round(v * 255);
 
@@ -35,10 +46,10 @@ function flipGreen(ctx: GpuContext, src: GPUTexture): GPUTexture {
     format: 'rgba8unorm',
     usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC,
   });
-  const pipeline = device.createComputePipeline({
+  const pipeline = cached(device, 'flipGreen', () => device.createComputePipeline({
     layout: 'auto',
     compute: { module: device.createShaderModule({ code: flipGreenWgsl }), entryPoint: 'main' },
-  });
+  }));
   const bindGroup = device.createBindGroup({
     layout: pipeline.getBindGroupLayout(0),
     entries: [
@@ -57,7 +68,10 @@ function flipGreen(ctx: GpuContext, src: GPUTexture): GPUTexture {
   return dst;
 }
 
-/** Uploads every map as raw rgba8unorm bytes (no sRGB decode). DX normals are converted to GL. */
+/**
+ * Uploads every map as raw rgba8unorm bytes (no sRGB decode). DX normals are converted to GL. The second PBR set
+ * (ComposeInput.substrateMaterial) goes through the same path, with its own settings (tileSizeM, roughnessIsGloss).
+ */
 export function uploadMaterial(ctx: GpuContext, m: LoadedMaterial): GpuMaterial {
   const textures = {} as Record<MapKind, GPUTexture>;
   for (const kind of KINDS) {
@@ -69,5 +83,6 @@ export function uploadMaterial(ctx: GpuContext, m: LoadedMaterial): GpuMaterial 
     const tex = uploadRgba8(ctx, bmp, { srgb: false });
     textures[kind] = kind === 'normal' && m.settings.normalConvention === 'dx' ? flipGreen(ctx, tex) : tex;
   }
-  return { textures, settings: m.settings, hasNormalMap: m.images.normal !== undefined };
+  const hasMap = hasMapFromFiles(m.images);
+  return { textures, settings: m.settings, hasNormalMap: hasMap.normal, hasMap };
 }

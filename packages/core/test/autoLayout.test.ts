@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { autoLayout } from '../src/autoLayout';
 import type { AutoTarget } from '../src/autoLayout';
 import { CONTINUOUS, checkProportions } from '../src/period';
+import { rectRotations } from '../src/orientation';
 import { pxPerMetre, validateLayout } from '../src/layout';
 import type { HotspotLayout } from '../src/layout';
 
@@ -79,5 +80,23 @@ describe('autoLayout', () => {
         if (!r.tileU) expect(r.h).toBeGreaterThanOrEqual(minPx);
       }
     }
+  });
+});
+
+describe('autoLayout orientation', () => {
+  const planks = { ...CONTINUOUS, y: 0.15, cutAllowedY: false };
+  const orientation = { baseRotation: 0 as const, rule: 'longAxis' as const };
+  it('longAxis keeps proportions for rotated rects across seeds', () => {
+    for (let seed = 1; seed <= 20; seed++) {
+      const l = autoLayout({ ...base, target: 'mixed', period: planks, seed, orientation });
+      expect(l.warnings).toBeUndefined();
+      expect(checkProportions(l, planks, rectRotations(l, orientation)), `seed ${seed}`).toEqual([]);
+    }
+  });
+  it('falls back to fixed with a warning when the unit is too large', () => {
+    const odd = { ...CONTINUOUS, x: 0.37, y: 0.41, cutAllowedX: false, cutAllowedY: false };
+    const l = autoLayout({ ...base, target: 'walls', period: odd, seed: 1, orientation });
+    expect(l.warnings).toEqual(['orientation-fallback']);
+    expect(checkProportions(l, odd)).toEqual([]);
   });
 });

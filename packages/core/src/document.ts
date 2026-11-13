@@ -8,12 +8,19 @@ import type { MaterialSettings } from './material';
 import { placeMaterial } from './placement';
 import type { RectPlacement } from './placement';
 import { checkProportions } from './period';
+import { DEFAULT_ORIENTATION } from './orientation';
 import type { ProportionIssue } from './period';
+import type { MaterialType } from './structure/analyze';
+import { DEFAULT_WEAR, DEFAULT_DIRT, WEAR_FAMILIES } from './wear/params';
+import type { WearParams, DirtParams } from './wear/params';
 
-export type NodeType = 'material' | 'layout' | 'placement' | 'output';
+export type NodeType = 'material' | 'structure' | 'layout' | 'placement' | 'wear' | 'dirt' | 'output';
 
 export interface NodeParams {
   material: MaterialSettings;
+  structure: { type: MaterialType; threshold: number | null; analyzed: boolean };
+  wear: WearParams;
+  dirt: DirtParams;
   layout: { mode: 'preset'; preset: PresetId } | { mode: 'auto'; target: AutoTarget; seed: number };
   placement: { variation: number; seed: number };
   output: { resolutionPx: number; worldWidthM: number; groove: GrooveSettings };
@@ -31,19 +38,31 @@ export class DocParseError extends Error {
   }
 }
 
+const defaultStructure = (): NodeParams['structure'] => ({ type: 'continuous', threshold: null, analyzed: false });
+const defaultWear = (): WearParams => ({
+  ...DEFAULT_WEAR, mask: { ...DEFAULT_WEAR.mask }, substrate: { ...DEFAULT_WEAR.substrate },
+});
+const defaultDirt = (): DirtParams => ({ ...DEFAULT_DIRT, tint: [...DEFAULT_DIRT.tint] });
+
 export function createDefaultDoc(material: MaterialSettings): ProjectDoc {
   return {
     version: 1,
     nodes: [
       { id: 'material', type: 'material', params: material },
+      { id: 'structure', type: 'structure', params: defaultStructure() },
       { id: 'layout', type: 'layout', params: { mode: 'preset', preset: 'walls' } },
       { id: 'placement', type: 'placement', params: { variation: 0.5, seed: 0 } },
+      { id: 'wear', type: 'wear', params: defaultWear() },
+      { id: 'dirt', type: 'dirt', params: defaultDirt() },
       { id: 'output', type: 'output', params: { resolutionPx: 4096, worldWidthM: 8, groove: { ...DEFAULT_GROOVE } } },
     ],
     edges: [
-      { from: 'material', to: 'layout', port: 'period' },
+      { from: 'material', to: 'structure', port: 'material' },
+      { from: 'structure', to: 'layout', port: 'period' },
       { from: 'layout', to: 'placement', port: 'layout' },
-      { from: 'placement', to: 'output', port: 'placement' },
+      { from: 'placement', to: 'wear', port: 'placement' },
+      { from: 'wear', to: 'dirt', port: 'wear' },
+      { from: 'dirt', to: 'output', port: 'dirt' },
     ],
   };
 }
@@ -76,11 +95,85 @@ export function parseDoc(s: string): ProjectDoc {
     }
     if (!ids.has(e.from) || !ids.has(e.to)) throw new DocParseError('Edge references unknown node');
   }
+  for (const n of raw.nodes as Array<{ type: string; params: Record<string, unknown> }>) {
+    if (n.type === 'material' && !isObj(n.params.orientation)) n.params.orientation = { ...DEFAULT_ORIENTATION };
+    // Documents saved before bevelM existed bevelled widthM / 2.
+    const g = n.type === 'output' ? n.params.groove : undefined;
+    if (isObj(g) && typeof g.bevelM !== 'number' && typeof g.widthM === 'number') g.bevelM = g.widthM / 2;
+  }
+  migrateV01A(raw as unknown as ProjectDoc);
   return raw as unknown as ProjectDoc;
 }
 
+const STRUCTURE_TYPES: MaterialType[] = ['pieces', 'continuous', 'directional'];
+
+function mergeObj<T extends object>(defaults: T, v: unknown): T {
+  return { ...defaults, ...(isObj(v) ? v : {}) } as T;
+}
+
+/** Fills missing fields of structure/wear/dirt nodes from the defaults (deep for mask, substrate). */
+function normalizeNodes(d: ProjectDoc): void {
+  for (const n of d.nodes as Array<{ type: string; params: Record<string, unknown> }>) {
+    if (n.type === 'structure') {
+      const p = mergeObj(defaultStructure(), n.params);
+      if (!STRUCTURE_TYPES.includes(p.type)) p.type = 'continuous';
+      n.params = p as unknown as Record<string, unknown>;
+    } else if (n.type === 'wear') {
+      const w = defaultWear();
+      const p = mergeObj(w, n.params);
+      p.mask = mergeObj(w.mask, n.params.mask);
+      p.substrate = mergeObj(w.substrate, n.params.substrate);
+      if (!Object.prototype.hasOwnProperty.call(WEAR_FAMILIES, p.family)) p.family = 'brittle';
+      if (typeof p.enabled !== 'boolean') p.enabled = true;
+      n.params = p as unknown as Record<string, unknown>;
+    } else if (n.type === 'dirt') {
+      const p = mergeObj(defaultDirt(), n.params);
+      const t = (n.params as { tint?: unknown }).tint;
+      if (!Array.isArray(t) || t.length !== 3 || !t.every((x) => typeof x === 'number')) p.tint = [...DEFAULT_DIRT.tint];
+      if (typeof p.enabled !== 'boolean') p.enabled = true;
+      n.params = p as unknown as Record<string, unknown>;
+    }
+  }
+}
+
+function uniqueId(d: ProjectDoc, base: string): string {
+  const taken = new Set(d.nodes.map((n) => n.id));
+  let id = base;
+  for (let i = 2; taken.has(id); i++) id = `${base}_${i}`;
+  return id;
+}
+
+/** Inserts `node` into the edge `from → to`, keeping that edge's port name on both new links. */
+function spliceInto(d: ProjectDoc, from: DocNode | undefined, to: DocNode | undefined, node: DocNode): void {
+  const i = from && to ? d.edges.findIndex((e) => e.from === from.id && e.to === to.id) : -1;
+  if (!from || !to || i < 0) {
+    throw new DocParseError(`Cannot insert ${node.type} node: no edge between the ${from?.type ?? '?'} and ${to?.type ?? '?'} nodes`);
+  }
+  const port = d.edges[i].port;
+  node.id = uniqueId(d, node.id);
+  d.nodes.splice(d.nodes.indexOf(to), 0, node);
+  d.edges.splice(i, 1, { from: from.id, to: node.id, port }, { from: node.id, to: to.id, port });
+}
+
+/** v0.1-A documents lack structure, wear and dirt: insert each missing node on its chain edge. */
+function migrateV01A(d: ProjectDoc): void {
+  normalizeNodes(d);
+  const first = (t: NodeType) => d.nodes.find((n) => n.type === t);
+  if (!first('structure')) {
+    spliceInto(d, first('material'), first('layout'), { id: 'structure', type: 'structure', params: defaultStructure() });
+  }
+  if (!first('wear')) {
+    const target = first('dirt') ?? first('output');
+    spliceInto(d, first('placement'), target, { id: 'wear', type: 'wear', params: defaultWear() });
+  }
+  if (!first('dirt')) {
+    spliceInto(d, first('wear'), first('output'), { id: 'dirt', type: 'dirt', params: defaultDirt() });
+  }
+}
+
 const LABELS: Record<NodeType, string> = {
-  material: 'Material', layout: 'Layout', placement: 'Colocación', output: 'Salida',
+  material: 'Material', structure: 'Estructura', layout: 'Layout', placement: 'Colocación',
+  wear: 'Desgaste', dirt: 'Suciedad', output: 'Salida',
 };
 
 /** Linear chain → ordered entries; any branching or off-chain node → `{ custom: true }`. */
@@ -123,7 +216,7 @@ export function resolveLayout(d: ProjectDoc, opts?: { widthPx?: number }): Hotsp
   const { worldWidthM } = output;
   const base = layout.mode === 'preset'
     ? presetLayout(layout.preset, widthPx, worldWidthM)
-    : autoLayout({ target: layout.target, widthPx, worldWidthM, period: material.period, seed: layout.seed });
+    : autoLayout({ target: layout.target, widthPx, worldWidthM, period: material.period, seed: layout.seed, orientation: material.orientation });
   return { ...base, groove: { ...output.groove } };
 }
 
@@ -132,6 +225,10 @@ export interface ComposeInputs {
   placements: RectPlacement[];
   material: MaterialSettings;
   issues: ProportionIssue[];
+  rotations: Map<string, boolean>;
+  structure: NodeParams['structure'];
+  wear: WearParams;
+  dirt: DirtParams;
 }
 
 /** Layout, placements and proportion checks for composing `d`, shared by preview and export. */
@@ -144,8 +241,13 @@ export function composeInputsFromDoc(d: ProjectDoc, widthPx?: number): ComposeIn
     seed: pl.seed,
     materialAllowsRotation: material.allowRotation,
     tileSizeM: material.tileSizeM,
+    orientation: material.orientation,
   });
-  return { layout, placements, material, issues: checkProportions(layout, material.period) };
+  const rotations = new Map(placements.map((x) => [x.rectId, x.rotate90]));
+  const structure = findNode(d, 'structure').params;
+  const wear = findNode(d, 'wear').params;
+  const dirt = findNode(d, 'dirt').params;
+  return { layout, placements, material, rotations, structure, wear, dirt, issues: checkProportions(layout, material.period, rotations) };
 }
 
 export function updateNodeParams<T extends NodeType>(

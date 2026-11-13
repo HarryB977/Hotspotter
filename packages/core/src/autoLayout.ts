@@ -1,6 +1,8 @@
 import { DEFAULT_GROOVE, makeRect } from './layout';
 import type { HotspotLayout, HotspotRect } from './layout';
 import type { MaterialPeriod } from './period';
+import { OrientationUnitError, orientationUnit } from './orientation';
+import type { MaterialOrientation } from './orientation';
 import { createRng } from './rng';
 import type { Rng } from './rng';
 
@@ -18,6 +20,8 @@ export interface AutoLayoutOptions {
   minSizeM?: number;
   /** Defaults to 48. */
   maxRects?: number;
+  /** With rule 'longAxis' both axes share one grid unit; defaults to fixed. */
+  orientation?: MaterialOrientation;
 }
 
 /** Grid step on axes without a hard period constraint. */
@@ -115,8 +119,22 @@ export function autoLayout(o: AutoLayoutOptions): HotspotLayout {
   const maxRects = o.maxRects ?? 48;
   const rng = createRng(o.seed);
   const ppm = o.widthPx / o.worldWidthM;
-  const ax = makeAxis(o.period.x, o.period.cutAllowedX, o.widthPx, ppm, minSizeM);
-  const ay = makeAxis(o.period.y, o.period.cutAllowedY, heightPx, ppm, minSizeM);
+  let unit: number | null = null;
+  let fallback = false;
+  if (o.orientation?.rule === 'longAxis') {
+    try {
+      unit = orientationUnit(o.period);
+    } catch (e) {
+      if (!(e instanceof OrientationUnitError)) throw e;
+      fallback = true;
+    }
+  }
+  const ax = unit !== null
+    ? makeAxis(unit, false, o.widthPx, ppm, minSizeM)
+    : makeAxis(o.period.x, o.period.cutAllowedX, o.widthPx, ppm, minSizeM);
+  const ay = unit !== null
+    ? makeAxis(unit, false, heightPx, ppm, minSizeM)
+    : makeAxis(o.period.y, o.period.cutAllowedY, heightPx, ppm, minSizeM);
   const part = new Partitioner(rng, o.target, ax, ay);
   const whole: Region = { x: 0, y: 0, nx: ax.count, ny: ay.count };
 
@@ -167,5 +185,6 @@ export function autoLayout(o: AutoLayoutOptions): HotspotLayout {
     worldWidthM: o.worldWidthM,
     rects,
     groove: { ...DEFAULT_GROOVE },
+    ...(fallback ? { warnings: ['orientation-fallback'] } : {}),
   };
 }

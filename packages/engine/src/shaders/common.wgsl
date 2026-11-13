@@ -1,0 +1,202 @@
+// Shared prelude, prepended to every module with withCommon(). The only
+// declaration of Params, Wear and Rect; their byte layouts are packed by
+// packParams, packWear and rectsBuffer (params.ts, compose.ts).
+
+struct Params {
+  outSize: vec2<f32>,      // output texture size, px
+  refScale: f32,           // output px per reference (layout) px
+  ppmRef: f32,             // reference px per metre
+  tileSizeM: vec2<f32>,
+  heightScaleM: f32,
+  grooveWidthM: f32,       // flat groove floor, centred on the shared edge
+  grooveDepthM: f32,
+  profile: u32,            // 0 bevel, 1 round, 2 step, 3 none
+  roughnessIsGloss: u32,
+  refHeightPx: f32,        // layout height in reference px
+  sobelMacro: u32,         // 1: Sobel on the macro height (matNormal.a), the material has a normal map
+  bevelM: f32,             // bevel width inside each rect, metres
+  seed: u32,               // wear seed
+  pad0: u32,
+}
+
+// Wear and dirt uniforms (R17), packed by packWear (params.ts). Scalars only, so offsets are index * 4.
+struct Wear {
+  enabled: u32,            // 0: no wear, the wear passes are skipped
+  intensity: f32,
+  widthM: f32,
+  minEdgeM: f32,
+  sizeM: f32,
+  depthM: f32,
+  bandM: f32,
+  microM: f32,
+  pieceBias: f32,
+  edgeTone: f32,
+  maskStrength: f32,
+  maskEnabled: u32,        // 1: a mask texture is bound and enabled
+  maskInvert: u32,
+  hasPieces: u32,          // 1: the structure has joints (pieceId / jointDistM are meaningful)
+  grainAxis: u32,          // material grain: 0 none, 1 x, 2 y
+  cellMix: f32,            // family shape (WEAR_FAMILIES)
+  anisotropy: f32,
+  steps: u32,
+  loses: u32,
+  polish: f32,
+  cavity: f32,             // dirt
+  runoff: f32,
+  runoffLengthM: f32,
+  tintR: f32,
+  tintG: f32,
+  tintB: f32,
+  family: u32,             // FAMILY_CODE (params.ts)
+  substrateSource: u32,    // 0 interior, 1 second set (bound as substrateMaterial)
+  hueShift: f32,           // interior substrate, degrees
+  satMul: f32,
+  valMul: f32,
+  roughAdd: f32,
+  substrateTileM: vec2<f32>,  // second set tileSizeM (offset 128, 8-aligned)
+  substrateGloss: u32,     // 1: the second set's roughness map is gloss
+  pad1: u32,
+}
+
+struct Rect {
+  rect: vec4<f32>,         // x, y, w, h in reference px, top-left origin
+  originM: vec2<f32>,
+  rotate90: u32,
+  pad: u32,
+}
+
+// Distance in reference px from px to the visible edge of rect r, the edge shrunk by halfGroovePx (the groove floor
+// edge). Negative outside it.
+fn visibleEdgePx(r: vec4<f32>, px: vec2<f32>, halfGroovePx: f32) -> f32 {
+  return min(
+    min(px.x - (r.x + halfGroovePx), (r.x + r.z - halfGroovePx) - px.x),
+    min(px.y - (r.y + halfGroovePx), (r.y + r.w - halfGroovePx) - px.y),
+  );
+}
+
+// Material metres at reference px `px` of rect r, a direct transcription of atlasPxToMaterialM
+// (packages/core/src/placement.ts). ppm is reference px per metre.
+fn atlasPxToMaterialM(r: vec4<f32>, originM: vec2<f32>, rotate90: u32, px: vec2<f32>, ppm: f32) -> vec2<f32> {
+  var lx = (px.x - r.x) / ppm;
+  var ly = (r.y + r.w - px.y) / ppm;
+  if (rotate90 != 0u) {
+    let t = lx;
+    lx = ly;
+    ly = -t;
+  }
+  return originM + vec2<f32>(lx, ly);
+}
+
+// Material uv of material metres m for a set of tile size tileSizeM. The material origin is the image's bottom-left
+// texel, so v is flipped.
+fn materialUv(m: vec2<f32>, tileSizeM: vec2<f32>) -> vec2<f32> {
+  return vec2<f32>(m.x / tileSizeM.x, 1.0 - m.y / tileSizeM.y);
+}
+
+// Groove depth fraction for profile code `code` (Params.profile): 1 at the groove, 0 at d >= 1.
+fn grooveProfile(code: u32, d: f32) -> f32 {
+  switch code {
+    case 0u: { return 1.0 - d; }
+    case 1u: { return 1.0 - smoothstep(0.0, 1.0, d); }
+    case 2u: { return select(0.0, 1.0, d < 0.5); }
+    default: { return 0.0; }
+  }
+}
+
+// ---- Noise and hash utilities. Coordinates are world/atlas metres (or any float lattice); there is no wrap. ----
+
+fn pcg3d(v_in: vec3<u32>) -> vec3<u32> {
+  var v = v_in * 1664525u + 1013904223u;
+  v.x += v.y * v.z;
+  v.y += v.z * v.x;
+  v.z += v.x * v.y;
+  v ^= v >> vec3<u32>(16u);
+  v.x += v.y * v.z;
+  v.y += v.z * v.x;
+  v.z += v.x * v.y;
+  return v;
+}
+
+// Hash of the integer lattice cell floor(p); returns [0,1). The floor goes through i32 so large coordinates do not
+// lose precision in the hash itself.
+fn hash31(p: vec3<f32>, seed: u32) -> f32 {
+  let ip = bitcast<vec3<u32>>(vec3<i32>(floor(p)));
+  let h = pcg3d(vec3<u32>(ip.x ^ (seed * 747796405u), ip.y + seed, ip.z ^ (seed * 2891336453u)));
+  return f32(h.x >> 8u) * (1.0 / 16777216.0);
+}
+
+fn valueNoise(p: vec2<f32>, seed: u32) -> f32 {
+  let i = floor(p);
+  let f = p - i;
+  let u = f * f * (3.0 - 2.0 * f);
+  let a = hash31(vec3<f32>(i, 0.0), seed);
+  let b = hash31(vec3<f32>(i + vec2<f32>(1.0, 0.0), 0.0), seed);
+  let c = hash31(vec3<f32>(i + vec2<f32>(0.0, 1.0), 0.0), seed);
+  let d = hash31(vec3<f32>(i + vec2<f32>(1.0, 1.0), 0.0), seed);
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+// fBm with lacunarity 2 and gain 0.5, normalised to [0,1). Each octave uses its own seed and a lattice offset.
+fn fbm(p: vec2<f32>, octaves: u32, seed: u32) -> f32 {
+  var sum = 0.0;
+  var amp = 0.5;
+  var norm = 0.0;
+  var q = p;
+  for (var o = 0u; o < octaves; o++) {
+    sum += amp * valueNoise(q, seed ^ (o * 0x9e3779b9u));
+    norm += amp;
+    amp *= 0.5;
+    q = q * 2.0 + vec2<f32>(17.3, 9.1);
+  }
+  return sum / norm;
+}
+
+// Domain warp: displaces p by up to `amount` (in the units of p) in each axis.
+fn warp(p: vec2<f32>, amount: f32, seed: u32) -> vec2<f32> {
+  let dx = valueNoise(p, seed ^ 0x9e3779b9u) - 0.5;
+  let dy = valueNoise(p + vec2<f32>(31.7, 11.3), seed ^ 0x85ebca6bu) - 0.5;
+  return p + 2.0 * amount * vec2<f32>(dx, dy);
+}
+
+struct VoronoiHit {
+  cell: vec2<i32>,  // lattice cell of the nearest feature point
+  d1: f32,          // distance to the nearest feature point, in stretched cell units (x divided by anisotropy)
+  d2: f32,          // distance to the second nearest, same units; inexact beyond the 3x3 neighbourhood
+}
+
+// Worley 3x3 with hash jitter. anisotropy > 1 stretches cells along +X; d1 and d2 are measured in the stretched
+// space, in cell units, not in the units of p.
+fn voronoi(p: vec2<f32>, anisotropy: f32, seed: u32) -> VoronoiHit {
+  let q = vec2<f32>(p.x / max(anisotropy, 1e-3), p.y);
+  let base = floor(q);
+  var hit = VoronoiHit(vec2<i32>(0), 1e9, 1e9);
+  for (var j = -1; j <= 1; j++) {
+    for (var i = -1; i <= 1; i++) {
+      let c = base + vec2<f32>(f32(i), f32(j));
+      let jitter = vec2<f32>(hash31(vec3<f32>(c, 1.0), seed), hash31(vec3<f32>(c, 2.0), seed));
+      let d = length(c + jitter - q);
+      if (d < hit.d1) {
+        hit.d2 = hit.d1;
+        hit.d1 = d;
+        hit.cell = vec2<i32>(c);
+      } else if (d < hit.d2) {
+        hit.d2 = d;
+      }
+    }
+  }
+  return hit;
+}
+
+const S_RECT = 0x1b873593u;
+
+// Wear coordinates: rect-local metres (origin at the rect's bottom-left, y up) plus a per-rect offset of up to
+// 10 m (small, so the fine micro and crack noises keep f32 precision), hashed from the seed and the rect index (id - 1). px is in reference px (top-left origin), ppm reference
+// px per metre.
+fn wearLocalM(id: u32, r: vec4<f32>, px: vec2<f32>, ppm: f32, seed: u32) -> vec2<f32> {
+  let rectIndex = f32(id - 1u);
+  let offset = 10.0 * vec2<f32>(
+    hash31(vec3<f32>(rectIndex, 0.0, 0.0), seed ^ S_RECT),
+    hash31(vec3<f32>(rectIndex, 1.0, 0.0), seed ^ S_RECT),
+  );
+  return vec2<f32>(px.x - r.x, r.y + r.w - px.y) / ppm + offset;
+}

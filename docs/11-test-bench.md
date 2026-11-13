@@ -31,6 +31,21 @@ Sets de 1K con basecolor, normal GL y DX, height, roughness, AO y, en algunos, m
 2. **Variantes**: un proyecto puede tener varias variantes (tinte, bandas, seed de daño, sustrato) que comparten el layout. Se exportan todas de una vez con sufijo (`_a`, `_b`, `_blue`…).
 3. Las **ranuras** del layout son finas, hundidas y oscuras por defecto (como en concrete.jpg y metal.png), lo que además ayuda a la detección de Anvil.
 
+## `npm run bench`
+
+`scripts/bench.mjs` lanza `apps/web/e2e/bench.spec.ts` (etiqueta `@bench`, fuera del `npm run e2e` normal) con un solo worker y abre el índice al terminar. Si no puede abrir un navegador (por ejemplo, en CI), solo escribe la ruta.
+
+Para cada carpeta de `samples/pbr/`, en el mismo orden que la app:
+
+1. Importa la carpeta con el selector de carpeta.
+2. Deja que el análisis proponga la estructura y la familia de desgaste.
+3. Pone el layout automático `mixed` con semilla 1.
+4. Hace lo mismo que el botón Exportar: resolución 2048, comprobaciones a esa resolución y export Unity URP con `composeInputFor`.
+
+La salida va a `samples/_bench/<AAAAMMDD-HHmm>/<set>/`: los PNG, `.hotspot.json`, la tabla Anvil, miniaturas de 256 px en `thumbs/` y `bench.json` con el resumen. `index.html` muestra, por set, las miniaturas de BaseColor, Normal, Height y WearMask (cada una enlaza al mapa completo) y la tabla de comprobaciones. Es un archivo local, con rutas relativas y sin recursos externos.
+
+El banco pasa si todos los sets exportan sin errores y ninguna comprobación sale en `error`. Los avisos se listan pero no lo hacen fallar. Si falta `samples/pbr`, `npm run bench` lo dice y termina con código 0 sin lanzar Playwright.
+
 ## Criterio de aceptación por versión
 
 Cada versión se da por buena cuando cada set de `samples/pbr/` aplicable a esa versión produce un atlas que el usuario, comparando con `samples/examples/`, considera usable, y las comprobaciones automáticas pasan. Se guardan capturas de referencia (golden) de cada set para detectar regresiones.

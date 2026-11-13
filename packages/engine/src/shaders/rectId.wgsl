@@ -1,27 +1,6 @@
 // Pass 1: one quad per rect, shrunk by half the groove width on every side.
 // Writes id = rect index + 1; the clear value 0 marks groove / empty pixels.
 
-struct Params {
-  outSize: vec2<f32>,      // output texture size, px
-  refScale: f32,           // output px per reference (layout) px
-  ppmRef: f32,             // reference px per metre
-  tileSizeM: vec2<f32>,
-  heightScaleM: f32,
-  grooveWidthM: f32,
-  grooveDepthM: f32,
-  profile: u32,            // 0 bevel, 1 round, 2 step, 3 none
-  roughnessIsGloss: u32,
-  refHeightPx: f32,        // layout height in reference px
-  sobelMacro: u32,         // 1: Sobel on the macro height (matNormal.a), the material has a normal map
-}
-
-struct Rect {
-  rect: vec4<f32>,         // x, y, w, h in reference px, top-left origin
-  originM: vec2<f32>,
-  rotate90: u32,
-  pad: u32,
-}
-
 @group(0) @binding(0) var<uniform> P: Params;
 @group(0) @binding(1) var<storage, read> rects: array<Rect>;
 

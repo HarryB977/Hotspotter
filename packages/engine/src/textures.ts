@@ -22,13 +22,14 @@ export function createConstTexture(ctx: GpuContext, rgba: [number, number, numbe
   return texture;
 }
 
-export async function readbackRgba8(
-  ctx: GpuContext,
-  tex: GPUTexture,
-): Promise<{ width: number; height: number; data: Uint8Array }> {
+/**
+ * Copies a `texelBytes`-per-texel texture into a mappable buffer and returns the unpadded bytes. The copy is submitted
+ * before the first await, so the caller may destroy `tex` as soon as this returns its promise.
+ */
+async function readback4(ctx: GpuContext, tex: GPUTexture, texelBytes = 4): Promise<Uint8Array> {
   const { device } = ctx;
   const { width, height } = tex;
-  const rowBytes = width * 4;
+  const rowBytes = width * texelBytes;
   const bytesPerRow = Math.ceil(rowBytes / 256) * 256;
   const buffer = device.createBuffer({
     size: bytesPerRow * height,
@@ -37,13 +38,70 @@ export async function readbackRgba8(
   const encoder = device.createCommandEncoder();
   encoder.copyTextureToBuffer({ texture: tex }, { buffer, bytesPerRow }, [width, height]);
   device.queue.submit([encoder.finish()]);
-  await buffer.mapAsync(GPUMapMode.READ);
-  const padded = new Uint8Array(buffer.getMappedRange());
-  const data = new Uint8Array(rowBytes * height);
-  for (let y = 0; y < height; y++) {
-    data.set(padded.subarray(y * bytesPerRow, y * bytesPerRow + rowBytes), y * rowBytes);
+  try {
+    await buffer.mapAsync(GPUMapMode.READ);
+    const padded = new Uint8Array(buffer.getMappedRange());
+    const data = new Uint8Array(rowBytes * height);
+    for (let y = 0; y < height; y++) {
+      data.set(padded.subarray(y * bytesPerRow, y * bytesPerRow + rowBytes), y * rowBytes);
+    }
+    buffer.unmap();
+    return data;
+  } finally {
+    buffer.destroy();
   }
-  buffer.unmap();
-  buffer.destroy();
-  return { width, height, data };
+}
+
+export async function readbackRgba8(
+  ctx: GpuContext,
+  tex: GPUTexture,
+): Promise<{ width: number; height: number; data: Uint8Array }> {
+  return { width: tex.width, height: tex.height, data: await readback4(ctx, tex) };
+}
+
+/**
+ * Reads back a single-channel 32-bit texture (R19): r32float as Float32Array, r32uint as Uint32Array, row-major.
+ * Like readbackRgba8, the copy is submitted before the first await.
+ */
+export function readbackR32(
+  ctx: GpuContext,
+  tex: GPUTexture,
+): Promise<{ width: number; height: number; data: Float32Array | Uint32Array }> {
+  const { width, height, format } = tex;
+  if (format !== 'r32float' && format !== 'r32uint') {
+    return Promise.reject(new Error(`readbackR32: unsupported format ${format}`));
+  }
+  return readback4(ctx, tex).then((b) => {
+    const n = width * height;
+    const data = format === 'r32float'
+      ? new Float32Array(b.buffer, b.byteOffset, n)
+      : new Uint32Array(b.buffer, b.byteOffset, n);
+    return { width, height, data };
+  });
+}
+
+/** IEEE half (as u16 bits) to number. */
+function halfToFloat(b: number): number {
+  const e = (b >> 10) & 0x1f, f = b & 0x3ff, sign = b & 0x8000 ? -1 : 1;
+  if (e === 0) return sign * f * 2 ** -24;
+  if (e === 31) return f ? NaN : sign * Infinity;
+  return sign * (1 + f / 1024) * 2 ** (e - 15);
+}
+
+/**
+ * Reads back an rgba16float texture as a Float32Array (4 floats per texel, row-major). Like readbackRgba8, the copy is
+ * submitted before the first await.
+ */
+export function readbackRgba16f(
+  ctx: GpuContext,
+  tex: GPUTexture,
+): Promise<{ width: number; height: number; data: Float32Array }> {
+  const { width, height, format } = tex;
+  if (format !== 'rgba16float') return Promise.reject(new Error(`readbackRgba16f: unsupported format ${format}`));
+  return readback4(ctx, tex, 8).then((b) => {
+    const half = new Uint16Array(b.buffer, b.byteOffset, width * height * 4);
+    const data = new Float32Array(half.length);
+    for (let i = 0; i < half.length; i++) data[i] = halfToFloat(half[i]);
+    return { width, height, data };
+  });
 }

@@ -2,6 +2,8 @@ import { createRng } from './rng';
 import { pxPerMetre } from './layout';
 import type { HotspotLayout, HotspotRect } from './layout';
 import type { MaterialPeriod } from './period';
+import { rectRotations } from './orientation';
+import type { MaterialOrientation } from './orientation';
 
 export interface RectPlacement {
   rectId: string;
@@ -16,6 +18,7 @@ export interface PlacementOptions {
   seed: number;
   materialAllowsRotation: boolean;
   tileSizeM: [number, number];
+  orientation: MaterialOrientation;
 }
 
 /**
@@ -30,6 +33,8 @@ export function placeMaterial(
 ): RectPlacement[] {
   const rng = createRng(o.seed);
   const ppm = pxPerMetre(l);
+  const oriented = rectRotations(l, o.orientation);
+  // Origins stay in material axes: the rotated corner maps to originM, so joints on p.x / p.y hold.
   const axisOrigin = (
     period: number | null, phase: number, tileM: number, globalM: number, draw: number,
   ): number => {
@@ -44,14 +49,14 @@ export function placeMaterial(
     const dr = rng.next();
     const globalX = r.x / ppm;
     const globalY = (l.heightPx - (r.y + r.h)) / ppm;
-    const canRotate = r.allowRotation && o.materialAllowsRotation && o.variation > 0;
+    const canRotate = o.orientation.rule === 'fixed' && r.allowRotation && o.materialAllowsRotation && o.variation > 0;
     return {
       rectId: r.id,
       originM: [
         axisOrigin(p.x, p.phaseX, o.tileSizeM[0], globalX, dx),
         axisOrigin(p.y, p.phaseY, o.tileSizeM[1], globalY, dy),
       ],
-      rotate90: canRotate && dr < 0.5 * o.variation,
+      rotate90: (oriented.get(r.id) ?? false) !== (canRotate && dr < 0.5 * o.variation),
     };
   });
 }

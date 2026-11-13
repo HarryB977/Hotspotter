@@ -38,7 +38,7 @@ Las decisiones de este documento son del constructor (Claude) salvo que se indiq
 ## Evaluación
 
 - **Preview**: se evalúa el grafo a resolución reducida (512–2048 px) al cambiar cualquier parámetro, con recálculo incremental de los nodos afectados.
-- **Render final**: a la resolución de salida (hasta 8192 px), por teselas si hace falta para no agotar VRAM. Incluye las pasadas de calidad que el preview omite (supermuestreo del daño, filtrado de microdetalle, comprobaciones completas). Muestra progreso y se puede cancelar.
+- **Render final**: a la resolución de salida (hasta 8192 px), por teselas si hace falta para no agotar VRAM. Con desgaste, el compose a 8192 llega a ≈4.3 GiB de VRAM (decisión 46). Incluye las pasadas de calidad que el preview omite (supermuestreo del daño, filtrado de microdetalle, comprobaciones completas). Muestra progreso y se puede cancelar.
 - El detalle se define en **unidades del mundo** (cm, mm), no en píxeles, para que el preview y el render final muestren lo mismo a distinta resolución. Excepción: el estilo pixel art, que trabaja en la rejilla de píxeles del material (ver [04-wear.md](04-wear.md)).
 
 ## Estructura del repositorio (propuesta)

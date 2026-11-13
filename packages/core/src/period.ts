@@ -1,5 +1,6 @@
 import { pxPerMetre, rectSizeM } from './layout';
 import type { HotspotLayout } from './layout';
+import { effectivePeriod } from './orientation';
 
 export interface MaterialPeriod {
   /** Metres; null = continuous on that axis. */
@@ -27,12 +28,14 @@ export type ProportionIssue = { rectId: string; axis: 'x' | 'y'; sizeM: number; 
 
 export function checkProportions(
   l: HotspotLayout,
-  p: MaterialPeriod,
+  base: MaterialPeriod,
+  rotated?: ReadonlyMap<string, boolean>,
   tolerancePx = 1,
 ): ProportionIssue[] {
   const ppm = pxPerMetre(l);
   const issues: ProportionIssue[] = [];
   for (const r of l.rects) {
+    const p = effectivePeriod(base, rotated?.get(r.id) ?? false);
     const size = rectSizeM(l, r);
     const axes = [
       { axis: 'x' as const, sizeM: size.w, sizePx: r.w, period: p.x, cut: p.cutAllowedX },
