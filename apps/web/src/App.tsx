@@ -10,11 +10,14 @@ import { AtlasView } from './viewport/AtlasView';
 import { ExportDialog } from './export/ExportDialog';
 import type { ActiveMap } from './state/store';
 
-const MAP_TABS: ActiveMap[] = ['baseColor', 'normal', 'height', 'roughness', 'metallic', 'ao', 'rectId', 'pieceId'];
+const MAP_TABS: ActiveMap[] = [
+  'baseColor', 'normal', 'height', 'roughness', 'metallic', 'ao', 'wearMask', 'rectId', 'pieceId',
+];
 
 function tabLabel(k: ActiveMap): string {
   if (k === 'rectId') return es.mapBar.rectId;
   if (k === 'pieceId') return es.mapBar.pieceId;
+  if (k === 'wearMask') return es.mapBar.wearMask;
   return es.material.mapKinds[k];
 }
 

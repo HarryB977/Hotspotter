@@ -1,18 +1,20 @@
 import { create } from 'zustand';
 import {
   CONTINUOUS, analyzeStructure, chooseMaps, classifyMapFile, composeInputsFromDoc, createDefaultDoc, downsample,
-  resolveMaterialName, toGray, updateNodeParams, validateLayout,
+  proposeFamily, resolveMaterialName, toGray, updateNodeParams, validateLayout,
 } from '@hotspotter/core';
 import type {
   DocNode, GrayImage, HotspotLayout, LayoutIssue, MapKind, MaterialSettings, NodeParams, NodeType, ProjectDoc,
   ProportionIssue, RectPlacement, StructureResult,
 } from '@hotspotter/core';
-import { composeAtlas, initGpu, uploadMaterial, uploadStructure, WebGpuUnavailableError } from '@hotspotter/engine';
+import {
+  composeAtlas, hasMapFromFiles, initGpu, uploadMaterial, uploadRgba8, uploadStructure, WebGpuUnavailableError,
+} from '@hotspotter/engine';
 import type { AtlasMaps, GpuContext, GpuMaterial, GpuStructure, LoadedMaterial } from '@hotspotter/engine';
 import { es } from '../i18n/es';
 
 export type PreviewRes = 512 | 1024 | 2048;
-export type ActiveMap = MapKind | 'rectId' | 'pieceId';
+export type ActiveMap = MapKind | 'rectId' | 'pieceId' | 'wearMask';
 
 /** Structure analysis of the current material and its GPU maps. */
 export interface StructureState {
@@ -22,9 +24,31 @@ export interface StructureState {
   source: 'height' | 'baseColor';
 }
 
+/**
+ * User B/N wear mask (atlas UV). Kept in store state only: the document has no image storage yet, so it is not saved
+ * with the project.
+ */
+export interface MaskState {
+  name: string;
+  texture: GPUTexture;
+}
+
+/**
+ * Second PBR set revealed in the loss (wear.substrate.source = 'secondSet'). Store state only, like the mask; it has
+ * no document of its own.
+ */
+export interface SubstrateState {
+  name: string;
+  gpu: GpuMaterial;
+}
+
 /** A composed atlas with the layout and checks it was composed from. */
 export interface AtlasResult {
   maps: AtlasMaps;
+  /** Document, mask and substrate the atlas was composed from (by identity, to tell whether it is current). */
+  doc: ProjectDoc;
+  mask: MaskState | null;
+  substrate: SubstrateState | null;
   layout: HotspotLayout;
   placements: RectPlacement[];
   issues: ProportionIssue[];
@@ -55,6 +79,10 @@ export interface ProjectState {
   structure: StructureState | null;
   /** Last structure analysis failure, shown in the structure section; cleared by the next success. */
   structureError: string | null;
+  mask: MaskState | null;
+  substrate: SubstrateState | null;
+  /** Last mask or substrate import failure, shown in the wear section; cleared by the next success. */
+  wearError: string | null;
   setPreviewRes(r: PreviewRes): void;
   setActiveMap(m: ActiveMap): void;
   /** Shallow-merges params into a node. */
@@ -80,6 +108,13 @@ export interface ProjectState {
   analyze(opts?: { applyPeriod?: boolean }): Promise<void>;
   /** Stores the segmentation threshold (null = automatic) and re-analyses. */
   setStructureThreshold(t: number | null): Promise<void>;
+  /** Loads a B/N wear mask (red channel) and enables it in the wear node. */
+  importMask(file: File): Promise<void>;
+  /** Drops the mask texture and disables the mask in the wear node. */
+  clearMask(): void;
+  /** Loads a second PBR set (same map classification as the material, no document of its own) as the substrate. */
+  importSubstrate(files: File[]): Promise<void>;
+  clearSubstrate(): void;
 }
 
 // TGA and TIFF are not listed: createImageBitmap cannot decode them, so they are ignored.
@@ -102,6 +137,12 @@ let materialRev = 0;
 
 /** Bumped by every analysis request; only the latest may apply its result. */
 let analyzeGen = 0;
+
+/** Bumped by mask imports and clears and by material replacement; only the latest mask import may apply. */
+let maskGen = 0;
+
+/** Bumped by substrate imports and clears and by material replacement; only the latest substrate import may apply. */
+let substrateGen = 0;
 
 /** Longest side read back from a bitmap for the analysis, before the box downsample to ANALYSIS_SIDE. */
 const MAX_READ_SIDE = 2048;
@@ -126,6 +167,14 @@ function readGray(images: LoadedMaterial['images']): { gray: GrayImage; source: 
 
 function structureNode(doc: ProjectDoc): DocNode<'structure'> | undefined {
   return doc.nodes.find((n): n is DocNode<'structure'> => n.type === 'structure');
+}
+
+function wearNode(doc: ProjectDoc): DocNode<'wear'> | undefined {
+  return doc.nodes.find((n): n is DocNode<'wear'> => n.type === 'wear');
+}
+
+function dirtNode(doc: ProjectDoc): DocNode<'dirt'> | undefined {
+  return doc.nodes.find((n): n is DocNode<'dirt'> => n.type === 'dirt');
 }
 
 async function decode(file: File): Promise<ImageBitmap> {
@@ -252,7 +301,7 @@ async function addFiles(
       material: { settings, images: { ...material.images, ...loaded } },
       gpuMaterial: {
         textures, settings, hasNormalMap: settings.files.normal !== undefined,
-        hasMap: Object.fromEntries((['baseColor', 'normal', 'height', 'roughness', 'metallic', 'ao', 'opacity'] as const).map((k) => [k, settings.files[k] !== undefined])) as Record<MapKind, boolean>,
+        hasMap: hasMapFromFiles(settings.files),
       },
       doc: withMaterialNode(doc, settings),
       importing: false,
@@ -281,6 +330,9 @@ export const useProject = create<ProjectState>()((set, get) => ({
   composeError: null,
   structure: null,
   structureError: null,
+  mask: null,
+  substrate: null,
+  wearError: null,
 
   setPreviewRes(r) {
     set({ previewRes: r });
@@ -357,12 +409,17 @@ export const useProject = create<ProjectState>()((set, get) => ({
       destroyTextures(get().gpuMaterial);
       closeAll(bitmaps);
       bitmaps = fresh;
-      const oldStructure = get().structure;
+      const { structure: oldStructure, mask: oldMask, substrate: oldSubstrate } = get();
+      // A new material starts a new document: its mask and substrate go too, and imports still in flight are dropped.
+      maskGen++;
+      substrateGen++;
       set({
         sources: images, material, gpuMaterial, doc: createDefaultDoc(settings), importing: false,
-        structure: null, structureError: null,
+        structure: null, structureError: null, mask: null, substrate: null, wearError: null,
       });
       oldStructure?.gpu.destroy();
+      oldMask?.texture.destroy();
+      if (oldSubstrate) destroyTextures(oldSubstrate.gpu);
       await get().analyze();
     } catch (e) {
       closeAll(fresh);
@@ -495,6 +552,11 @@ export const useProject = create<ProjectState>()((set, get) => ({
     }
     let nextDoc = settings === material.settings ? doc : withMaterialNode(doc, settings);
     if (node) nextDoc = updateNodeParams(nextDoc, node.id, { type: result.type, analyzed: true });
+    const wear = wearNode(nextDoc);
+    if (wear && !wear.params.userSetFamily) {
+      const family = proposeFamily(result.type, settings.name);
+      if (family !== wear.params.family) nextDoc = updateNodeParams<'wear'>(nextDoc, wear.id, { family });
+    }
     const prev = get().structure;
     const next: Partial<ProjectState> = {
       structure: { result, gpu: gpuStructure, source },
@@ -517,6 +579,94 @@ export const useProject = create<ProjectState>()((set, get) => ({
     set({ doc: updateNodeParams(doc, node.id, { threshold: t }) });
     await get().analyze();
   },
+
+  async importMask(file) {
+    await get().initGpu();
+    const { gpu } = get();
+    if (!gpu || !get().doc) return;
+    const mine = ++maskGen;
+    let bmp: ImageBitmap;
+    try {
+      bmp = await decode(file);
+    } catch {
+      if (mine === maskGen) set({ wearError: es.material.decodeFailed(file.name) });
+      return;
+    }
+    const doc = get().doc;
+    if (mine !== maskGen || !doc) {
+      bmp.close();
+      return;
+    }
+    const texture = uploadRgba8(gpu, bmp, { srgb: false });
+    bmp.close();
+    const node = wearNode(doc);
+    const prev = get().mask;
+    set({
+      mask: { name: file.name, texture },
+      wearError: null,
+      doc: node ? updateNodeParams<'wear'>(doc, node.id, { mask: { ...node.params.mask, enabled: true } }) : doc,
+    });
+    // A compose in flight bound the old texture before its first await; destroy() waits for that submitted work.
+    prev?.texture.destroy();
+  },
+
+  clearMask() {
+    maskGen++;
+    const { mask, doc } = get();
+    const node = doc && wearNode(doc);
+    set({
+      mask: null,
+      doc: doc && node ? updateNodeParams<'wear'>(doc, node.id, { mask: { ...node.params.mask, enabled: false } }) : doc,
+    });
+    mask?.texture.destroy();
+  },
+
+  async importSubstrate(files) {
+    await get().initGpu();
+    const { gpu } = get();
+    if (!gpu || !get().doc) return;
+    const images = files.filter((f) => IMAGE_EXT.test(f.name));
+    const names = images.map((f) => f.name);
+    const { files: chosen, normalConvention } = chooseMaps(names);
+    const mine = ++substrateGen;
+    if (Object.keys(chosen).length === 0) {
+      set({ wearError: es.material.noMaps });
+      return;
+    }
+    const fresh = new Map<string, ImageBitmap>();
+    try {
+      const loaded = await buildImages(chosen, images, new Map(), fresh);
+      if (mine !== substrateGen) return;
+      const rough = chosen.roughness;
+      const settings: MaterialSettings = {
+        name: resolveMaterialName(names, folderOf(files)),
+        files: chosen,
+        normalConvention,
+        roughnessIsGloss: rough ? classifyMapFile(rough)?.isGloss === true : false,
+        tileSizeM: [1, 1],
+        heightScaleM: 0.02,
+        period: { ...CONTINUOUS },
+        allowRotation: false,
+        orientation: { baseRotation: 0, rule: 'fixed' },
+      };
+      const gpuMaterial = uploadMaterial(gpu, { settings, images: loaded });
+      const prev = get().substrate;
+      set({ substrate: { name: settings.name, gpu: gpuMaterial }, wearError: null });
+      if (prev) destroyTextures(prev.gpu);
+    } catch (e) {
+      if (mine === substrateGen) set({ wearError: e instanceof Error ? e.message : String(e) });
+    } finally {
+      // The bitmaps were copied into textures at upload; the substrate never re-reads them.
+      closeAll(fresh);
+    }
+  },
+
+  clearSubstrate() {
+    substrateGen++;
+    const { substrate } = get();
+    set({ substrate: null });
+    if (substrate) destroyTextures(substrate.gpu);
+  },
 }));
 
 function destroyMaps(m: AtlasMaps): void {
@@ -534,17 +684,44 @@ let composeTimer: ReturnType<typeof setTimeout> | undefined;
 /** Bumped by every compose request; only the latest may apply its result. */
 let composeGen = 0;
 
+/** A compose is running; requests made meanwhile set `composeAgain` and run once when it ends (no stacking). */
+let composing = false;
+let composeAgain = false;
+
+async function runCompose(): Promise<void> {
+  if (composing) {
+    composeAgain = true;
+    return;
+  }
+  composing = true;
+  try {
+    await recompose();
+  } finally {
+    composing = false;
+    if (composeAgain) {
+      composeAgain = false;
+      void runCompose();
+    }
+  }
+}
+
 async function recompose(): Promise<void> {
-  const { doc, gpuMaterial, gpu, previewRes, structure } = useProject.getState();
+  const { doc, gpuMaterial, gpu, previewRes, structure, mask, substrate } = useProject.getState();
   const mine = ++composeGen;
   if (!doc || !gpuMaterial || !gpu) return;
   let maps: AtlasMaps | null = null;
   try {
     const { layout, placements, issues } = composeInputsFromDoc(doc);
     const t0 = performance.now();
-    // composeAtlas binds the structure textures before its first await, so a later replacement may destroy them.
+    // composeAtlas binds every texture (structure, mask, substrate) before its first await, so a later replacement
+    // may destroy them.
     maps = await composeAtlas(gpu, {
       layout, material: gpuMaterial, placements, resolutionPx: previewRes, structure: structure?.gpu,
+      wear: wearNode(doc)?.params,
+      dirt: dirtNode(doc)?.params,
+      mask: mask?.texture,
+      substrateMaterial: substrate?.gpu,
+      grainAxis: structure?.result.grainAxis ?? null,
     });
     await gpu.device.queue.onSubmittedWorkDone();
     const gpuMs = performance.now() - t0;
@@ -554,7 +731,10 @@ async function recompose(): Promise<void> {
     }
     const prev = useProject.getState().atlas;
     useProject.setState({
-      atlas: { maps, layout, placements, issues, layoutIssues: validateLayout(layout), resolutionPx: previewRes, gpuMs },
+      atlas: {
+        maps, doc, mask, substrate, layout, placements, issues, layoutIssues: validateLayout(layout),
+        resolutionPx: previewRes, gpuMs,
+      },
       composeError: null,
     });
     if (prev) destroyMaps(prev.maps);
@@ -570,10 +750,10 @@ async function recompose(): Promise<void> {
 useProject.subscribe((s, prev) => {
   if (
     s.doc === prev.doc && s.gpuMaterial === prev.gpuMaterial && s.previewRes === prev.previewRes &&
-    s.structure === prev.structure
+    s.structure === prev.structure && s.mask === prev.mask && s.substrate === prev.substrate
   ) {
     return;
   }
   clearTimeout(composeTimer);
-  composeTimer = setTimeout(() => void recompose(), RECOMPOSE_DEBOUNCE_MS);
+  composeTimer = setTimeout(() => void runCompose(), RECOMPOSE_DEBOUNCE_MS);
 });

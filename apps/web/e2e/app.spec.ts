@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { inflateSync } from 'node:zlib';
+import { deflateSync, inflateSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 
 const SAMPLE_DIR = resolve(fileURLToPath(new URL('.', import.meta.url)), '../../../samples/pbr/bricks wall 13');
@@ -353,5 +353,245 @@ test.describe('add mode races and texture bookkeeping (wood planks 12)', () => {
     expect(r.importing).toBe(false);
     // The reassignment committed during the add's decode, so the add is discarded.
     expect(r.files).toEqual(['baseColor', 'normal', 'roughness']);
+  });
+});
+
+const CONCRETE_DIR = resolve(fileURLToPath(new URL('.', import.meta.url)), '../../../samples/pbr/concrete wall 01');
+
+/** 8-bit greyscale PNG of one constant value. */
+function greyPng(w: number, h: number, v: number): Buffer {
+  const crcTable = Array.from({ length: 256 }, (_, n) => {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    return c >>> 0;
+  });
+  const crc = (b: Buffer) => {
+    let c = 0xffffffff;
+    for (const x of b) c = crcTable[(c ^ x) & 0xff] ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  };
+  const chunk = (type: string, data: Buffer) => {
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(data.length);
+    const body = Buffer.concat([Buffer.from(type, 'latin1'), data]);
+    const c = Buffer.alloc(4);
+    c.writeUInt32BE(crc(body));
+    return Buffer.concat([len, body, c]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0);
+  ihdr.writeUInt32BE(h, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 0; // greyscale
+  const raw = Buffer.alloc((w + 1) * h, v);
+  for (let y = 0; y < h; y++) raw[y * (w + 1)] = 0; // filter type 0
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr),
+    chunk('IDAT', deflateSync(raw)),
+    chunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+test.describe('wear and dirt controls (bricks wall 13)', () => {
+  test.skip(!existsSync(CONCRETE_DIR), 'samples/pbr/concrete wall 01 not present');
+  // Import + structure analysis + several compositions per test.
+  test.describe.configure({ timeout: 90_000 });
+
+  type P = import('@playwright/test').Page;
+
+  /** Waits until the shown atlas was composed from the current document, mask and substrate. */
+  const settled = (page: P) =>
+    page.waitForFunction(() => {
+      const s = window.__hs?.store.getState();
+      return !!s?.atlas && !!s.structure && !s.importing && s.atlas.doc === s.doc && s.atlas.mask === s.mask &&
+        s.atlas.substrate === s.substrate;
+    });
+
+  const setField = async (page: P, label: string, value: string) => {
+    const f = page.getByLabel(label, { exact: true });
+    await f.fill(value);
+    await f.blur();
+    await settled(page);
+  };
+
+  /** Fraction of atlas pixels with wearMask > 0, and an FNV hash of the mask. */
+  const wearStats = (page: P) =>
+    page.evaluate(async () => {
+      const hs = window.__hs!;
+      const { data } = await hs.engine.readbackRgba8(hs.store.getState().gpu!, hs.lastAtlas!.wearMask);
+      let n = 0;
+      let h = 0x811c9dc5;
+      for (let i = 0; i < data.length; i += 4) {
+        if (data[i] > 0) n++;
+        h = Math.imul(h ^ data[i], 0x01000193) >>> 0;
+      }
+      return { frac: n / (data.length / 4), hash: h };
+    });
+
+  const wearSeed = (page: P) =>
+    page.evaluate(() =>
+      (window.__hs!.store.getState().doc!.nodes.find((n) => n.id === 'wear')!.params as { seed: number }).seed);
+
+  test.beforeEach(async ({ page }) => {
+    await page.goto('/');
+    await page.getByTestId('folder-input').setInputFiles(SAMPLE_DIR);
+    await expect(page.getByTestId('material-name')).toHaveValue('bricks_wall_13');
+    await expect(page.getByTestId('structure-type')).toHaveText('Piezas');
+    await settled(page);
+  });
+
+  test('the proposed family is shown, and a family picked by the user survives re-analysis', async ({ page }) => {
+    await expect(page.getByTestId('wear-family')).toHaveText('Rotura frágil');
+    // A family set without userSetFamily is replaced by the proposal on the next analysis.
+    await page.evaluate(() => window.__hs!.store.getState().updateNode<'wear'>('wear', { family: 'erosion' }));
+    await expect(page.getByTestId('wear-family')).toHaveText('Erosión');
+    await page.evaluate(() => window.__hs!.store.getState().analyze());
+    await expect(page.getByTestId('wear-family')).toHaveText('Rotura frágil');
+    // Picked in the UI: kept by the next analysis.
+    await page.getByTestId('wear-family').click();
+    await page.getByRole('option', { name: 'Erosión' }).click();
+    await page.getByTestId('structure-detect').click();
+    await settled(page);
+    await expect(page.getByTestId('wear-family')).toHaveText('Erosión');
+    expect(await page.evaluate(() => {
+      const w = window.__hs!.store.getState().doc!.nodes.find((n) => n.id === 'wear')!.params as { userSetFamily?: boolean };
+      return w.userSetFamily;
+    })).toBe(true);
+  });
+
+  test('intensity 1 wears more than 0.2, and the seed button changes the wear mask', async ({ page }) => {
+    await setField(page, 'Intensidad', '0.2');
+    const low = await wearStats(page);
+    await setField(page, 'Intensidad', '1');
+    const high = await wearStats(page);
+    expect(high.frac).toBeGreaterThan(low.frac * 1.2);
+
+    const seed = await wearSeed(page);
+    await page.getByTestId('wear-reseed').click();
+    await expect.poll(() => wearSeed(page)).not.toBe(seed);
+    await settled(page);
+    expect((await wearStats(page)).hash).not.toBe(high.hash);
+  });
+
+  test('a black mask leaves only the minimum rim', async ({ page }, testInfo) => {
+    await page.getByTestId('preview-res').click();
+    await page.getByRole('option', { name: '2048' }).click();
+    await setField(page, 'Intensidad', '1');
+    /** Deepest wearMask pixel, in metres from its rect's outer edge. */
+    const maxDepthM = () =>
+      page.evaluate(async () => {
+        const hs = window.__hs!;
+        const s = hs.store.getState();
+        const a = s.atlas!;
+        const wm = (await hs.engine.readbackRgba8(s.gpu!, a.maps.wearMask)).data;
+        const ids = await hs.engine.readbackRgba8(s.gpu!, a.maps.rectId);
+        const rid = new Uint32Array(ids.data.buffer, ids.data.byteOffset, ids.data.byteLength / 4);
+        const W = a.maps.wearMask.width;
+        const k = W / a.layout.widthPx;
+        const ppm = W / a.layout.worldWidthM;
+        let max = 0;
+        for (let i = 0; i < rid.length; i++) {
+          if (rid[i] === 0 || wm[i * 4] === 0) continue;
+          const r = a.layout.rects[rid[i] - 1];
+          const x = (i % W) + 0.5;
+          const y = Math.floor(i / W) + 0.5;
+          const d = Math.min(x - r.x * k, (r.x + r.w) * k - x, y - r.y * k, (r.y + r.h) * k - y);
+          max = Math.max(max, d / ppm);
+        }
+        return { max, ppm };
+      });
+    const before = await maxDepthM();
+
+    mkdirSync(testInfo.outputPath(), { recursive: true });
+    const png = testInfo.outputPath('black-mask.png');
+    writeFileSync(png, greyPng(64, 64, 0));
+    await page.getByTestId('wear-mask-input').setInputFiles(png);
+    await expect(page.getByTestId('wear-mask-name')).toHaveText('black-mask.png');
+    await settled(page);
+    const after = await maxDepthM();
+
+    // Rim: half the groove floor (6 mm) + 1.6 · minEdgeM (4 mm), plus 1.5 px of filtering.
+    const bound = 0.003 + 1.6 * 0.004 + 1.5 / after.ppm;
+    expect(before.max).toBeGreaterThan(bound * 1.5);
+    expect(after.max).toBeGreaterThan(0);
+    expect(after.max).toBeLessThanOrEqual(bound);
+
+    await page.getByTestId('wear-mask-clear').click();
+    await settled(page);
+    expect((await maxDepthM()).max).toBeCloseTo(before.max, 6);
+  });
+
+  test('a second material revealed in the loss changes its colour', async ({ page }) => {
+    await setField(page, 'Intensidad', '1');
+    /** Mean base colour where the wear mask is nearly full. */
+    const lossColour = () =>
+      page.evaluate(async () => {
+        const hs = window.__hs!;
+        const s = hs.store.getState();
+        const wm = (await hs.engine.readbackRgba8(s.gpu!, s.atlas!.maps.wearMask)).data;
+        const bc = (await hs.engine.readbackRgba8(s.gpu!, s.atlas!.maps.baseColor)).data;
+        const sum = [0, 0, 0];
+        let n = 0;
+        for (let i = 0; i < wm.length; i += 4) {
+          if (wm[i] < 200) continue;
+          for (let c = 0; c < 3; c++) sum[c] += bc[i + c];
+          n++;
+        }
+        return { n, rgb: sum.map((v) => v / Math.max(1, n)) };
+      });
+    await page.getByTestId('substrate-source').click();
+    await page.getByRole('option', { name: 'Segundo material' }).click();
+    await settled(page);
+    const interior = await lossColour();
+    expect(interior.n).toBeGreaterThan(100);
+
+    await page.getByTestId('substrate-input').setInputFiles(readdirSync(CONCRETE_DIR).map((f) => join(CONCRETE_DIR, f)));
+    await expect(page.getByTestId('substrate-name')).toHaveText('concrete_wall_01');
+    await settled(page);
+    const second = await lossColour();
+    expect(second.n).toBe(interior.n);
+    const diff = Math.max(...second.rgb.map((v, c) => Math.abs(v - interior.rgb[c])));
+    expect(diff).toBeGreaterThan(8);
+  });
+
+  test('runoff 0 leaves the strips under the top edges untouched', async ({ page }) => {
+    /** Red channel of a strip 1–10 cm below the top edge of every tall enough rect, central half of its width. */
+    const strips = () =>
+      page.evaluate(async () => {
+        const hs = window.__hs!;
+        const s = hs.store.getState();
+        const a = s.atlas!;
+        const bc = (await hs.engine.readbackRgba8(s.gpu!, a.maps.baseColor)).data;
+        const W = a.maps.baseColor.width;
+        const k = W / a.layout.widthPx;
+        const ppm = W / a.layout.worldWidthM;
+        const out: number[] = [];
+        for (const r of a.layout.rects) {
+          if (r.h * k < 0.12 * ppm) continue;
+          const y0 = Math.ceil(r.y * k + 0.01 * ppm);
+          const y1 = Math.floor(r.y * k + 0.1 * ppm);
+          const x0 = Math.ceil((r.x + r.w * 0.25) * k);
+          const x1 = Math.floor((r.x + r.w * 0.75) * k);
+          for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) out.push(bc[(y * W + x) * 4]);
+        }
+        return out;
+      });
+    const mean = (v: number[]) => v.reduce((p, q) => p + q, 0) / v.length;
+    await setField(page, 'Escorrentía', '1');
+    const dirty = await strips();
+    await setField(page, 'Escorrentía', '0');
+    const clean = await strips();
+    expect(clean.length).toBeGreaterThan(1000);
+    expect(mean(clean)).toBeGreaterThan(mean(dirty) + 2);
+    // Without runoff its length has no effect on the strips.
+    await setField(page, 'Longitud (cm)', '10');
+    expect(await strips()).toEqual(clean);
+  });
+
+  test('the Desgaste tab shows the wear mask', async ({ page }) => {
+    await page.getByRole('tab', { name: 'Desgaste' }).click();
+    await expect(page.getByRole('tab', { name: 'Desgaste' })).toHaveAttribute('data-state', 'active');
+    expect(await page.evaluate(() => window.__hs!.store.getState().activeMap)).toBe('wearMask');
   });
 });

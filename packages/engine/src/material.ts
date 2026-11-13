@@ -24,6 +24,11 @@ export interface GpuMaterial {
 
 const KINDS: MapKind[] = ['baseColor', 'normal', 'height', 'roughness', 'metallic', 'ao', 'opacity'];
 
+/** GpuMaterial.hasMap for a material whose maps are exactly `files`. */
+export function hasMapFromFiles(files: Partial<Record<MapKind, unknown>>): Record<MapKind, boolean> {
+  return Object.fromEntries(KINDS.map((k) => [k, files[k] !== undefined])) as Record<MapKind, boolean>;
+}
+
 const toByte = (v: number): number => Math.round(v * 255);
 
 function defaultRgba(kind: MapKind): [number, number, number, number] {
@@ -77,6 +82,6 @@ export function uploadMaterial(ctx: GpuContext, m: LoadedMaterial): GpuMaterial 
     const tex = uploadRgba8(ctx, bmp, { srgb: false });
     textures[kind] = kind === 'normal' && m.settings.normalConvention === 'dx' ? flipGreen(ctx, tex) : tex;
   }
-  const hasMap = Object.fromEntries(KINDS.map((k) => [k, m.images[k] !== undefined])) as Record<MapKind, boolean>;
+  const hasMap = hasMapFromFiles(m.images);
   return { textures, settings: m.settings, hasNormalMap: hasMap.normal, hasMap };
 }

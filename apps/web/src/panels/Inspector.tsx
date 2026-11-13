@@ -6,6 +6,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Slider } from '../components/ui/slider';
 import { NumField, Row, Section } from './MaterialPanel';
 import { StructureSection } from './StructureSection';
+import { WearSection } from './WearSection';
+import { DirtSection } from './DirtSection';
 
 const PREVIEW_RES: PreviewRes[] = [512, 1024, 2048];
 const PROFILES: GrooveProfile[] = ['bevel', 'round', 'step', 'none'];
@@ -102,6 +104,8 @@ export function Inspector() {
           </Select>
         </Row>
       </Section>
+      <WearSection />
+      <DirtSection />
     </div>
   );
 }
