@@ -29,6 +29,8 @@ export { toHotspotJson, parseHotspotJson } from './export/hotspotJson';
 export type { HotspotJsonMeta } from './export/hotspotJson';
 export { rectIdRgb, rectIdImage } from './export/rectId';
 export { toAnvilTable } from './export/anvilTable';
+export { exportPreflight } from './export/preflight';
+export type { ExportGpuLimits, ExportPreflight } from './export/preflight';
 export { packMaps } from './export/packing';
 export type { ExportPreset, MapPixels, PackedFile } from './export/packing';
 export { encodePngRgba8 } from './export/png';

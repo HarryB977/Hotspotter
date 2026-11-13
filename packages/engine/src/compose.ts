@@ -6,7 +6,7 @@ import { continuousStructure } from './structure';
 import type { GpuStructure } from './structure';
 import { PARAMS_BYTES, packParams, withCommon } from './params';
 import { createWearUniforms, encodeBorder, encodeColorComposite, encodeWearComposite, encodeWearLoss } from './wear';
-import { cached, checkPipelines } from './pipelines';
+import { cached, cachedEntry, pipelinesReady, trackPipelines } from './pipelines';
 import rectIdWgsl from './shaders/rectId.wgsl?raw';
 import composeWgsl from './shaders/compose.wgsl?raw';
 import normalFromHeightWgsl from './shaders/normalFromHeight.wgsl?raw';
@@ -206,7 +206,7 @@ async function reduceHeightRange(ctx: GpuContext, height: GPUTexture): Promise<[
   new Uint32Array(range.getMappedRange()).set([0xffffffff, 0]);
   range.unmap();
   const read = device.createBuffer({ size: 8, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
-  const pipeline = cached(device, 'heightRange', () => device.createComputePipeline({
+  const { value: pipeline, ready } = cachedEntry(device, 'heightRange', () => device.createComputePipeline({
     layout: 'auto',
     compute: { module: device.createShaderModule({ code: heightRangeWgsl }), entryPoint: 'main' },
   }));
@@ -225,6 +225,13 @@ async function reduceHeightRange(ctx: GpuContext, height: GPUTexture): Promise<[
   pass.end();
   encoder.copyBufferToBuffer(range, 0, read, 0, 8);
   device.queue.submit([encoder.finish()]);
+  try {
+    await pipelinesReady([ready]);
+  } catch (e) {
+    read.destroy();
+    range.destroy();
+    throw e;
+  }
   await read.mapAsync(GPUMapMode.READ);
   const keys = new Uint32Array(read.getMappedRange().slice(0));
   read.unmap();
@@ -250,7 +257,11 @@ export async function composeAtlas(ctx: GpuContext, input: ComposeInput): Promis
 
   const rectId = tex('r32uint', GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC);
   const baseColor = tex('rgba8unorm');
-  const matNormal = tex('rgba16float', GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING);
+  // RENDER_ATTACHMENT: cleared by a render pass below. As a storage-only texture, Dawn's lazy clear would stage
+  // 8 B/px (512 MiB at 8192²), over the default maxBufferSize (R39).
+  const matNormal = tex(
+    'rgba16float', GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT,
+  );
   const height = tex('r32float');
   const macroHeight = tex('r32float');
   const roughness = tex('rgba8unorm');
@@ -282,6 +293,9 @@ export async function composeAtlas(ctx: GpuContext, input: ComposeInput): Promis
     wearMask,
   ];
   const bandRows = input.bandRows;
+  // The pipelines this compose uses: their validation is awaited below, never another compose's (R39).
+  const stopTracking = trackPipelines();
+  let used: ReturnType<typeof stopTracking> = [];
   try {
     // Each pass group goes in its own submit, and the heaviest passes in row bands: no single GPU job runs long
     // enough at 8192 to trip the Windows TDR (device lost).
@@ -292,8 +306,11 @@ export async function composeAtlas(ctx: GpuContext, input: ComposeInput): Promis
       return encoder;
     };
 
-    // Pass 1: rect ids.
+    // Pass 1: rect ids, and the matNormal clear (no staging buffer, see above).
     renderRectIds(device, encoder, rectId, params, rects, layout.rects.length);
+    encoder.beginRenderPass({
+      colorAttachments: [{ view: matNormal.createView(), loadOp: 'clear', storeOp: 'store', clearValue: [0, 0, 0, 0] }],
+    }).end();
 
     // Pass 2: material surface (normal, height) and structure; colour and scalars come after the wear (pass 3).
     const { inputLayout, surfaceLayout, structureLayout, surface, structure: structurePipeline } = composePipelines(device);
@@ -386,6 +403,7 @@ export async function composeAtlas(ctx: GpuContext, input: ComposeInput): Promis
     rects.destroy();
     throw e;
   } finally {
+    used = stopTracking();
     // The 1×1 fallback and the wear scratch (JFA seeds) are bound only by these submits; free them even if encoding
     // throws.
     ownStructure?.destroy();
@@ -395,7 +413,7 @@ export async function composeAtlas(ctx: GpuContext, input: ComposeInput): Promis
   let heightRangeM: [number, number];
   try {
     // A WGSL or layout error would otherwise leave blank maps.
-    await checkPipelines(device);
+    await pipelinesReady(used);
     heightRangeM = await reduceHeightRange(ctx, height);
   } catch (e) {
     for (const o of outputs) o.destroy();
@@ -412,14 +430,18 @@ export async function composeAtlas(ctx: GpuContext, input: ComposeInput): Promis
   };
 }
 
-/** Height normalized by heightRangeM into rgba8unorm (grey, A = 255), for export and preview. */
-export function heightToRgba8(ctx: GpuContext, maps: AtlasMaps): GPUTexture {
+/**
+ * Height normalized by heightRangeM into rgba8unorm (grey, A = 255), for export and preview. The work is submitted
+ * before the first await, so `maps.height` may be destroyed as soon as this returns its promise; it rejects (and frees
+ * the output) if its pipeline failed validation.
+ */
+export async function heightToRgba8(ctx: GpuContext, maps: Pick<AtlasMaps, 'height' | 'heightRangeM'>): Promise<GPUTexture> {
   const { device } = ctx;
   const { height } = maps;
   const out = device.createTexture({ size: [height.width, height.height], format: 'rgba8unorm', usage: OUT_USAGE });
   const range = device.createBuffer({ size: 8, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   device.queue.writeBuffer(range, 0, new Float32Array(maps.heightRangeM));
-  const pipeline = cached(device, 'heightToRgba8', () => device.createComputePipeline({
+  const { value: pipeline, ready } = cachedEntry(device, 'heightToRgba8', () => device.createComputePipeline({
     layout: 'auto',
     compute: { module: device.createShaderModule({ code: heightToRgba8Wgsl }), entryPoint: 'main' },
   }));
@@ -439,5 +461,11 @@ export function heightToRgba8(ctx: GpuContext, maps: AtlasMaps): GPUTexture {
   pass.end();
   device.queue.submit([encoder.finish()]);
   range.destroy();
+  try {
+    await pipelinesReady([ready]);
+  } catch (e) {
+    out.destroy();
+    throw e;
+  }
   return out;
 }

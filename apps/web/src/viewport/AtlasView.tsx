@@ -164,44 +164,51 @@ export function AtlasView({ maps, layout, activeMap, issues }: AtlasViewProps) {
       c.configure({ device: b.device, format: b.format, alphaMode: 'opaque' });
       ctxRef.current = c;
     }
-    let temp: GPUTexture | null = null;
-    let pipeline = b.color;
-    let source: GPUTexture;
     const isId = activeMap === 'rectId' || activeMap === 'pieceId';
-    if (isId) {
+    const draw = (source: GPUTexture) => {
+      const target = ctxRef.current;
+      if (!target) return;
       // Pieces use the same hash colouring as rect ids.
-      pipeline = b.id;
-      source = maps[activeMap];
-    } else if (activeMap === 'height') {
-      temp = heightToRgba8(gpu, maps);
-      source = temp;
-    } else if (activeMap === 'opacity') {
+      const pipeline = isId ? b.id : b.color;
+      const bindGroup = b.device.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries:
+          isId
+            ? [{ binding: 0, resource: source.createView() }]
+            : [{ binding: 0, resource: source.createView() }, { binding: 1, resource: b.sampler }],
+      });
+      const encoder = b.device.createCommandEncoder();
+      const pass = encoder.beginRenderPass({
+        colorAttachments: [{
+          view: target.getCurrentTexture().createView(),
+          loadOp: 'clear',
+          storeOp: 'store',
+          clearValue: [0, 0, 0, 1],
+        }],
+      });
+      pass.setPipeline(pipeline);
+      pass.setBindGroup(0, bindGroup);
+      pass.draw(3);
+      pass.end();
+      b.device.queue.submit([encoder.finish()]);
+    };
+    if (activeMap === 'opacity') return;
+    if (activeMap !== 'height') {
+      draw(maps[activeMap]);
       return;
-    } else {
-      source = maps[activeMap];
     }
-    const bindGroup = b.device.createBindGroup({
-      layout: pipeline.getBindGroupLayout(0),
-      entries:
-        isId
-          ? [{ binding: 0, resource: source.createView() }]
-          : [{ binding: 0, resource: source.createView() }, { binding: 1, resource: b.sampler }],
-    });
-    const encoder = b.device.createCommandEncoder();
-    const pass = encoder.beginRenderPass({
-      colorAttachments: [{
-        view: ctxRef.current.getCurrentTexture().createView(),
-        loadOp: 'clear',
-        storeOp: 'store',
-        clearValue: [0, 0, 0, 1],
-      }],
-    });
-    pass.setPipeline(pipeline);
-    pass.setBindGroup(0, bindGroup);
-    pass.draw(3);
-    pass.end();
-    b.device.queue.submit([encoder.finish()]);
-    temp?.destroy();
+    // The grey height is ready a validation check later; a newer map or atlas cancels this draw.
+    let stale = false;
+    void heightToRgba8(gpu, maps).then(
+      (temp) => {
+        if (!stale) draw(temp);
+        temp.destroy();
+      },
+      (e) => console.error('height view failed', e),
+    );
+    return () => {
+      stale = true;
+    };
   }, [maps, activeMap, gpu]);
 
   const issueIds = useMemo(() => new Set(issues.map((i) => i.rectId)), [issues]);

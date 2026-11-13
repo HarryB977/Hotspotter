@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   toHotspotJson, parseHotspotJson, toAnvilTable, packMaps, makeRect, DEFAULT_GROOVE, rectIdRgb, rectIdImage,
+  exportPreflight,
 } from '../src';
 import type { HotspotLayout, MapPixels } from '../src';
 
@@ -48,13 +49,13 @@ describe('Anvil table', () => {
   it('emits sheet width, header and rows with CRLF', () => {
     const lines = toAnvilTable(layout).split('\r\n');
     expect(lines[0]).toBe('Sheet Width (m),8');
-    expect(lines[1]).toBe('Name,X,Y,Width,Height,Can rotate,Can mirror,Repeats across,Repeats down,Use on');
-    expect(lines[2]).toBe('a,0,0,1024,512,yes,yes,yes,no,Walls');
-    expect(lines[3]).toBe('"b,c",1024,512,256,256,no,no,no,no,Floors');
+    expect(lines[1]).toBe('Name,X,Y,Width,Height,Can rotate,Can mirror,Mirror X ok,Repeats across,Repeats down,Use on');
+    expect(lines[2]).toBe('a,0,0,1024,512,yes,yes,yes,yes,no,Walls');
+    expect(lines[3]).toBe('"b,c",1024,512,256,256,no,no,no,no,no,Floors');
   });
   it('mirrors if either axis allowed', () => {
     const l = { ...layout, rects: [makeRect({ id: 'y', x: 0, y: 0, w: 8, h: 8, allowMirrorY: true })] };
-    expect(toAnvilTable(l).split('\r\n')[2]).toBe('y,0,0,8,8,no,yes,no,no,Any');
+    expect(toAnvilTable(l).split('\r\n')[2]).toBe('y,0,0,8,8,no,yes,no,no,no,Any');
   });
 });
 
@@ -100,10 +101,35 @@ describe('wear export metadata (Task 13)', () => {
     expect([j.rects[0].allowMirrorX, j.rects[0].allowMirrorY]).toEqual([true, false]);
     expect(JSON.parse(toHotspotJson(l, meta)).rects[0].allowMirrorY).toBe(true);
   });
-  it('downward runoff writes Can mirror no in the Anvil table (one flag for both axes)', () => {
+  it('downward runoff writes Can mirror no in the Anvil table and keeps Mirror X ok', () => {
     const l = { ...layout, rects: [makeRect({ id: 'x', x: 0, y: 0, w: 8, h: 8, allowMirrorX: true })] };
-    expect(toAnvilTable(l, { runoff: true }).split('\r\n')[2]).toBe('x,0,0,8,8,no,no,no,no,Any');
-    expect(toAnvilTable(l).split('\r\n')[2]).toBe('x,0,0,8,8,no,yes,no,no,Any');
+    expect(toAnvilTable(l, { runoff: true }).split('\r\n')[2]).toBe('x,0,0,8,8,no,no,yes,no,no,Any');
+    expect(toAnvilTable(l).split('\r\n')[2]).toBe('x,0,0,8,8,no,yes,yes,no,no,Any');
+  });
+  it('omits wear when the maps were composed without it', () => {
+    expect(JSON.parse(toHotspotJson(layout, meta))).not.toHaveProperty('wear');
+  });
+});
+
+describe('export preflight (R39)', () => {
+  const limits = { maxBufferSize: 256 * 2 ** 20, maxTextureDimension2D: 8192 };
+  it('needs one 4-byte-per-texel map at a time, rows padded to 256 bytes', () => {
+    expect(exportPreflight(layout, 8192, limits)).toEqual({ ok: true, outW: 8192, outH: 8192, bufferBytes: 2 ** 28 });
+    const odd = exportPreflight({ widthPx: 1000, heightPx: 500 }, 1000, limits);
+    expect(odd).toEqual({ ok: true, outW: 1000, outH: 500, bufferBytes: 4096 * 500 });
+  });
+  it('fails on a buffer over maxBufferSize', () => {
+    const small = { ...limits, maxBufferSize: 128 * 2 ** 20 };
+    expect(exportPreflight(layout, 8192, small)).toEqual({
+      ok: false, reason: 'buffer', outW: 8192, outH: 8192, bufferBytes: 2 ** 28, limit: 128 * 2 ** 20,
+    });
+    expect(exportPreflight(layout, 4096, small).ok).toBe(true);
+  });
+  it('fails on a side over maxTextureDimension2D', () => {
+    const tall = { widthPx: 1000, heightPx: 2000 };
+    expect(exportPreflight(tall, 8192, { maxBufferSize: 2 ** 31, maxTextureDimension2D: 8192 })).toMatchObject({
+      ok: false, reason: 'texture', outW: 8192, outH: 16384, limit: 8192,
+    });
   });
 });
 

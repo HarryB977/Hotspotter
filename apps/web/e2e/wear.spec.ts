@@ -38,6 +38,13 @@ interface ComposeOpts {
   aoMap?: boolean;
   /** ComposeInput.bandRows: rows per banded dispatch (default 1024). */
   bandRows?: number;
+  /** Compose on this context instead of the shared one. */
+  ctx?: import('@hotspotter/engine').GpuContext;
+  /**
+   * Called right before composeAtlas. A synchronous hook keeps composeAtlas in the same task (no await in between);
+   * a returned promise is awaited first.
+   */
+  beforeCompose?: (ctx: import('@hotspotter/engine').GpuContext) => void | Promise<void>;
 }
 
 interface WearProbe {
@@ -167,8 +174,9 @@ test.beforeEach(async ({ page }) => {
       async compose({
         material = 'brick', structure, layout: kind = 'pair', resolutionPx = 1024, wear = {}, mask, grainAxis = null, rotate,
         normalMap = false, colour = false, dirt, substrate, substrateTileM = 1, aoMap = false, bandRows,
+        ctx: ownCtx, beforeCompose,
       }) {
-        const ctx = await (ctxP ??= engine.initGpu());
+        const ctx = ownCtx ?? await (ctxP ??= engine.initGpu());
         const groove = core.DEFAULT_GROOVE;
         const structureFrom = material === 'flat' ? false : structure ?? (material === 'brick' ? 'height' : false);
         const layout = kind === 'pair'
@@ -226,6 +234,8 @@ test.beforeEach(async ({ page }) => {
           ...core.DEFAULT_WEAR, ...wear,
           mask: { ...core.DEFAULT_WEAR.mask, enabled: !!mask, ...(wear.mask ?? {}) },
         };
+        const hook = beforeCompose?.(ctx);
+        if (hook) await hook;
         const maps = await engine.composeAtlas(ctx, {
           layout, material: gpuMaterial, placements, resolutionPx, structure: gpuStructure,
           wear: wearParams, mask: maskTex, grainAxis, substrateMaterial,
@@ -1307,9 +1317,46 @@ test('8192 robustness: row bands and split submits leave every map byte-identica
     }
     return out;
   });
-  // Printed so a refactor can be checked against the hashes of the previous build on the same GPU.
-  console.log(JSON.stringify(r));
+  // HS_PRINT_HASHES=1 prints them, so a refactor can be checked against the hashes of the previous build on the GPU.
+  if (process.env.HS_PRINT_HASHES === '1') console.log(JSON.stringify(r));
   for (const v of Object.values(r)) expect(v.banded).toEqual(v.whole);
+});
+
+test('a broken pipeline fails the compose that uses it, never a concurrent one (R39)', async ({ page }) => {
+  const r = await page.evaluate(async () => {
+    const { engine } = window.__hs!;
+    // A fresh device: nothing is cached on it yet.
+    const ctx = await engine.initGpu();
+    const { device } = ctx;
+    const bad = () => device.createComputePipeline({
+      layout: 'auto', compute: { module: device.createShaderModule({ code: 'fn main( {' }), entryPoint: 'main' },
+    });
+    // The colour composite of a material with an AO map and no runoff (CHUNK 8, LOOKBACK 0, AO_ON_MACRO 1).
+    const key = 'colorComposite:8:0:1';
+    let release!: () => void;
+    const held = new Promise<void>((res) => { release = res; });
+    const settle = (p: Promise<unknown>) => p.then(
+      () => ({ ok: true, name: '', message: '' }),
+      (e: Error) => ({ ok: false, name: e.name, message: e.message }),
+    );
+    // B injects the broken pipeline and composes first, in the same task; A (the AO map compose that uses the key)
+    // starts right after. With one shared pending list, B would take A's error and A would pass.
+    const a = settle(window.__t8!.compose({ ctx, aoMap: true, beforeCompose: () => held }));
+    const b = settle(window.__t8!.compose({
+      ctx,
+      beforeCompose: () => {
+        engine.cached(device, key, bad);
+        release();
+      },
+    }));
+    const out = { a: await a, b: await b, key };
+    device.destroy();
+    return out;
+  });
+  expect(r.b).toEqual({ ok: true, name: '', message: '' });
+  expect(r.a.ok).toBe(false);
+  expect(r.a.name).toBe('PipelineValidationError');
+  expect(r.a.message).toContain(`"${r.key}"`);
 });
 
 test('a WGSL error in a cached pipeline surfaces through checkPipelines, once, and is not cached', async ({ page }) => {

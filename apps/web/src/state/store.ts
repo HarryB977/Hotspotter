@@ -399,6 +399,8 @@ export const useProject = create<ProjectState>()((set, get) => ({
   },
 
   runEvaluation(opts) {
+    // A forced evaluation (the export's) covers the debounced one; it would only evaluate the same state again.
+    if (opts?.force) clearTimeout(evalTimer);
     return requestEvaluation(opts);
   },
 

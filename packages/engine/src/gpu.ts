@@ -16,8 +16,8 @@ export async function initGpu(): Promise<GpuContext> {
   }
   const adapter = await navigator.gpu.requestAdapter();
   if (!adapter) throw new WebGpuUnavailableError('No WebGPU adapter found');
-  // The default 256 MiB maxBufferSize is too small at 8192: Dawn's lazy clear of an 8192² rgba16float texture stages
-  // 512 MiB and loses the device. Ask for what the adapter offers (2 GiB on an RTX 3060).
+  // Headroom: at 8192 the largest buffer is a 4 B/px map's staging (256 MiB, the default limit; the rgba16float scratch
+  // is cleared by a render pass, R39). Ask for what the adapter offers (2 GiB on an RTX 3060).
   const device = await adapter.requestDevice({
     requiredLimits: { maxBufferSize: adapter.limits.maxBufferSize },
   });

@@ -1,5 +1,6 @@
-import { useState } from 'react';
-import type { CheckResult, DocNode, ExportPreset, ProjectDoc } from '@hotspotter/core';
+import { useMemo, useState } from 'react';
+import { exportPreflight, resolveLayout } from '@hotspotter/core';
+import type { CheckResult, DocNode, ExportPreflight, ExportPreset, ProjectDoc } from '@hotspotter/core';
 import { es } from '../i18n/es';
 import { useProject } from '../state/store';
 import { Button } from '../components/ui/button';
@@ -18,6 +19,12 @@ function outputNode(doc: ProjectDoc | null): DocNode<'output'> | undefined {
 
 function dirtNode(doc: ProjectDoc | null): DocNode<'dirt'> | undefined {
   return doc?.nodes.find((n): n is DocNode<'dirt'> => n.type === 'dirt');
+}
+
+function tooBigMessage(res: number, p: Extract<ExportPreflight, { ok: false }>): string {
+  return p.reason === 'texture'
+    ? es.export.tooBigTexture(res, p.outW, p.outH, p.limit)
+    : es.export.tooBigBuffer(res, Math.ceil(p.bufferBytes / 2 ** 20), Math.floor(p.limit / 2 ** 20));
 }
 
 function loadDir(): string {
@@ -52,6 +59,21 @@ export function ExportDialog() {
   const [progress, setProgress] = useState<{ index: number; total: number; name: string } | null>(null);
   const [paths, setPaths] = useState<string[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Preflight (R39): a resolution whose largest buffer or texture side exceeds this device's limits cannot export.
+  // Each on the layout resolved at that resolution, as the export resolves it (its px can differ by a rounding).
+  const doc = useProject((s) => s.doc);
+  const limits = useProject((s) => s.gpu?.device.limits ?? null);
+  const resList = RESOLUTIONS.includes(res) ? RESOLUTIONS : [...RESOLUTIONS, res].sort((a, b) => a - b);
+  const preflights = useMemo(() => {
+    const m = new Map<number, ExportPreflight>();
+    if (open && doc && limits) for (const r of resList) m.set(r, exportPreflight(resolveLayout(doc, { widthPx: r }), r, limits));
+    return m;
+    // resList follows res.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, doc, limits, res]);
+  const preflight = (r: number): ExportPreflight | null => preflights.get(r) ?? null;
+  const current = preflight(res);
+  const tooBig = current && !current.ok ? tooBigMessage(res, current) : null;
 
   const run = async () => {
     saveDir(dir);
@@ -86,7 +108,21 @@ export function ExportDialog() {
   };
 
   return (
-    <Dialog open={open} onOpenChange={(o) => !busy && setOpen(o)}>
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        if (busy) return;
+        if (o) {
+          // A reopened dialog starts clean: no summary, paths or error of the previous export.
+          setChecks(null);
+          setChecksFailed(false);
+          setPaths(null);
+          setError(null);
+          setProgress(null);
+        }
+        setOpen(o);
+      }}
+    >
       <DialogTrigger asChild>
         <Button size="sm" disabled={!hasProject} data-testid="export-open">{es.export.button}</Button>
       </DialogTrigger>
@@ -118,8 +154,8 @@ export function ExportDialog() {
               <Select value={String(res)} onValueChange={(v) => setRes(Number(v))} disabled={busy}>
                 <SelectTrigger data-testid="export-res"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {(RESOLUTIONS.includes(res) ? RESOLUTIONS : [...RESOLUTIONS, res].sort((a, b) => a - b)).map((r) => (
-                    <SelectItem key={r} value={String(r)}>{String(r)}</SelectItem>
+                  {resList.map((r) => (
+                    <SelectItem key={r} value={String(r)} disabled={preflight(r)?.ok === false}>{String(r)}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
@@ -128,6 +164,10 @@ export function ExportDialog() {
           {res === 8192 && (
             <div className="text-xs text-amber-400" data-testid="export-warning">{es.export.bigWarning}</div>
           )}
+          {tooBig && <div className="text-xs text-red-400" data-testid="export-too-big">{tooBig}</div>}
+          {runoff && (
+            <div className="text-xs text-amber-400" data-testid="export-runoff-warning">{es.export.runoffWarning}</div>
+          )}
           {checking && <div className="text-xs text-zinc-400" data-testid="export-checking">{es.export.checking}</div>}
           {(checks || checksFailed) && (
             <div className="flex flex-col text-xs" data-testid="export-checks">
@@ -135,9 +175,6 @@ export function ExportDialog() {
               {checksFailed && <div className="text-amber-400">{es.export.checksFailed}</div>}
               {checks?.map((r) => <CheckRow key={r.id} r={r} testId="export-check-row" />)}
               {checks?.some((r) => r.status !== 'ok') && <div className="text-zinc-500">{es.export.checksNote}</div>}
-              {runoff && (
-                <div className="mt-1 text-amber-400" data-testid="export-runoff-warning">{es.export.runoffWarning}</div>
-              )}
             </div>
           )}
           {progress && busy && (
@@ -155,7 +192,7 @@ export function ExportDialog() {
               </ul>
             </div>
           )}
-          <Button variant="default" disabled={busy || dir.trim() === ''} onClick={() => void run()} data-testid="export-run">
+          <Button variant="default" disabled={busy || dir.trim() === '' || tooBig !== null} onClick={() => void run()} data-testid="export-run">
             {busy ? es.export.exporting : es.export.run}
           </Button>
         </div>

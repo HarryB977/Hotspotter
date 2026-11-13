@@ -150,7 +150,7 @@ test.describe('composeAtlas', () => {
             baseColor: await rb(maps.baseColor),
             normal: await rb(maps.normal),
             roughness: await rb(maps.roughness),
-            heightRgba8: await rb(engine.heightToRgba8(ctx, maps)),
+            heightRgba8: await rb(await engine.heightToRgba8(ctx, maps)),
             height: new Float32Array(heightBytes.buffer, heightBytes.byteOffset, heightBytes.byteLength / 4),
             rectId: new Uint32Array(idBytes.buffer, idBytes.byteOffset, idBytes.byteLength / 4),
             heightRangeM: maps.heightRangeM,

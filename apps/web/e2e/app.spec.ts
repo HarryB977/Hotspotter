@@ -179,6 +179,8 @@ test('exports Unity URP maps, hotspot.json and Anvil csv to a folder, and overwr
 
   const dir = join(tmpdir(), `hotspotter export ${Date.now()}`, 'out dir');
   await page.getByTestId('export-open').click();
+  // Default dirt has runoff: the dialog warns as soon as it opens that rotating the rects would turn the streaks.
+  await expect(page.getByTestId('export-runoff-warning')).toBeVisible();
   await page.getByTestId('export-dir').fill(dir);
   await page.getByTestId('export-preset').click();
   await page.getByRole('option', { name: 'Unity URP' }).click();
@@ -197,8 +199,6 @@ test('exports Unity URP maps, hotspot.json and Anvil csv to a folder, and overwr
   await run();
   // The checks ran at the export resolution before the export, and their warnings did not block it.
   await expect(page.getByTestId('export-checks').getByTestId('export-check-row')).toHaveCount(6);
-  // Default dirt has runoff: rotating the rects in the engine would turn the streaks.
-  await expect(page.getByTestId('export-runoff-warning')).toBeVisible();
 
   const names = ['BaseColor', 'Normal', 'MetallicSmoothness', 'Occlusion', 'Height', 'WearMask', 'RectID'].map(
     (k) => `bricks_wall_13_${k}.png`,
@@ -255,7 +255,9 @@ test('exports Unity URP maps, hotspot.json and Anvil csv to a folder, and overwr
   // Runoff on: no vertical mirror in hotspot.json, and Anvil's single mirror flag is off.
   expect(json.rects.every((r: { allowMirrorY: boolean }) => !r.allowMirrorY)).toBe(true);
   const csv = readFileSync(join(dir, 'bricks_wall_13.anvil.csv'), 'utf8').split(String.fromCharCode(13, 10));
+  expect(csv[1].split(',').slice(6, 8)).toEqual(['Can mirror', 'Mirror X ok']);
   expect(csv.slice(2).every((l) => l.split(',')[6] === 'no')).toBe(true);
+  csv.slice(2).forEach((l, i) => expect(l.split(',')[7]).toBe(json.rects[i].allowMirrorX ? 'yes' : 'no'));
 
   // _RectID: the view's hash colour of each rect at its centre.
   const ids = decodeRgbaPng(readFileSync(join(dir, 'bricks_wall_13_RectID.png')));
@@ -269,6 +271,41 @@ test('exports Unity URP maps, hotspot.json and Anvil csv to a folder, and overwr
   expect(listing).toHaveLength(9);
   await run();
   expect(readdirSync(dir).sort()).toEqual(listing);
+
+  // A reopened dialog shows no summary or result of the previous export.
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('export-run')).toBeHidden();
+  await page.getByTestId('export-open').click();
+  await expect(page.getByTestId('export-run')).toBeVisible();
+  await expect(page.getByTestId('export-checks')).toHaveCount(0);
+  await expect(page.getByTestId('export-done')).toHaveCount(0);
+});
+
+test('the export dialog blocks a resolution over the GPU buffer limit, with a reason (R39)', async ({ page }) => {
+  test.setTimeout(120_000);
+  await page.goto('/');
+  await page.getByTestId('folder-input').setInputFiles(SAMPLE_DIR);
+  await page.waitForFunction(() => !!window.__hs?.store.getState().atlas);
+  // A device that only allows 128 MiB buffers: 4096 (64 MiB per map) fits, 8192 (256 MiB) does not.
+  await page.evaluate(() => {
+    const limits = { maxBufferSize: 128 * 2 ** 20, maxTextureDimension2D: 8192 };
+    Object.defineProperty(GPUDevice.prototype, 'limits', { get: () => limits, configurable: true });
+    window.__hs!.store.getState().updateNode<'output'>('output', { resolutionPx: 4096 });
+  });
+  await page.getByTestId('export-open').click();
+  await page.getByTestId('export-dir').fill('C:\\unused');
+  await expect(page.getByTestId('export-too-big')).toHaveCount(0);
+  await expect(page.getByTestId('export-run')).toBeEnabled();
+  await page.getByTestId('export-res').click();
+  await expect(page.getByRole('option', { name: '8192' })).toHaveAttribute('data-disabled', '');
+  await expect(page.getByRole('option', { name: '4096' })).not.toHaveAttribute('data-disabled');
+  await page.keyboard.press('Escape');
+  // A value already in the output node (e.g. from a saved project) is reported and blocks the export.
+  await page.evaluate(() => window.__hs!.store.getState().updateNode<'output'>('output', { resolutionPx: 8192 }));
+  await expect(page.getByTestId('export-too-big')).toContainText('256 MiB');
+  await expect(page.getByTestId('export-too-big')).toContainText('128 MiB');
+  await expect(page.getByTestId('export-too-big')).toContainText('resolución menor');
+  await expect(page.getByTestId('export-run')).toBeDisabled();
 });
 
 const WOOD_DIR = resolve(fileURLToPath(new URL('.', import.meta.url)), '../../../samples/pbr/wood planks 12');

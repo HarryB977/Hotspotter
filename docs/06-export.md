@@ -8,6 +8,7 @@ Se exporta un PNG por mapa (8 o 16 bits; height también en EXR de 32 bits) con 
 - `_WearMask` es el `wearMask` del compose en gris (R = G = B, A = 255). Sin desgaste sale negro.
 - `_RectID` pinta cada rectángulo con el mismo color hash que la vista "IDs rect" (`rectIdRgb` en `packages/core`, `ID_FS` en la vista: 64 + (byte · 166 >> 8) por canal). La ranura vacía es gris oscuro (13).
 - La resolución del diálogo de exportar es `resolutionPx` del nodo de salida: el panel de comprobaciones y el export leen el mismo valor.
+- Con escorrentía, el aviso de giro (ver abajo) sale en cuanto se abre el diálogo. Al reabrirlo no queda el resumen ni el resultado de la exportación anterior.
 - Antes de exportar, el diálogo pasa las seis comprobaciones de [04](04-wear.md) a la resolución de exportación y muestra el resumen. Los avisos (o un fallo de las comprobaciones) no bloquean la exportación.
 
 ### Presets por destino
@@ -34,7 +35,7 @@ Campos de `hotspot.json` (versión 1):
 | `atlas` | `widthPx`, `heightPx`, `worldWidthM`, `pxPerMetre` |
 | `heightRangeM` | rango de altura en metros que mapea el `_Height` 0–255 |
 | `maps` | nombres de los PNG escritos, `_WearMask` y `_RectID` incluidos |
-| `wear` | `{ family, seed }` del desgaste con que se compuso |
+| `wear` | `{ family, seed }` del desgaste con que se compuso; falta si se compuso sin desgaste |
 | `checks` | `[{ id, status }]` de las comprobaciones al exportar (`ok`, `warn` o `error`); falta si no se pudieron hacer |
 | `groove` | ancho, profundidad, bisel y perfil de la ranura |
 | `rects` | `id`, `px`, `uv`, `allowRotation`, `allowMirrorX/Y`, `tileU/V`, `useOn`, `inset`, `group` |
@@ -42,7 +43,7 @@ Campos de `hotspot.json` (versión 1):
 **Escorrentía y volteos.** La escorrentía (`dirt.runoff > 0`) pinta chorretones que caen hacia −Y del atlas. Girar o voltear en vertical un rectángulo en el motor los deja de lado o hacia arriba. Por eso, con escorrentía:
 
 - `hotspot.json` escribe `allowMirrorY: false` en todos los rectángulos (el volteo horizontal se respeta).
-- La tabla de Anvil escribe `Can mirror` = `no`: Anvil tiene un único flag de volteo para los dos ejes y no puede limitarlo al horizontal.
+- La tabla de Anvil escribe `Can mirror` = `no`, porque suponemos que Anvil tiene un único flag de volteo para los dos ejes y no puede limitarlo al horizontal. **Sin verificar:** no se ha comprobado en Anvil. La columna `Mirror X ok` lleva el `allowMirrorX` del rectángulo, por si el volteo horizontal se puede permitir a mano.
 - `allowRotation` / `Can rotate` no cambian, pero el resumen del diálogo avisa de que girar esos rectángulos en el motor gira los chorretones.
 
 Formatos adicionales opcionales:
@@ -54,10 +55,11 @@ Formatos adicionales opcionales:
 
 ## Exportar a 8192
 
-- El dispositivo se pide con el `maxBufferSize` que ofrece el adaptador (2 GiB en una RTX 3060). Con el límite por defecto (256 MiB), Dawn pierde el dispositivo al limpiar una textura rgba16float de 8192² (512 MiB de staging).
+- La textura intermedia rgba16float de normales (`matNormal`) se limpia con una pasada de render. Si fuera solo de storage, Dawn la limpiaría con un buffer de staging de 512 MiB a 8192², por encima del `maxBufferSize` por defecto (256 MiB), y perdería el dispositivo. Ahora el buffer más grande es el de un mapa de 4 B/px (256 MiB a 8192²), y el export a 8192 funciona con el límite por defecto (46 s en una RTX 3060). El dispositivo se sigue pidiendo con el `maxBufferSize` del adaptador (2 GiB en una RTX 3060) como margen.
+- Antes de exportar, el diálogo comprueba cada resolución contra los límites del dispositivo: el buffer de un mapa (ancho · 4 B, filas a 256 B, por alto) contra `maxBufferSize`, y el lado mayor contra `maxTextureDimension2D`. La resolución que no cabe sale desactivada; si ya estaba elegida, el diálogo dice por qué y propone una menor, y no deja exportar.
 - El compose va en varios `queue.submit`, uno por grupo de pasadas. La pasada de color y cada paso del JFA van en bandas de unas 1024 filas, cada una en su propio submit, para que ningún trabajo de GPU dure lo bastante como para que Windows reinicie el driver (TDR). La salida no depende de las bandas: un test la compara byte a byte.
 - Si se pierde la GPU, la app muestra el motivo y el mensaje del driver en lugar de quedarse esperando.
-- Los pipelines se crean una vez por dispositivo dentro de un `pushErrorScope('validation')`: un error de WGSL sale como error del compose, no como mapas en blanco.
+- Los pipelines se crean una vez por dispositivo dentro de un `pushErrorScope('validation')`, y cada entrada de la caché guarda su resultado. Cada compose espera solo el de los pipelines que usó: un error de WGSL sale como error de ese compose, no como mapas en blanco ni como error de otro compose que corra a la vez.
 - Prueba manual: `HS_PROBE_8K=1 npx playwright test e2e/probe8k.spec.ts` (en `apps/web`) exporta bricks wall 13 a 8192 y dice cómo acaba.
 
 ## Carpeta de salida

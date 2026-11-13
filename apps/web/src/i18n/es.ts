@@ -76,6 +76,12 @@ export const es = {
     runoffWarning:
       'La escorrentía cae hacia abajo. Si giras estos rectángulos en el motor, las manchas quedarán de lado o hacia ' +
       'arriba. Por eso se exportan sin volteo vertical.',
+    tooBigBuffer: (res: number, needMiB: number, limitMiB: number) =>
+      `A ${res} px cada mapa necesita un bloque de memoria de GPU de ${needMiB} MiB, y esta GPU solo admite ` +
+      `${limitMiB} MiB por bloque. Elige una resolución menor.`,
+    tooBigTexture: (res: number, w: number, h: number, limit: number) =>
+      `A ${res} px el atlas mide ${w} × ${h} px, y esta GPU admite como máximo ${limit} px por lado. ` +
+      'Elige una resolución menor.',
   },
   atlas: { title: 'Atlas 2D', empty: 'Importa un material para empezar' },
   layout: {

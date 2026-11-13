@@ -46,16 +46,17 @@ export async function exportProject(opts: ExportOptions): Promise<string[]> {
   if (!doc || !gpuMaterial || !gpu) throw new Error('No project');
   // Resolved at the export resolution, so hotspot.json and the Anvil csv px match the PNGs.
   const inputs = composeInputsFromDoc(doc, opts.resolutionPx);
-  const { layout, material: mat, wear, dirt } = inputs;
+  const { layout, material: mat, dirt } = inputs;
   // Downward streaks: a vertical mirror (or a rotation) in the engine would turn them (docs/06).
   const runoff = dirt.runoff > 0;
   let maps: AtlasMaps | null = null;
   let heightTex: GPUTexture | null = null;
   try {
-    maps = await composeAtlas(gpu, composeInputFor({ ...state, doc, gpuMaterial }, inputs, opts.resolutionPx));
+    const input = composeInputFor({ ...state, doc, gpuMaterial }, inputs, opts.resolutionPx);
+    maps = await composeAtlas(gpu, input);
     // Not exported: free them before the readbacks, which peak in memory at 8192.
     for (const t of [maps.loss, maps.pieceId, maps.jointDistM, maps.border, maps.macroHeight]) t.destroy();
-    heightTex = heightToRgba8(gpu, maps);
+    heightTex = await heightToRgba8(gpu, maps);
     maps.height.destroy();
     // One readback at a time keeps the staging buffers and CPU copies from stacking up at 8192 (R12); each GPU map
     // is freed as soon as its pixels are on the CPU.
@@ -93,10 +94,14 @@ export async function exportProject(opts: ExportOptions): Promise<string[]> {
 
     const { width, height } = atlas.rectId;
     // Without wear the mask is a 1 × 1 placeholder: export it black at full size.
-    const wearMask = atlas.wearMask.width === 1
-      ? { width, height, data: new Uint8Array(width * height * 4).map((_, k) => (k % 4 === 3 ? 255 : 0)) }
-      : await take(atlas.wearMask);
-    atlas.wearMask.destroy();
+    let wearMask;
+    if (atlas.wearMask.width === 1) {
+      const data = new Uint8Array(width * height * 4);
+      for (let k = 3; k < data.length; k += 4) data[k] = 255;
+      wearMask = { width, height, data };
+    } else {
+      wearMask = await take(atlas.wearMask);
+    }
     await put(wearName, await encodePng(wearMask));
 
     const ids = await readbackR32(gpu, atlas.rectId);
@@ -105,7 +110,8 @@ export async function exportProject(opts: ExportOptions): Promise<string[]> {
 
     const json = toHotspotJson(layout, {
       name: mat.name, heightRangeM: atlas.heightRangeM, maps: [...pngNames, wearName, rectIdName],
-      wear: { family: wear.family, seed: wear.seed },
+      // Omitted when the maps were composed without wear.
+      wear: input.wear ? { family: input.wear.family, seed: input.wear.seed } : undefined,
       checks: opts.checks?.map((c) => ({ id: c.id, status: c.status })),
       runoff,
     });
