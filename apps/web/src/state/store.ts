@@ -886,7 +886,7 @@ function substrateMean(gpu: GpuContext, m: GpuMaterial): Promise<[number, number
 /** Mean joint colour of the top material in material space (R37), per (GpuMaterial, structure). */
 const jointMeans = new WeakMap<GpuMaterial, WeakMap<StructureState, [number, number, number] | null>>();
 
-function materialJointMean(
+export function materialJointMean(
   m: GpuMaterial, structure: StructureState, bmp: ImageBitmap | undefined,
 ): [number, number, number] | null {
   let byStructure = jointMeans.get(m);
@@ -898,6 +898,7 @@ function materialJointMean(
     const { width: w, height: h, pieceId } = structure.result;
     const g = new OffscreenCanvas(w, h).getContext('2d', { willReadFrequently: true });
     if (!g) throw new Error('2D canvas unavailable');
+    g.imageSmoothingQuality = 'high';
     g.drawImage(bmp, 0, 0, w, h);
     const px = g.getImageData(0, 0, w, h).data;
     mean = jointMeanRgb(new Uint8Array(px.buffer, px.byteOffset, px.byteLength), pieceId);
@@ -918,7 +919,10 @@ async function evaluate(mine: number, opts?: { exportResolutionPx?: number }): P
   // A newer request is queued behind this one and will evaluate a fresher state.
   if (mine !== evalGen) return null;
   const { doc, gpuMaterial, gpu, structure, mask, substrate, atlas, material } = useProject.getState();
-  if (!doc || !gpuMaterial || !gpu) return null;
+  if (!doc || !gpuMaterial || !gpu) {
+    if (mine === evalGen) useProject.setState({ checksPending: false });
+    return null;
+  }
   evalStats.running++;
   evalStats.peak = Math.max(evalStats.peak, evalStats.running);
   try {
@@ -927,12 +931,20 @@ async function evaluate(mine: number, opts?: { exportResolutionPx?: number }): P
       atlas !== null && atlas.resolutionPx === EVAL_RES && atlas.doc === doc && atlas.gpuMaterial === gpuMaterial &&
       atlas.structure === structure && atlas.mask === mask && atlas.substrate === substrate;
     if (!current) evalStats.composes++;
+    const compareSubstrate =
+      inputs.wear.substrate.source === 'secondSet' && substrate !== null && structure?.result.type === 'pieces';
+    // Before the compose, so a failure cannot leak its maps; a failure only skips the substrate comparison.
+    let joints: [number, number, number] | null = null;
+    if (compareSubstrate) {
+      try {
+        joints = materialJointMean(gpuMaterial, structure, material?.images.baseColor);
+      } catch (e) {
+        console.error('joint colour failed', e);
+      }
+    }
     const maps = current
       ? atlas.maps
       : await composeAtlas(gpu, composeInputFor({ doc, gpuMaterial, structure, mask, substrate }, inputs, EVAL_RES));
-    const compareSubstrate =
-      inputs.wear.substrate.source === 'secondSet' && substrate !== null && structure?.result.type === 'pieces';
-    const joints = compareSubstrate ? materialJointMean(gpuMaterial, structure, material?.images.baseColor) : null;
     // Every copy is submitted before the first await, so the maps may be destroyed (ours right below, the preview's
     // by a recomposition) while the reads are in flight.
     let reads;

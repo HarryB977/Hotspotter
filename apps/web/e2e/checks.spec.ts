@@ -67,6 +67,7 @@ test.describe('with bricks wall 13', () => {
     expect(ids).toEqual(['coverage', 'islands', 'normal', 'proportions', 'bleed', 'substrate']);
     await expect(row(page, 'normal')).toHaveAttribute('data-status', 'ok');
     await expect(row(page, 'coverage')).toHaveAttribute('data-status', 'ok');
+    await expect(row(page, 'islands')).toHaveAttribute('data-status', 'ok');
     // The checks run on the 2048 px evaluation, not on the 1024 px preview.
     expect(await page.evaluate(() => {
       const s = window.__hs!.store.getState();
@@ -140,6 +141,58 @@ test.describe('with bricks wall 13', () => {
     expect(r).toBe(true);
     // Both means exist (a material with pieces, a second set loaded): the message states the colour difference.
     await expect(row(page, 'substrate')).toHaveAttribute('title', /diferencia/, { timeout: 20_000 });
+    // R37: the joint colour is read where the structure says joint. bricks wall 13 is grey (mortar ≈ 82, bricks ≈ 97),
+    // so aligned joints are ΔE ≈ 6.6 from the pieces; joint ids shifted by (7, 5) texels average a brick/mortar mix,
+    // ΔE ≈ 3.
+    const d = await page.evaluate(() => {
+      const hs = window.__hs!;
+      const s = hs.store.getState();
+      const { width: w, height: h, pieceId } = s.structure!.result;
+      const g = new OffscreenCanvas(w, h).getContext('2d')!;
+      g.imageSmoothingQuality = 'high';
+      g.drawImage(s.material!.images.baseColor!, 0, 0, w, h);
+      const px = g.getImageData(0, 0, w, h).data;
+      const mean = (sel: (x: number, y: number) => boolean) => {
+        const sum = [0, 0, 0];
+        let n = 0;
+        for (let y = 0; y < h; y++) {
+          for (let x = 0; x < w; x++) {
+            if (!sel(x, y)) continue;
+            for (let c = 0; c < 3; c++) sum[c] += px[(y * w + x) * 4 + c];
+            n++;
+          }
+        }
+        return sum.map((v) => v / n) as [number, number, number];
+      };
+      const pieces = mean((x, y) => pieceId[y * w + x] !== 0);
+      const shifted = mean((x, y) => pieceId[((y + 5) % h) * w + ((x + 7) % w)] === 0);
+      const joints = hs.jointMean();
+      return { aligned: joints ? hs.core.deltaE76(joints, pieces) : -1, shifted: hs.core.deltaE76(shifted, pieces) };
+    });
+    expect(d.aligned).toBeGreaterThan(5);
+    expect(d.aligned).toBeGreaterThan(2 * d.shifted);
+  });
+
+  test('islands stays ok on the defaults at intensity 0.5 and 1, seeds 0 and 7 (R38)', async ({ page }) => {
+    await importBricks(page);
+    for (const p of [{ intensity: 0.5, seed: 0 }, { intensity: 1, seed: 0 }, { intensity: 0.5, seed: 7 }, { intensity: 1, seed: 7 }]) {
+      const r = await page.evaluate(async (q) => {
+        const store = window.__hs!.store;
+        store.getState().updateNode<'wear'>('wear', q);
+        // Wait for the recomposition, then evaluate it (an evaluation superseded by it resolves null).
+        for (;;) {
+          await new Promise((ok) => setTimeout(ok, 100));
+          const s = store.getState();
+          if (!s.atlas || s.atlas.doc !== s.doc) continue;
+          const res = await s.runEvaluation();
+          if (res && store.getState().atlas?.doc === s.doc) {
+            const isl = res.find((x) => x.id === 'islands')!;
+            return { status: isl.status, n: isl.points?.length ?? 0 };
+          }
+        }
+      }, p);
+      expect(r, JSON.stringify(p)).toEqual({ status: 'ok', n: 0 });
+    }
   });
 
   test('evaluations never overlap, and reusing a 2048 px preview gives the same results as composing', async ({ page }) => {

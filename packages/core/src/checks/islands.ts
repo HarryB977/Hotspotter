@@ -2,14 +2,15 @@ import { WEAR_FAMILIES } from '../wear/params';
 import { edgeDistPx, evalGeometry, wearSkipReason } from './geometry';
 import type { CheckContext, CheckResult } from './index';
 
-/** wearMask byte above which a pixel counts as worn. */
-const LOST = 0;
+/** wearMask byte from which a pixel counts as visibly lost (R38). */
+const LOST = 128;
 
 /**
- * Islands (R36): 8-connected patches of wear (wearMask > 0) inside one rect that never reach the guaranteed rim band
- * (no pixel closer to the visible edge than 1.6 · rimM + 1 px; the rim's irregular inner contour reaches 1.6 · rimM).
- * Only patches smaller than (sizeM / 2)² count: a bigger detached patch is a break of its own. Each island is a loose
- * speck; `points` are their centroids.
+ * Islands (R38, with its beyond-wEff fallback): patches of visibly lost wear (wearMask ≥ 128) inside one rect that never
+ * reach the edge-wear strip (no pixel closer to the visible edge than wEff). Gaps up to bandM are bridged before
+ * labelling, as if the mask were dilated by bandM / 2: two lost pixels of the same rect join when their centres are at
+ * most bandM · ppm + 1 px apart (edge-to-edge gap ≤ bandM), and never less than 8-connected. No area cap. Each island
+ * is a loose speck; `points` are their centroids. Loose specks inside the strip are not flagged (deferred, docs/09).
  */
 export function checkIslands(ctx: CheckContext): CheckResult {
   const { maps, wear, layout } = ctx;
@@ -18,19 +19,24 @@ export function checkIslands(ctx: CheckContext): CheckResult {
   const skip = wearSkipReason(wear, wearMask, W * H, WEAR_FAMILIES[wear.family].loses);
   if (skip) return { ...base, status: 'ok', message: skip };
   const geo = evalGeometry(layout, wear, W);
-  const maxAreaPx = (0.5 * wear.sizeM * geo.ppm) ** 2;
+  const reach = Math.max(wear.bandM * geo.ppm + 1, Math.SQRT2);
+  const k = Math.floor(reach);
+  const offsets: [number, number][] = [];
+  for (let dy = -k; dy <= k; dy++) {
+    for (let dx = -k; dx <= k; dx++) if ((dx || dy) && dx * dx + dy * dy <= reach * reach) offsets.push([dx, dy]);
+  }
   const seen = new Uint8Array(W * H);
   const stack = new Int32Array(W * H);
   const rectIds = new Set<string>();
   const points: [number, number][] = [];
   for (let i0 = 0; i0 < W * H; i0++) {
-    if (seen[i0] || wearMask[i0] <= LOST) continue;
+    if (seen[i0] || wearMask[i0] < LOST) continue;
     const id = rectId[i0];
     const r = geo.rects[id - 1];
     seen[i0] = 1;
     if (!r) continue;
-    // A rect without a rim (no edge wear) cannot hold a connected chip: every patch on it is loose.
-    const stripPx = 1.6 * r.rimM * geo.ppm + 1;
+    // A rect without edge wear (wEff 0) has no strip: every patch on it is loose.
+    const stripPx = r.wEffM * geo.ppm;
     let top = 0;
     stack[top++] = i0;
     let touches = false, n = 0, sx = 0, sy = 0;
@@ -41,22 +47,16 @@ export function checkIslands(ctx: CheckContext): CheckResult {
       sx += x;
       sy += y;
       if (!touches && edgeDistPx(r, x, y) < stripPx) touches = true;
-      for (let dy = -1; dy <= 1; dy++) {
-        const yy = y + dy;
-        if (yy < 0 || yy >= H) continue;
-        for (let dx = -1; dx <= 1; dx++) {
-          const xx = x + dx;
-          if (xx < 0 || xx >= W) continue;
-          const j = yy * W + xx;
-          if (seen[j] || wearMask[j] <= LOST || rectId[j] !== id) continue;
-          seen[j] = 1;
-          stack[top++] = j;
-        }
+      for (const [dx, dy] of offsets) {
+        const xx = x + dx, yy = y + dy;
+        if (xx < 0 || xx >= W || yy < 0 || yy >= H) continue;
+        const j = yy * W + xx;
+        if (seen[j] || wearMask[j] < LOST || rectId[j] !== id) continue;
+        seen[j] = 1;
+        stack[top++] = j;
       }
     }
-    // Detached chips the size of a break are real damage (the loss pass breaks anywhere within wEff); only
-    // patches smaller than (sizeM / 2)² are loose specks.
-    if (touches || n >= maxAreaPx) continue;
+    if (touches) continue;
     rectIds.add(r.id);
     points.push([sx / n + 0.5, sy / n + 0.5]);
   }

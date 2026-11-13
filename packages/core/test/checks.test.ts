@@ -109,24 +109,29 @@ describe('runChecks', () => {
     expect(skipped.message).toMatch(/más fino que un píxel/);
   });
 
-  it('islands warns on a speck detached from the rim, with its centroid, and not on a chip connected to it', () => {
+  it('islands (R38): a lost speck beyond wEff, 2·bandM from other wear, warns; chips bridged to the strip do not', () => {
+    // 256 px/m: bandM 6 mm = 1.54 px, so lost pixels join across centre distances ≤ 2.54 px (gap ≤ bandM); the strip
+    // ends at wEff = 4 cm = 10.24 px from the visible edge, which lies 0.77 px in from the atlas edge.
     const m = flatMaps(256);
-    edgeBand(m, 0);
+    edgeBand(m, 0); // lost to index distance 3 from the atlas edge
     expect(get(runChecks(ctxWith(m)), 'islands').status).toBe('ok');
-    // A chip running 20 px in from the top rim band, connected to it.
-    for (let y = 0; y < 24; y++) for (let x = 60; x < 66; x++) m.wearMask[y * 256 + x] = 40;
+    // A chip running 20 px in from the top band, connected to it.
+    for (let y = 0; y < 24; y++) for (let x = 60; x < 66; x++) m.wearMask[y * 256 + x] = 200;
+    // Chips at x 5–10 and x 12–16, each behind a one-pixel gap (3.9 mm < bandM): the outer one lies wholly beyond
+    // wEff but is bridged to the strip, so ok.
+    for (let y = 60; y < 63; y++) for (let x = 5; x < 17; x++) if (x !== 11) m.wearMask[y * 256 + x] = 200;
+    // Faint wear (< 128) is not visibly lost: never an island.
+    for (let y = 200; y < 203; y++) for (let x = 200; x < 203; x++) m.wearMask[y * 256 + x] = 100;
     expect(get(runChecks(ctxWith(m)), 'islands').status).toBe('ok');
-    // A 3 × 3 px speck 6–8 px from the visible edge (the rim band ends at 1.6 · 4 mm + 1 px ≈ 2.6 px), detached.
-    for (let y = 120; y < 123; y++) for (let x = 6; x < 9; x++) m.wearMask[y * 256 + x] = 30;
+    // A 3 × 3 px speck at x 20–22, beyond wEff, ≥ 2 · bandM (3.1 px) from all other wear: detached.
+    for (let y = 120; y < 123; y++) for (let x = 20; x < 23; x++) m.wearMask[y * 256 + x] = 200;
     const r = get(runChecks(ctxWith(m)), 'islands');
     expect(r.status).toBe('warn');
     expect(r.rectIds).toEqual(['a']);
-    expect(r.points).toEqual([[7.5, 121.5]]);
-    // A detached patch of break size (10 × 10 px ≥ (sizeM / 2)² ≈ 14.7 px²) is a break of its own, not a speck.
+    expect(r.points).toEqual([[21.5, 121.5]]);
+    // No area cap: a 10 × 10 px patch in the middle is an island too.
     for (let y = 120; y < 130; y++) for (let x = 100; x < 110; x++) m.wearMask[y * 256 + x] = 255;
-    expect(get(runChecks(ctxWith(m)), 'islands').points).toEqual([[7.5, 121.5]]);
-    // With a bigger sizeM the same patch is a speck.
-    expect(get(runChecks(ctxWith(m, {}, { sizeM: 0.1 })), 'islands').points).toEqual([[7.5, 121.5], [105, 125]]);
+    expect(get(runChecks(ctxWith(m)), 'islands').points).toEqual([[21.5, 121.5], [105, 125]]);
   });
 
   it('normal errors when more than 0.5 % of the steep pixels point against the slope', () => {
