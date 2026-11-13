@@ -1,7 +1,7 @@
 import * as core from '@hotspotter/core';
 import * as engine from '@hotspotter/engine';
 import type { AtlasMaps } from '@hotspotter/engine';
-import { useProject } from '../state/store';
+import { evalStats, useProject } from '../state/store';
 
 export interface SampleFile {
   name: string;
@@ -36,6 +36,8 @@ export interface HsHarness {
   runCompute: (wgslBody: string, w: number, h: number) => Promise<Float32Array>;
   /** Latest composed atlas maps, or null. */
   readonly lastAtlas: AtlasMaps | null;
+  /** Evaluation debug counters: composes of its own, evaluations running now and at most at once. */
+  evalStats: typeof evalStats;
 }
 
 declare global {
@@ -90,6 +92,7 @@ export function installHarness(): void {
     loadSample,
     runCompute,
     store: useProject,
+    evalStats,
     get lastAtlas() {
       return useProject.getState().atlas?.maps ?? null;
     },

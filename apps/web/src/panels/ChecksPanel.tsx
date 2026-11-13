@@ -50,19 +50,27 @@ export function ChecksPanel() {
   const error = useProject((s) => s.checksError);
   const hasAtlas = useProject((s) => s.atlas !== null);
   const focusAtlas = useProject((s) => s.focusAtlas);
+  const pending = useProject((s) => s.checksPending);
   if (!hasAtlas) return null;
   return (
     <Section title={es.checks.title}>
-      <div className="flex flex-col" data-testid="checks">
+      <div
+        className={`flex flex-col ${pending && checks ? 'opacity-50' : ''}`}
+        data-testid="checks"
+        data-pending={pending ? 'true' : undefined}
+      >
         {error && <div className="text-red-400" data-testid="checks-error">{error}</div>}
-        {!checks && !error && <div className="text-zinc-500">{es.checks.pending}</div>}
+        {(pending || !checks) && !error && (
+          <div className="text-zinc-500" data-testid="checks-pending">{es.checks.pending}</div>
+        )}
         {checks?.results.map((r) => {
           const p = r.points?.[0];
+          // Results of an older atlas are shown dimmed and never move the view.
           return (
             <CheckRow
               key={r.id}
               r={r}
-              onFocus={p ? () => focusAtlas(p[0] / checks.width, p[1] / checks.height) : undefined}
+              onFocus={p && !pending ? () => focusAtlas(p[0] / checks.width, p[1] / checks.height) : undefined}
             />
           );
         })}

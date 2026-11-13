@@ -81,9 +81,11 @@ test.describe('with bricks wall 13', () => {
     await importBricks(page);
     const setRes = (r: number) =>
       page.evaluate((resolutionPx) => window.__hs!.store.getState().updateNode<'output'>('output', { resolutionPx }), r);
-    // 6 mm in 8 m: 6.1 px at 8192, 0.38 px at 512.
-    await setRes(8192);
-    await expect(row(page, 'bleed')).toHaveAttribute('data-status', 'ok', { timeout: 20_000 });
+    // The visible groove is 6 mm + 2 · 3 mm bevel = 12 mm in 8 m: 6.1 px at the default 4096, 0.77 px at 512 (R35).
+    expect(await page.evaluate(() =>
+      (window.__hs!.store.getState().doc!.nodes.find((n) => n.type === 'output')!.params as { resolutionPx: number })
+        .resolutionPx)).toBe(4096);
+    await expect(row(page, 'bleed')).toHaveAttribute('data-status', 'ok');
     await setRes(512);
     await expect(row(page, 'bleed')).toHaveAttribute('data-status', 'warn', { timeout: 20_000 });
     await expect(row(page, 'bleed')).toContainText('mip 2');
@@ -98,6 +100,9 @@ test.describe('with bricks wall 13', () => {
       return s.updateSettings({ period: { ...p, x: 0.37, cutAllowedX: false }, periodUserSet: true });
     });
     await expect(row(page, 'proportions')).toHaveAttribute('data-status', 'warn', { timeout: 20_000 });
+    // Rows of an older atlas are dimmed and not clickable; wait for the current results.
+    await expect(page.getByTestId('checks')).not.toHaveAttribute('data-pending', 'true', { timeout: 20_000 });
+    await expect(row(page, 'proportions')).toHaveAttribute('data-status', 'warn');
     const stage = page.getByTestId('atlas-stage');
     const before = await stage.evaluate((el) => (el as HTMLElement).style.transform);
     await row(page, 'proportions').click();
@@ -146,6 +151,7 @@ test.describe('with bricks wall 13', () => {
       return { a, b: b?.length };
     });
     expect(r).toEqual({ a: null, b: 6 });
+    expect(await page.evaluate(() => window.__hs!.evalStats.peak)).toBe(1);
 
     const evaluate = () => page.evaluate(async () => {
       const res = await window.__hs!.store.getState().runEvaluation({ exportResolutionPx: 4096 });
@@ -154,6 +160,10 @@ test.describe('with bricks wall 13', () => {
     const composed = await evaluate();
     await page.evaluate(() => window.__hs!.store.getState().setPreviewRes(2048));
     await page.waitForFunction(() => window.__hs!.store.getState().atlas?.resolutionPx === 2048);
+    const before = await page.evaluate(() => window.__hs!.evalStats.composes);
     expect(await evaluate()).toEqual(composed);
+    // The current 2048 px preview was read directly: no composition of its own.
+    expect(await page.evaluate(() => window.__hs!.evalStats.composes)).toBe(before);
+    expect(await page.evaluate(() => window.__hs!.evalStats.peak)).toBe(1);
   });
 });

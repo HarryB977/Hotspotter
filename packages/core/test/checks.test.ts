@@ -103,17 +103,30 @@ describe('runChecks', () => {
     }
     // A family that loses no material has no edge to cover.
     expect(get(runChecks(ctxWith(m, {}, { family: 'dent' })), 'coverage').status).toBe('ok');
+    // A rim under one evaluation pixel (4 mm at 1.28 px/cm) cannot be checked.
+    const skipped = get(runChecks(ctxWith(flatMaps(256), { layout: { ...layout1m(), worldWidthM: 2 } })), 'coverage');
+    expect(skipped.status).toBe('ok');
+    expect(skipped.message).toMatch(/más fino que un píxel/);
   });
 
-  it('islands warns on an isolated blob with its centroid, and ignores damage touching the edge strip', () => {
+  it('islands warns on a speck detached from the rim, with its centroid, and not on a chip connected to it', () => {
     const m = flatMaps(256);
     edgeBand(m, 0);
     expect(get(runChecks(ctxWith(m)), 'islands').status).toBe('ok');
-    for (let y = 120; y < 130; y++) for (let x = 100; x < 110; x++) m.wearMask[y * 256 + x] = 255;
+    // A chip running 20 px in from the top rim band, connected to it.
+    for (let y = 0; y < 24; y++) for (let x = 60; x < 66; x++) m.wearMask[y * 256 + x] = 40;
+    expect(get(runChecks(ctxWith(m)), 'islands').status).toBe('ok');
+    // A 3 × 3 px speck 6–8 px from the visible edge (the rim band ends at 1.6 · 4 mm + 1 px ≈ 2.6 px), detached.
+    for (let y = 120; y < 123; y++) for (let x = 6; x < 9; x++) m.wearMask[y * 256 + x] = 30;
     const r = get(runChecks(ctxWith(m)), 'islands');
     expect(r.status).toBe('warn');
     expect(r.rectIds).toEqual(['a']);
-    expect(r.points).toEqual([[105, 125]]);
+    expect(r.points).toEqual([[7.5, 121.5]]);
+    // A detached patch of break size (10 × 10 px ≥ (sizeM / 2)² ≈ 14.7 px²) is a break of its own, not a speck.
+    for (let y = 120; y < 130; y++) for (let x = 100; x < 110; x++) m.wearMask[y * 256 + x] = 255;
+    expect(get(runChecks(ctxWith(m)), 'islands').points).toEqual([[7.5, 121.5]]);
+    // With a bigger sizeM the same patch is a speck.
+    expect(get(runChecks(ctxWith(m, {}, { sizeM: 0.1 })), 'islands').points).toEqual([[7.5, 121.5], [105, 125]]);
   });
 
   it('normal errors when more than 0.5 % of the steep pixels point against the slope', () => {
@@ -141,24 +154,32 @@ describe('runChecks', () => {
     expect(get(runChecks(ctxWith(flatMaps(n))), 'normal').status).toBe('ok');
   });
 
-  it('proportions warns with the rotated period and points at the rect', () => {
+  it('proportions uses the rotated period and points at the rect', () => {
+    // 0.75 × 1 m with only Y periodic (0.075 m): 1 m is not a multiple, 0.75 m is.
+    const layout = { ...layout1m(), rects: [makeRect({ id: 'a', x: 0, y: 0, w: 192, h: 256 })] };
     const material = { ...MATERIAL, period: { ...CONTINUOUS, y: 0.075, cutAllowedY: false } };
-    const r = get(runChecks(ctxWith(flatMaps(256), { material })), 'proportions');
+    const r = get(runChecks(ctxWith(flatMaps(256), { layout, material })), 'proportions');
     expect(r.status).toBe('warn');
     expect(r.rectIds).toEqual(['a']);
-    expect(r.points).toEqual([[128, 128]]);
-    // 1 m is not a multiple of 0.075 on either axis: rotated, the period moves to X and still warns once.
-    const rot = get(runChecks(ctxWith(flatMaps(256), { material, rotations: new Map([['a', true]]) })), 'proportions');
-    expect(rot.rectIds).toEqual(['a']);
-    expect(get(runChecks(ctxWith(flatMaps(256))), 'proportions').status).toBe('ok');
+    expect(r.points).toEqual([[96, 128]]);
+    // Rotated, the period moves to the 0.75 m X side, which fits it.
+    const rotations = new Map([['a', true]]);
+    expect(get(runChecks(ctxWith(flatMaps(256), { layout, material, rotations })), 'proportions').status).toBe('ok');
+    expect(get(runChecks(ctxWith(flatMaps(256), { layout })), 'proportions').status).toBe('ok');
   });
 
-  it('bleed warns when the groove floor is under 4 px at the export resolution', () => {
+  it('bleed warns when the visible groove (floor + 2 bevels) is under 4 px at the export resolution', () => {
     const l8 = { ...layout1m(), worldWidthM: 8 };
-    const low = get(runChecks(ctxWith(flatMaps(64), { layout: l8, exportResolutionPx: 512 })), 'bleed');
+    const bleed = (layout: HotspotLayout, exportResolutionPx: number) =>
+      get(runChecks(ctxWith(flatMaps(64), { layout, exportResolutionPx })), 'bleed');
+    // 6 mm + 2 · 3 mm = 12 mm in 8 m: 6.1 px at 4096 (the defaults), 0.77 px at 512.
+    expect(bleed(l8, 4096).status).toBe('ok');
+    const low = bleed(l8, 512);
     expect(low.status).toBe('warn');
     expect(low.message).toMatch(/mip 2/);
-    expect(get(runChecks(ctxWith(flatMaps(64), { layout: l8, exportResolutionPx: 8192 })), 'bleed').status).toBe('ok');
+    expect(low.message).toMatch(/la ranura o el bisel/);
+    // Without a bevel the 6 mm floor alone is 3.1 px at 4096.
+    expect(bleed({ ...l8, groove: { ...GROOVE, bevelM: 0 } }, 4096).status).toBe('warn');
   });
 
   it('substrate warns when the second set does not match the joints (ΔE76 > 20)', () => {
@@ -185,30 +206,9 @@ describe('colour helpers', () => {
     expect(meanRgb(new Uint8Array([10, 20, 30, 255, 30, 40, 50, 0]))).toEqual([20, 30, 40]);
   });
 
-  it('jointMeanRgb averages joint pixels inside rects, outside the groove floor and the wear', () => {
-    const n = 64;
-    const maps = flatMaps(n);
-    const base = new Uint8Array(n * n * 4);
-    const pieceId = new Uint32Array(n * n).fill(1);
-    for (let i = 0; i < n * n; i++) base.set([200, 0, 0, 255], i * 4);
-    // A joint row in the middle: grey, half of it worn (red).
-    for (let x = 0; x < n; x++) {
-      const i = 32 * n + x;
-      pieceId[i] = 0;
-      if (x < n / 2) base.set([100, 110, 120, 255], i * 4);
-      else maps.wearMask[i] = 255;
-    }
-    // The groove floor (5 cm wide → 1.6 px inside the rect at 64 px/m) has pieceId 0 too, and is dark.
-    for (let x = 0; x < 2 * n; x++) { pieceId[x] = 0; base.set([0, 0, 0, 255], x * 4); }
-    const layout = {
-      ...layout1m(), widthPx: n, heightPx: n, rects: [makeRect({ id: 'a', x: 0, y: 0, w: n, h: n })],
-      groove: { ...GROOVE, widthM: 0.05 },
-    };
-    expect(jointMeanRgb({ ...maps, baseColor: base, pieceId }, layout)).toEqual([100, 110, 120]);
-    // The groove itself (rect id 0) is never a joint.
-    const outside = { ...maps, rectId: new Uint32Array(n * n) };
-    expect(jointMeanRgb({ ...outside, baseColor: base, pieceId }, layout)).toBeNull();
-    const noJoints = jointMeanRgb({ ...maps, baseColor: base, pieceId: new Uint32Array(n * n).fill(1) }, layout);
-    expect(noJoints).toBeNull();
+  it('jointMeanRgb averages the material base colour where the piece id is 0', () => {
+    const base = new Uint8Array([100, 110, 120, 255, 200, 0, 0, 255, 120, 130, 140, 255]);
+    expect(jointMeanRgb(base, new Uint32Array([0, 3, 0]))).toEqual([110, 120, 130]);
+    expect(jointMeanRgb(base, new Uint32Array([1, 3, 2]))).toBeNull();
   });
 });

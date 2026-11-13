@@ -1,6 +1,4 @@
-import { evalGeometry, edgeDistPx } from './geometry';
-import type { HotspotLayout } from '../layout';
-import type { CheckContext, CheckResult, EvalMaps } from './index';
+import type { CheckContext, CheckResult } from './index';
 
 type Rgb = [number, number, number];
 
@@ -41,35 +39,24 @@ export function meanRgb(rgba: Uint8Array): Rgb {
 }
 
 /**
- * Mean RGB of the top material's joints in the atlas: pixels with piece id 0 inside a rect (rect id ≠ 0), off the
- * groove floor and outside the wear (where the substrate already shows). Null without joint pixels.
+ * Mean RGB of the top material's joints in material space (R37): its BaseColor (RGBA8, already at the structure
+ * analysis size) where the structure's piece id is 0. Null without joint pixels.
  */
-export function jointMeanRgb(
-  maps: Pick<EvalMaps, 'width' | 'height' | 'rectId' | 'wearMask'> & { baseColor: Uint8Array; pieceId: Uint32Array },
-  layout: HotspotLayout,
-): Rgb | null {
-  const { width: W, height: H, rectId, pieceId, baseColor, wearMask } = maps;
-  const geo = evalGeometry(layout, null, W);
-  const worn = wearMask.length >= W * H;
+export function jointMeanRgb(baseColor: Uint8Array, pieceId: Uint32Array): Rgb | null {
   let r = 0, g = 0, b = 0, n = 0;
-  for (let y = 0; y < H; y++) {
-    for (let x = 0; x < W; x++) {
-      const i = y * W + x;
-      if (pieceId[i] !== 0 || rectId[i] === 0) continue;
-      const rect = geo.rects[rectId[i] - 1];
-      if (!rect || edgeDistPx(rect, x, y) < 0 || (worn && wearMask[i] > 0)) continue;
-      r += baseColor[i * 4];
-      g += baseColor[i * 4 + 1];
-      b += baseColor[i * 4 + 2];
-      n++;
-    }
+  for (let i = 0; i < pieceId.length; i++) {
+    if (pieceId[i] !== 0) continue;
+    r += baseColor[i * 4];
+    g += baseColor[i * 4 + 1];
+    b += baseColor[i * 4 + 2];
+    n++;
   }
   return n > 0 ? [r / n, g / n, b / n] : null;
 }
 
 /**
  * Substrate: with a second PBR set over a material with pieces, its mean colour must be close (ΔE76 ≤ 20) to the
- * mean colour of the top material's joints. The store passes both means only in that case.
+ * mean colour of the top material's own joints. The store passes both means only in that case.
  */
 export function checkSubstrate(ctx: CheckContext): CheckResult {
   const base = { id: 'substrate' as const, rectIds: [] as string[] };

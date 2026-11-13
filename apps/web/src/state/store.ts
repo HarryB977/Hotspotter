@@ -103,6 +103,8 @@ export interface ProjectState {
   checks: ChecksState | null;
   /** Last evaluation failure, shown in the checks panel; cleared by the next success. */
   checksError: string | null;
+  /** A recomposition or request is newer than `checks`: they describe an older atlas until the next results land. */
+  checksPending: boolean;
   viewFocus: ViewFocus | null;
   /** Centres the atlas view on atlas UV (u, v). */
   focusAtlas(u: number, v: number): void;
@@ -386,6 +388,7 @@ export const useProject = create<ProjectState>()((set, get) => ({
   wearError: null,
   checks: null,
   checksError: null,
+  checksPending: false,
   viewFocus: null,
 
   focusAtlas(u, v) {
@@ -863,6 +866,9 @@ let evalGen = 0;
 /** Evaluations run one after another on this chain, never concurrently. */
 let evalChain: Promise<unknown> = Promise.resolve();
 
+/** Debug counters (exposed by the test harness): evaluation composes, and evaluations running now / at most. */
+export const evalStats = { composes: 0, running: 0, peak: 0 };
+
 /** Mean base colour of each second set, read back once. */
 const substrateMeans = new WeakMap<GpuMaterial, Promise<[number, number, number]>>();
 
@@ -871,12 +877,38 @@ function substrateMean(gpu: GpuContext, m: GpuMaterial): Promise<[number, number
   if (!p) {
     p = readbackRgba8(gpu, m.textures.baseColor).then((r) => meanRgb(r.data));
     substrateMeans.set(m, p);
+    // A failed read is retried by the next evaluation.
+    p.catch(() => substrateMeans.delete(m));
   }
   return p;
 }
 
+/** Mean joint colour of the top material in material space (R37), per (GpuMaterial, structure). */
+const jointMeans = new WeakMap<GpuMaterial, WeakMap<StructureState, [number, number, number] | null>>();
+
+function materialJointMean(
+  m: GpuMaterial, structure: StructureState, bmp: ImageBitmap | undefined,
+): [number, number, number] | null {
+  let byStructure = jointMeans.get(m);
+  if (!byStructure) jointMeans.set(m, (byStructure = new WeakMap()));
+  if (byStructure.has(structure)) return byStructure.get(structure)!;
+  let mean: [number, number, number] | null = null;
+  if (bmp) {
+    // The BaseColor at the analysis size, so each texel lines up with the structure's piece ids.
+    const { width: w, height: h, pieceId } = structure.result;
+    const g = new OffscreenCanvas(w, h).getContext('2d', { willReadFrequently: true });
+    if (!g) throw new Error('2D canvas unavailable');
+    g.drawImage(bmp, 0, 0, w, h);
+    const px = g.getImageData(0, 0, w, h).data;
+    mean = jointMeanRgb(new Uint8Array(px.buffer, px.byteOffset, px.byteLength), pieceId);
+  }
+  byStructure.set(structure, mean);
+  return mean;
+}
+
 function requestEvaluation(opts?: { exportResolutionPx?: number }): Promise<CheckResult[] | null> {
   const mine = ++evalGen;
+  if (!useProject.getState().checksPending) useProject.setState({ checksPending: true });
   const run = evalChain.then(() => evaluate(mine, opts));
   evalChain = run.catch(() => undefined);
   return run;
@@ -885,18 +917,22 @@ function requestEvaluation(opts?: { exportResolutionPx?: number }): Promise<Chec
 async function evaluate(mine: number, opts?: { exportResolutionPx?: number }): Promise<CheckResult[] | null> {
   // A newer request is queued behind this one and will evaluate a fresher state.
   if (mine !== evalGen) return null;
-  const { doc, gpuMaterial, gpu, structure, mask, substrate, atlas } = useProject.getState();
+  const { doc, gpuMaterial, gpu, structure, mask, substrate, atlas, material } = useProject.getState();
   if (!doc || !gpuMaterial || !gpu) return null;
+  evalStats.running++;
+  evalStats.peak = Math.max(evalStats.peak, evalStats.running);
   try {
     const inputs = composeInputsFromDoc(doc);
     const current =
       atlas !== null && atlas.resolutionPx === EVAL_RES && atlas.doc === doc && atlas.gpuMaterial === gpuMaterial &&
       atlas.structure === structure && atlas.mask === mask && atlas.substrate === substrate;
+    if (!current) evalStats.composes++;
     const maps = current
       ? atlas.maps
       : await composeAtlas(gpu, composeInputFor({ doc, gpuMaterial, structure, mask, substrate }, inputs, EVAL_RES));
     const compareSubstrate =
       inputs.wear.substrate.source === 'secondSet' && substrate !== null && structure?.result.type === 'pieces';
+    const joints = compareSubstrate ? materialJointMean(gpuMaterial, structure, material?.images.baseColor) : null;
     // Every copy is submitted before the first await, so the maps may be destroyed (ours right below, the preview's
     // by a recomposition) while the reads are in flight.
     let reads;
@@ -906,14 +942,12 @@ async function evaluate(mine: number, opts?: { exportResolutionPx?: number }): P
         readbackR32(gpu, maps.macroHeight),
         readbackRgba8(gpu, maps.normal),
         readbackRgba8(gpu, maps.wearMask),
-        compareSubstrate ? readbackR32(gpu, maps.pieceId) : null,
-        compareSubstrate ? readbackRgba8(gpu, maps.baseColor) : null,
-        compareSubstrate ? substrateMean(gpu, substrate.gpu) : null,
+        joints && compareSubstrate ? substrateMean(gpu, substrate.gpu) : null,
       ]);
     } finally {
       if (!current) destroyMaps(maps);
     }
-    const [rectId, macro, normal, wearRgba, pieceId, baseColor, subMean] = await reads;
+    const [rectId, macro, normal, wearRgba, subMean] = await reads;
     const { width, height } = rectId;
     // The grey wearMask's red channel; a 1 × 1 placeholder (wear off) stays 1 byte long.
     const wearMask = new Uint8Array(wearRgba.data.length / 4);
@@ -922,9 +956,6 @@ async function evaluate(mine: number, opts?: { exportResolutionPx?: number }): P
       width, height, rectId: rectId.data as Uint32Array, wearMask, macroHeight: macro.data as Float32Array,
       normal: normal.data,
     };
-    const joints = pieceId && baseColor
-      ? jointMeanRgb({ ...maps8, pieceId: pieceId.data as Uint32Array, baseColor: baseColor.data }, inputs.layout)
-      : null;
     const output = doc.nodes.find((n): n is DocNode<'output'> => n.type === 'output');
     const results = runChecks({
       layout: inputs.layout, rotations: inputs.rotations, material: inputs.material, wear: inputs.wear,
@@ -933,14 +964,20 @@ async function evaluate(mine: number, opts?: { exportResolutionPx?: number }): P
       substrateMeanRgb: joints && subMean ? subMean : undefined,
       jointMeanRgb: joints && subMean ? joints : undefined,
     });
-    if (mine === evalGen) useProject.setState({ checks: { results, width, height }, checksError: null });
+    if (mine === evalGen) {
+      useProject.setState({ checks: { results, width, height }, checksError: null, checksPending: false });
+    }
     return results;
   } catch (e) {
     console.error('evaluation failed', e);
     if (mine === evalGen) {
-      useProject.setState({ checksError: es.checks.failed(e instanceof Error ? e.message : String(e)) });
+      useProject.setState({
+        checksError: es.checks.failed(e instanceof Error ? e.message : String(e)), checksPending: false,
+      });
     }
     return null;
+  } finally {
+    evalStats.running--;
   }
 }
 
@@ -948,6 +985,7 @@ useProject.subscribe((s, prev) => {
   if (s.atlas === prev.atlas || !s.atlas) return;
   // An evaluation in flight describes an older atlas: its results are not stored.
   evalGen++;
+  if (!s.checksPending) useProject.setState({ checksPending: true });
   clearTimeout(evalTimer);
   evalTimer = setTimeout(() => void requestEvaluation(), EVALUATION_DEBOUNCE_MS);
 });

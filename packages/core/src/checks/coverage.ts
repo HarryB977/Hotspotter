@@ -76,11 +76,20 @@ export function checkCoverage(ctx: CheckContext): CheckResult {
     return { ...base, status: 'ok', message: 'Sin borde mínimo: no se pide un borde dañado continuo.' };
   }
   const geo = evalGeometry(layout, wear, maps.width);
+  // A rim under one evaluation pixel (very wide atlases) cannot be told from a gap.
+  if (wear.minEdgeM * geo.ppm < 1) {
+    const mm = (1000 / geo.ppm).toLocaleString('es-ES', { maximumFractionDigits: 1 });
+    return {
+      ...base, status: 'ok',
+      message: `No se puede comprobar: el borde mínimo es más fino que un píxel de la evaluación (${mm} mm).`,
+    };
+  }
   const minSamples = COVERAGE_GAP_M * geo.ppm;
   const rectIds: string[] = [];
   const points: [number, number][] = [];
   for (const r of geo.rects) {
-    if (r.rimM <= 0) continue;
+    // Thin trims cap the rim (R28); one under a pixel is skipped for the same reason as above.
+    if (r.rimM * geo.ppm < 1) continue;
     const found = gaps(perimeter(ctx, r, geo.ppm), minSamples);
     if (found.length === 0) continue;
     rectIds.push(r.id);

@@ -48,7 +48,7 @@ export interface CheckContext {
   maps: EvalMaps;
   /** Mean sRGB bytes of the second set's base colour; only with a second set over a material with pieces. */
   substrateMeanRgb?: [number, number, number];
-  /** Mean sRGB bytes of the top material's joints in the atlas (jointMeanRgb); same condition. */
+  /** Mean sRGB bytes of the top material's own joints (jointMeanRgb, material space, R37); same condition. */
   jointMeanRgb?: [number, number, number];
 }
 
