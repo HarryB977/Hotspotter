@@ -36,6 +36,8 @@ interface ComposeOpts {
   substrateTileM?: number;
   /** Also upload the grey brick image as the AO map (the same image as the non-colour albedo). */
   aoMap?: boolean;
+  /** ComposeInput.bandRows: rows per banded dispatch (default 1024). */
+  bandRows?: number;
 }
 
 interface WearProbe {
@@ -164,7 +166,7 @@ test.beforeEach(async ({ page }) => {
     window.__t8 = {
       async compose({
         material = 'brick', structure, layout: kind = 'pair', resolutionPx = 1024, wear = {}, mask, grainAxis = null, rotate,
-        normalMap = false, colour = false, dirt, substrate, substrateTileM = 1, aoMap = false,
+        normalMap = false, colour = false, dirt, substrate, substrateTileM = 1, aoMap = false, bandRows,
       }) {
         const ctx = await (ctxP ??= engine.initGpu());
         const groove = core.DEFAULT_GROOVE;
@@ -228,7 +230,8 @@ test.beforeEach(async ({ page }) => {
           layout, material: gpuMaterial, placements, resolutionPx, structure: gpuStructure,
           wear: wearParams, mask: maskTex, grainAxis, substrateMaterial,
           dirt: dirt ? { ...core.DEFAULT_DIRT, ...dirt } : undefined,
-        });
+          bandRows,
+        } as import('@hotspotter/engine').ComposeInput);
         const packed = new Uint32Array(await readTexels(ctx, maps.loss, 4));
         const loss = new Float32Array(packed.length * 2);
         const floorMarker = new Uint8Array(packed.length);
@@ -1273,4 +1276,65 @@ test('R33: with a real AO map the material relief is not occluded twice', async 
   expect(r.without.mean).toBeLessThan(235);
   expect(r.withMap.n).toBeGreaterThan(1000);
   expect(r.withMap.offMap).toBe(0);
+});
+
+test('8192 robustness: row bands and split submits leave every map byte-identical', async ({ page }) => {
+  const r = await page.evaluate(async () => {
+    const fnv = (d: Uint8Array) => {
+      let h = 0x811c9dc5;
+      for (let i = 0; i < d.length; i++) h = Math.imul(h ^ d[i], 0x01000193) >>> 0;
+      return h;
+    };
+    const f8 = (a: ArrayLike<number> | null) => (a ? fnv(new Uint8Array(new Float32Array(a).buffer)) : 0);
+    const hashes = async (opts: Parameters<NonNullable<typeof window.__t8>['compose']>[0]) => {
+      const p = await window.__t8!.compose(opts);
+      const out: Record<string, number> = {};
+      for (const [k, v] of Object.entries(p.bytes)) out[k] = fnv(v);
+      out.macroHeight = f8(p.macroHeight);
+      out.border = f8(p.border);
+      out.wearMask = p.wearMask ? fnv(p.wearMask) : 0;
+      return out;
+    };
+    const cases = {
+      wearDirt: { resolutionPx: 2048, colour: true, normalMap: true, dirt: { runoff: 1, cavity: 1 } },
+      noWear: { resolutionPx: 2048, wear: null, dirt: { runoff: 1 } },
+      maskSubstrate: { resolutionPx: 2048, mask: 'leftBlack' as const, substrate: 'checker' as const, aoMap: true, dirt: { runoff: 0.5 } },
+    };
+    const out: Record<string, { whole: Record<string, number>; banded: Record<string, number> }> = {};
+    for (const [name, opts] of Object.entries(cases)) {
+      // 4096 rows per band: one band, as one dispatch; 64: 32 bands of the colour composite and of every JFA step.
+      out[name] = { whole: await hashes({ ...opts, bandRows: 4096 }), banded: await hashes({ ...opts, bandRows: 64 }) };
+    }
+    return out;
+  });
+  // Printed so a refactor can be checked against the hashes of the previous build on the same GPU.
+  console.log(JSON.stringify(r));
+  for (const v of Object.values(r)) expect(v.banded).toEqual(v.whole);
+});
+
+test('a WGSL error in a cached pipeline surfaces through checkPipelines, once, and is not cached', async ({ page }) => {
+  const r = await page.evaluate(async () => {
+    const { engine } = window.__hs!;
+    const { device } = await engine.initGpu();
+    const bad = () => device.createComputePipeline({
+      layout: 'auto', compute: { module: device.createShaderModule({ code: 'fn main( {' }), entryPoint: 'main' },
+    });
+    const first = engine.cached(device, 'broken', bad);
+    const err = await engine.checkPipelines(device).then(() => null, (e: Error) => ({ name: e.name, message: e.message }));
+    const again = await engine.checkPipelines(device).then(() => 'ok', () => 'threw');
+    const second = engine.cached(device, 'broken', bad);
+    const reported = await engine.checkPipelines(device).then(() => false, () => true);
+    const good = () => device.createComputePipeline({
+      layout: 'auto',
+      compute: { module: device.createShaderModule({ code: '@compute @workgroup_size(1) fn main() {}' }), entryPoint: 'main' },
+    });
+    const g1 = engine.cached(device, 'fine', good);
+    await engine.checkPipelines(device);
+    const g2 = engine.cached(device, 'fine', good);
+    device.destroy();
+    return { err, again, recreated: first !== second, reported, sameGood: g1 === g2 };
+  });
+  expect(r.err?.name).toBe('PipelineValidationError');
+  expect(r.err?.message).toContain('"broken"');
+  expect(r).toMatchObject({ again: 'ok', recreated: true, reported: true, sameGood: true });
 });

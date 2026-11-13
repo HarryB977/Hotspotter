@@ -51,6 +51,8 @@
 @group(0) @binding(20) var outAo: texture_storage_2d<rgba8unorm, write>;
 // Final macro height (r32float): groove, bevel and wear without the intact material relief.
 @group(0) @binding(21) var macroTex: texture_2d<f32>;
+// x: first chunk of this dispatch (row bands, wear.ts BAND_ROWS).
+@group(0) @binding(22) var<uniform> bandOffset: vec4<u32>;
 
 // bandM floor (MIN_BAND_M in wear.ts), and the column walk (see the header).
 override MIN_BAND_M: f32;
@@ -239,11 +241,11 @@ fn shade(c: vec2<i32>, id: u32, lossR: f32, lastLoss: i32) {
   textureStore(outAo, c, vec4<f32>(ao, ao, ao, 1.0));
 }
 
-// gid.x: column, gid.y: chunk of CHUNK_ROWS rows.
+// gid.x: column, gid.y + bandOffset.x: chunk of CHUNK_ROWS rows.
 @compute @workgroup_size(64, 1, 1)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let rows = u32(P.outSize.y);
-  let start = gid.y * CHUNK_ROWS;
+  let start = (gid.y + bandOffset.x) * CHUNK_ROWS;
   if (f32(gid.x) >= P.outSize.x || start >= rows) { return; }
   let end = min(start + CHUNK_ROWS, rows);
   let x = i32(gid.x);

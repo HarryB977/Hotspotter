@@ -6,6 +6,7 @@ import { continuousStructure } from './structure';
 import type { GpuStructure } from './structure';
 import { PARAMS_BYTES, packParams, withCommon } from './params';
 import { createWearUniforms, encodeBorder, encodeColorComposite, encodeWearComposite, encodeWearLoss } from './wear';
+import { cached, checkPipelines } from './pipelines';
 import rectIdWgsl from './shaders/rectId.wgsl?raw';
 import composeWgsl from './shaders/compose.wgsl?raw';
 import normalFromHeightWgsl from './shaders/normalFromHeight.wgsl?raw';
@@ -32,6 +33,11 @@ export interface ComposeInput {
    * material). Sampled at the same material metres as the top material, with its own tileSizeM, never stretched.
    */
   substrateMaterial?: GpuMaterial;
+  /**
+   * Rows per dispatch of the banded passes (colour composite, JFA flood); default BAND_ROWS (1024). The output does
+   * not depend on it; tests use it to prove that.
+   */
+  bandRows?: number;
 }
 
 export interface AtlasMaps {
@@ -124,12 +130,14 @@ function renderRectIds(
   device: GPUDevice, encoder: GPUCommandEncoder, target: GPUTexture,
   params: GPUBuffer, rects: GPUBuffer, count: number,
 ): void {
-  const module = device.createShaderModule({ code: withCommon(rectIdWgsl) });
-  const pipeline = device.createRenderPipeline({
-    layout: 'auto',
-    vertex: { module, entryPoint: 'vs' },
-    fragment: { module, entryPoint: 'fs', targets: [{ format: 'r32uint' }] },
-    primitive: { topology: 'triangle-list' },
+  const pipeline = cached(device, 'rectId', () => {
+    const module = device.createShaderModule({ code: withCommon(rectIdWgsl) });
+    return device.createRenderPipeline({
+      layout: 'auto',
+      vertex: { module, entryPoint: 'vs' },
+      fragment: { module, entryPoint: 'fs', targets: [{ format: 'r32uint' }] },
+      primitive: { topology: 'triangle-list' },
+    });
   });
   const bindGroup = device.createBindGroup({
     layout: pipeline.getBindGroupLayout(0),
@@ -155,6 +163,41 @@ function storageEntry(binding: number, format: GPUTextureFormat): GPUBindGroupLa
   return { binding, visibility: GPUShaderStage.COMPUTE, storageTexture: { access: 'write-only', format } };
 }
 
+/** The compose surface / structure passes and their explicit bind group layouts, once per device. */
+function composePipelines(device: GPUDevice) {
+  return cached(device, 'compose', () => {
+    const tx = { sampleType: 'float' as const };
+    const inputLayout = device.createBindGroupLayout({
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
+        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 2, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'uint' } },
+        { binding: 3, visibility: GPUShaderStage.COMPUTE, sampler: { type: 'filtering' } },
+        ...[5, 6].map((binding) => ({ binding, visibility: GPUShaderStage.COMPUTE, texture: tx })),
+        { binding: 10, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'uint' } },
+        { binding: 11, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
+      ],
+    });
+    const surfaceLayout = device.createBindGroupLayout({
+      entries: [
+        storageEntry(1, 'rgba16float'), storageEntry(2, 'r32float'), storageEntry(8, 'r32float'),
+      ],
+    });
+    const structureLayout = device.createBindGroupLayout({
+      entries: [storageEntry(6, 'r32uint'), storageEntry(7, 'r32float')],
+    });
+    const module = device.createShaderModule({ code: withCommon(composeWgsl) });
+    const pipeline = (entryPoint: string, outLayout: GPUBindGroupLayout) => device.createComputePipeline({
+      layout: device.createPipelineLayout({ bindGroupLayouts: [inputLayout, outLayout] }),
+      compute: { module, entryPoint },
+    });
+    return {
+      inputLayout, surfaceLayout, structureLayout,
+      surface: pipeline('surface', surfaceLayout), structure: pipeline('structure', structureLayout),
+    };
+  });
+}
+
 async function reduceHeightRange(ctx: GpuContext, height: GPUTexture): Promise<[number, number]> {
   const { device } = ctx;
   const range = device.createBuffer({
@@ -163,10 +206,10 @@ async function reduceHeightRange(ctx: GpuContext, height: GPUTexture): Promise<[
   new Uint32Array(range.getMappedRange()).set([0xffffffff, 0]);
   range.unmap();
   const read = device.createBuffer({ size: 8, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
-  const pipeline = device.createComputePipeline({
+  const pipeline = cached(device, 'heightRange', () => device.createComputePipeline({
     layout: 'auto',
     compute: { module: device.createShaderModule({ code: heightRangeWgsl }), entryPoint: 'main' },
-  });
+  }));
   const bindGroup = device.createBindGroup({
     layout: pipeline.getBindGroupLayout(0),
     entries: [
@@ -234,25 +277,26 @@ export async function composeAtlas(ctx: GpuContext, input: ComposeInput): Promis
   });
   const metresPerPx = layout.widthPx / (pxPerMetre(layout) * resolutionPx);
   const wearResources: { destroy(): void }[] = [];
+  const outputs = [
+    rectId, baseColor, matNormal, height, macroHeight, roughness, metallic, ao, normal, pieceId, jointDistM, loss, border,
+    wearMask,
+  ];
+  const bandRows = input.bandRows;
   try {
-    const encoder = device.createCommandEncoder();
+    // Each pass group goes in its own submit, and the heaviest passes in row bands: no single GPU job runs long
+    // enough at 8192 to trip the Windows TDR (device lost).
+    let encoder = device.createCommandEncoder();
+    const flush = () => {
+      device.queue.submit([encoder.finish()]);
+      encoder = device.createCommandEncoder();
+      return encoder;
+    };
 
     // Pass 1: rect ids.
     renderRectIds(device, encoder, rectId, params, rects, layout.rects.length);
 
     // Pass 2: material surface (normal, height) and structure; colour and scalars come after the wear (pass 3).
-    const tx = { sampleType: 'float' as const };
-    const inputLayout = device.createBindGroupLayout({
-      entries: [
-        { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
-        { binding: 1, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'read-only-storage' } },
-        { binding: 2, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'uint' } },
-        { binding: 3, visibility: GPUShaderStage.COMPUTE, sampler: { type: 'filtering' } },
-        ...[5, 6].map((binding) => ({ binding, visibility: GPUShaderStage.COMPUTE, texture: tx })),
-        { binding: 10, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'uint' } },
-        { binding: 11, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
-      ],
-    });
+    const { inputLayout, surfaceLayout, structureLayout, surface, structure: structurePipeline } = composePipelines(device);
     const t = material.textures;
     const inputs = device.createBindGroup({
       layout: inputLayout,
@@ -272,20 +316,7 @@ export async function composeAtlas(ctx: GpuContext, input: ComposeInput): Promis
         { binding: 11, resource: structure.jointDistM.createView() },
       ],
     });
-    const composeModule = device.createShaderModule({ code: withCommon(composeWgsl) });
-    const surfaceLayout = device.createBindGroupLayout({
-      entries: [
-        storageEntry(1, 'rgba16float'), storageEntry(2, 'r32float'), storageEntry(8, 'r32float'),
-      ],
-    });
-    const structureLayout = device.createBindGroupLayout({
-      entries: [storageEntry(6, 'r32uint'), storageEntry(7, 'r32float')],
-    });
-    const composePass = (entryPoint: string, outLayout: GPUBindGroupLayout, outs: [number, GPUTexture][]) => {
-      const pipeline = device.createComputePipeline({
-        layout: device.createPipelineLayout({ bindGroupLayouts: [inputLayout, outLayout] }),
-        compute: { module: composeModule, entryPoint },
-      });
+    const composePass = (pipeline: GPUComputePipeline, outLayout: GPUBindGroupLayout, outs: [number, GPUTexture][]) => {
       const outGroup = device.createBindGroup({
         layout: outLayout,
         entries: outs.map(([binding, target]) => ({ binding, resource: target.createView() })),
@@ -297,8 +328,9 @@ export async function composeAtlas(ctx: GpuContext, input: ComposeInput): Promis
       pass.dispatchWorkgroups(workgroups(outW), workgroups(outH));
       pass.end();
     };
-    composePass('surface', surfaceLayout, [[1, matNormal], [2, height], [8, macroHeight]]);
-    composePass('structure', structureLayout, [[6, pieceId], [7, jointDistM]]);
+    composePass(surface, surfaceLayout, [[1, matNormal], [2, height], [8, macroHeight]]);
+    composePass(structurePipeline, structureLayout, [[6, pieceId], [7, jointDistM]]);
+    flush();
 
     // Wear: loss, border distance and the height composite. Without wear every pass is skipped; `height` and
     // `macroHeight` stay as composed and loss, border and wearMask stay 1×1 placeholders.
@@ -307,22 +339,28 @@ export async function composeAtlas(ctx: GpuContext, input: ComposeInput): Promis
       wearResources.push(encodeWearLoss(device, encoder, {
         wear, params, rects, rectId, pieceId, jointDistM, loss, mask: input.mask,
       }));
-      wearResources.push(encodeBorder(device, encoder, { loss, rectId, border, bandM: wearUniforms.bandM, metresPerPx }));
+      flush();
+      wearResources.push(encodeBorder(
+        device, encoder, { loss, rectId, border, bandM: wearUniforms.bandM, metresPerPx, bandRows }, flush,
+      ));
+      flush();
       encodeWearComposite(device, encoder, { params, rects, wear, rectId, loss, border, height, macroHeight, wearMask });
+      flush();
     }
 
     // Pass 3: colour composite (substrate, edge tone, height AO, dirt) on the final height, with and without wear.
-    encodeColorComposite(device, encoder, {
+    wearResources.push(encodeColorComposite(device, encoder, {
       params, rects, wear: wearUniforms.buffer, rectId, height, macroHeight, aoOnMacro: material.hasMap.ao, loss, border, wearMask,
       material: t, substrate: sub?.textures, lossRunoffM: wearUniforms.lossRunoffM, metresPerPx,
-      out: { baseColor, roughness, metallic, ao },
-    });
+      out: { baseColor, roughness, metallic, ao }, bandRows,
+    }, flush));
+    flush();
 
     // Pass 4: normal from height combined with the material normal.
-    const normalPipeline = device.createComputePipeline({
+    const normalPipeline = cached(device, 'normalFromHeight', () => device.createComputePipeline({
       layout: 'auto',
       compute: { module: device.createShaderModule({ code: withCommon(normalFromHeightWgsl) }), entryPoint: 'main' },
-    });
+    }));
     const normalGroup = device.createBindGroup({
       layout: normalPipeline.getBindGroupLayout(0),
       entries: [
@@ -342,15 +380,30 @@ export async function composeAtlas(ctx: GpuContext, input: ComposeInput): Promis
     normalPass.end();
 
     device.queue.submit([encoder.finish()]);
+  } catch (e) {
+    for (const o of outputs) o.destroy();
+    params.destroy();
+    rects.destroy();
+    throw e;
   } finally {
-    // The 1×1 fallback and the wear scratch (JFA seeds) are bound only by this submit; free them even if encoding throws.
+    // The 1×1 fallback and the wear scratch (JFA seeds) are bound only by these submits; free them even if encoding
+    // throws.
     ownStructure?.destroy();
     for (const r of wearResources) r.destroy();
     wearUniforms.buffer.destroy();
   }
-  const heightRangeM = await reduceHeightRange(ctx, height);
-  params.destroy();
-  rects.destroy();
+  let heightRangeM: [number, number];
+  try {
+    // A WGSL or layout error would otherwise leave blank maps.
+    await checkPipelines(device);
+    heightRangeM = await reduceHeightRange(ctx, height);
+  } catch (e) {
+    for (const o of outputs) o.destroy();
+    throw e;
+  } finally {
+    params.destroy();
+    rects.destroy();
+  }
   matNormal.destroy();
 
   return {
@@ -366,10 +419,10 @@ export function heightToRgba8(ctx: GpuContext, maps: AtlasMaps): GPUTexture {
   const out = device.createTexture({ size: [height.width, height.height], format: 'rgba8unorm', usage: OUT_USAGE });
   const range = device.createBuffer({ size: 8, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   device.queue.writeBuffer(range, 0, new Float32Array(maps.heightRangeM));
-  const pipeline = device.createComputePipeline({
+  const pipeline = cached(device, 'heightToRgba8', () => device.createComputePipeline({
     layout: 'auto',
     compute: { module: device.createShaderModule({ code: heightToRgba8Wgsl }), entryPoint: 'main' },
-  });
+  }));
   const bindGroup = device.createBindGroup({
     layout: pipeline.getBindGroupLayout(0),
     entries: [

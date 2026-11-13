@@ -1,6 +1,10 @@
 export const es = {
   appName: 'Hotspotter',
   webgpuUnavailable: 'Esta herramienta necesita WebGPU. Ábrela en Chrome o Edge actualizados.',
+  gpuLost: (reason: string, message: string) =>
+    `Se perdió la conexión con la GPU (${reason === 'destroyed' ? 'el dispositivo se cerró' : 'motivo desconocido'}). ` +
+    'Suele pasar por falta de memoria de vídeo o porque el driver reinició la GPU tras un trabajo muy largo; ' +
+    'prueba una resolución menor y recarga la página.' + (message ? ` Detalle: ${message}` : ''),
   topBar: { project: 'Sin proyecto' },
   material: {
     title: 'Material',

@@ -158,6 +158,8 @@ const IMAGE_EXT = /\.(png|jpe?g|webp|bmp)$/i;
 
 /** Shared so a drop before the app-start init finishes waits for the same device. */
 let gpuReady: Promise<GpuContext> | null = null;
+/** Set once the device is lost; it stays the app error (a lost device never comes back). */
+let gpuLostError: string | null = null;
 
 /** Decoded bitmaps of the current material, by file name. */
 let bitmaps = new Map<string, ImageBitmap>();
@@ -421,8 +423,16 @@ export const useProject = create<ProjectState>()((set, get) => ({
 
   async initGpu() {
     try {
-      gpuReady ??= initGpu();
-      set({ gpu: await gpuReady, error: null });
+      if (!gpuReady) {
+        gpuReady = initGpu();
+        // A lost device (out of video memory, a driver reset at 8192) is unusable: say why, in place of a timeout.
+        void gpuReady.then((g) => g.device.lost).then((info) => {
+          console.error('GPU device lost', info.reason, info.message);
+          gpuLostError = es.gpuLost(info.reason, info.message);
+          set({ error: gpuLostError });
+        }, () => undefined);
+      }
+      set({ gpu: await gpuReady, error: gpuLostError });
     } catch (e) {
       set({ error: e instanceof WebGpuUnavailableError ? es.webgpuUnavailable : String(e) });
     }

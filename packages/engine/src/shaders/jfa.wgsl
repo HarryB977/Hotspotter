@@ -8,7 +8,8 @@
 
 struct Jfa {
   step: i32,
-  pad: i32,
+  // First row of this flood dispatch (row bands, wear.ts BAND_ROWS); 0 for the other passes.
+  rowOffset: i32,
   metresPerPx: f32,
   clampM: f32,
 }
@@ -65,7 +66,7 @@ fn seed(@builtin(global_invocation_id) gid: vec3<u32>) {
 @compute @workgroup_size(8, 8)
 fn flood(@builtin(global_invocation_id) gid: vec3<u32>) {
   let dims = vec2<i32>(textureDimensions(seedIn));
-  let p = vec2<i32>(gid.xy);
+  let p = vec2<i32>(gid.xy) + vec2<i32>(0, J.rowOffset);
   if (!inside(p, dims)) { return; }
   var best = textureLoad(seedIn, p, 0).r;
   var bestD = select(dist2(p, best), 0x7fffffff, best == NONE);

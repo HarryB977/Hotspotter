@@ -65,6 +65,16 @@ test('files without a shared prefix take the folder name, and the name is editab
   await expect.poll(() => page.evaluate(() => window.__hs!.store.getState().material?.settings.name)).toBe('mywall');
 });
 
+test('a lost GPU device shows its reason in Spanish instead of hanging', async ({ page }) => {
+  await page.goto('/');
+  await page.waitForFunction(() => !!window.__hs?.store.getState().gpu);
+  await page.evaluate(() => window.__hs!.store.getState().gpu!.device.destroy());
+  await expect(page.getByTestId('webgpu-error')).toContainText('Se perdió la conexión con la GPU (el dispositivo se cerró)');
+  // A later initGpu (every import calls it) keeps the error.
+  await page.evaluate(() => window.__hs!.store.getState().initGpu());
+  await expect(page.getByTestId('webgpu-error')).toContainText('Se perdió la conexión con la GPU');
+});
+
 test('a settings change during an in-flight import does not strand the import', async ({ page }) => {
   await page.goto('/');
   await page.waitForFunction(() => !!window.__hs);

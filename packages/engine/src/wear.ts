@@ -4,6 +4,7 @@ import {
   NO_DIRT, WEAR_BYTES, WEAR_F_BANDM, WEAR_F_RUNOFF, WEAR_F_RUNOFF_LENGTH, WEAR_U_LOSES, packNoWear, packWear, withCommon,
 } from './params';
 import type { WearExtra } from './params';
+import { cached } from './pipelines';
 import wearLossWgsl from './shaders/wearLoss.wgsl?raw';
 import jfaWgsl from './shaders/jfa.wgsl?raw';
 import wearCompositeWgsl from './shaders/wearComposite.wgsl?raw';
@@ -49,6 +50,12 @@ export interface WearLossInput {
   loss: GPUTexture;
 }
 
+/** Rows per banded dispatch (colour composite, JFA flood steps): short GPU jobs keep clear of the Windows TDR at 8192. */
+export const BAND_ROWS = 1024;
+
+/** Called between pass groups: submits the current encoder and returns a fresh one. */
+export type Flush = () => GPUCommandEncoder;
+
 function dispatch(encoder: GPUCommandEncoder, pipeline: GPUComputePipeline, group: GPUBindGroup, w: number, h: number): void {
   const pass = encoder.beginComputePass();
   pass.setPipeline(pipeline);
@@ -64,10 +71,10 @@ function dispatch(encoder: GPUCommandEncoder, pipeline: GPUComputePipeline, grou
 export function encodeWearLoss(device: GPUDevice, encoder: GPUCommandEncoder, input: WearLossInput): { destroy(): void } {
   // The binding needs a texture even when no mask is used.
   const ownMask = input.mask ? null : device.createTexture({ size: [1, 1], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING });
-  const pipeline = device.createComputePipeline({
+  const pipeline = cached(device, 'wearLoss', () => device.createComputePipeline({
     layout: 'auto',
     compute: { module: device.createShaderModule({ code: withCommon(wearLossWgsl) }), entryPoint: 'main' },
-  });
+  }));
   const group = device.createBindGroup({
     layout: pipeline.getBindGroupLayout(0),
     entries: [
@@ -107,9 +114,15 @@ export interface BorderInput {
   border: GPUTexture;
   bandM: number;
   metresPerPx: number;
+  /** Rows per flood dispatch (BAND_ROWS by default, rounded up to a multiple of 8). */
+  bandRows?: number;
 }
 
 const JFA_SLOT = 256;
+
+function roundBand(rows: number | undefined): number {
+  return Math.max(8, Math.ceil((rows ?? BAND_ROWS) / 8) * 8);
+}
 
 function nextPow2(n: number): number {
   return 2 ** Math.ceil(Math.log2(Math.max(1, n)));
@@ -118,9 +131,12 @@ function nextPow2(n: number): number {
 /**
  * Encodes the border pass: jump flooding from the loss contour. The border is clamped to ±4 · bandM, so the flood
  * starts at the step that covers that range instead of half the texture. The two seed textures are r32uint
- * (half-pixel x | y << 16), half the memory of rg32sint. Destroy the returned resources right after submitting.
+ * (half-pixel x | y << 16), half the memory of rg32sint. Each flood step runs in row bands; with `flush` every step
+ * goes in its own submit. Destroy the returned resources right after the last submit.
  */
-export function encodeBorder(device: GPUDevice, encoder: GPUCommandEncoder, input: BorderInput): { destroy(): void } {
+export function encodeBorder(
+  device: GPUDevice, encoder: GPUCommandEncoder, input: BorderInput, flush?: Flush,
+): { destroy(): void } {
   const { width: w, height: h } = input.loss;
   // Seeds pack half-pixel coordinates (up to 2 · size) in 16 bits each.
   if (Math.max(w, h) > 32767) throw new Error(`encodeBorder: ${w}×${h} exceeds 32767 px`);
@@ -132,23 +148,32 @@ export function encodeBorder(device: GPUDevice, encoder: GPUCommandEncoder, inpu
   for (let s = first; s >= 1; s /= 2) steps.push(s);
   steps.push(1);
 
-  const slots = steps.length + 1;
+  const bandRows = roundBand(input.bandRows);
+  const bands = Math.ceil(h / bandRows);
+  // One slot per (step, band) with its row offset, then the resolve slot.
+  const slots = steps.length * bands + 1;
   const uniforms = device.createBuffer({ size: slots * JFA_SLOT, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   const data = new ArrayBuffer(slots * JFA_SLOT);
-  [...steps, 0].forEach((step, i) => {
-    new Int32Array(data, i * JFA_SLOT, 2).set([step, 0]);
+  const writeSlot = (i: number, step: number, rowOffset: number) => {
+    new Int32Array(data, i * JFA_SLOT, 2).set([step, rowOffset]);
     new Float32Array(data, i * JFA_SLOT + 8, 2).set([input.metresPerPx, clampM]);
+  };
+  steps.forEach((step, i) => {
+    for (let b = 0; b < bands; b++) writeSlot(i * bands + b, step, b * bandRows);
   });
+  writeSlot(slots - 1, 0, 0);
   device.queue.writeBuffer(uniforms, 0, data);
   const slot = (i: number): GPUBindingResource => ({ buffer: uniforms, offset: i * JFA_SLOT, size: 16 });
 
   const seedUsage = GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING;
   const seeds = [0, 1].map(() => device.createTexture({ size: [w, h], format: 'r32uint', usage: seedUsage }));
-  const module = device.createShaderModule({ code: jfaWgsl });
-  const pipeline = (entryPoint: string) => device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint } });
+  const module = cached(device, 'jfa.module', () => device.createShaderModule({ code: jfaWgsl }));
+  const pipeline = (entryPoint: string) =>
+    cached(device, `jfa.${entryPoint}`, () => device.createComputePipeline({ layout: 'auto', compute: { module, entryPoint } }));
 
+  let enc = encoder;
   const seedPipeline = pipeline('seed');
-  dispatch(encoder, seedPipeline, device.createBindGroup({
+  dispatch(enc, seedPipeline, device.createBindGroup({
     layout: seedPipeline.getBindGroupLayout(0),
     entries: [
       { binding: 1, resource: input.loss.createView() },
@@ -160,22 +185,26 @@ export function encodeBorder(device: GPUDevice, encoder: GPUCommandEncoder, inpu
   const floodPipeline = pipeline('flood');
   let cur = 0;
   steps.forEach((_, i) => {
-    dispatch(encoder, floodPipeline, device.createBindGroup({
-      layout: floodPipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: slot(i) },
-        { binding: 2, resource: seeds[cur].createView() },
-        { binding: 3, resource: seeds[1 - cur].createView() },
-      ],
-    }), w, h);
+    if (flush) enc = flush();
+    for (let b = 0; b < bands; b++) {
+      dispatch(enc, floodPipeline, device.createBindGroup({
+        layout: floodPipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: slot(i * bands + b) },
+          { binding: 2, resource: seeds[cur].createView() },
+          { binding: 3, resource: seeds[1 - cur].createView() },
+        ],
+      }), w, Math.min(bandRows, h - b * bandRows));
+    }
     cur = 1 - cur;
   });
+  if (flush) enc = flush();
 
   const resolvePipeline = pipeline('resolve');
-  dispatch(encoder, resolvePipeline, device.createBindGroup({
+  dispatch(enc, resolvePipeline, device.createBindGroup({
     layout: resolvePipeline.getBindGroupLayout(0),
     entries: [
-      { binding: 0, resource: slot(steps.length) },
+      { binding: 0, resource: slot(slots - 1) },
       { binding: 1, resource: input.loss.createView() },
       { binding: 2, resource: seeds[cur].createView() },
       { binding: 4, resource: input.border.createView() },
@@ -207,14 +236,14 @@ export interface WearCompositeInput {
 
 /** Encodes the wear height composite: final height, final macro height and wearMask (wearComposite.wgsl). */
 export function encodeWearComposite(device: GPUDevice, encoder: GPUCommandEncoder, input: WearCompositeInput): void {
-  const pipeline = device.createComputePipeline({
+  const pipeline = cached(device, 'wearComposite', () => device.createComputePipeline({
     layout: 'auto',
     compute: {
       module: device.createShaderModule({ code: withCommon(wearCompositeWgsl) }),
       entryPoint: 'main',
       constants: { MIN_BAND_M },
     },
-  });
+  }));
   const group = device.createBindGroup({
     layout: pipeline.getBindGroupLayout(0),
     entries: [
@@ -262,43 +291,58 @@ export interface ColorCompositeInput {
   metresPerPx: number;
   /** rgba8unorm targets. */
   out: ColorMaps;
+  /** Rows per dispatch (BAND_ROWS by default), rounded down to whole chunks. */
+  bandRows?: number;
 }
+
+const BAND_SLOT = 256;
 
 /**
  * Encodes the colour composite (colorComposite.wgsl): final baseColor, roughness, metallic and AO. Each invocation
  * walks a chunk of one column top to bottom, so it knows the latest loss above it; chunks are half the runoff reach
  * (32 to 128 rows) and first walk that reach above themselves, reading only rect id and loss, so a tall atlas still
- * splits into many invocations.
+ * splits into many invocations. The heaviest pass: it runs in bands of whole chunks (about BAND_ROWS rows), each in its
+ * own submit when `flush` is given. Destroy the returned resources after the last submit.
  */
-export function encodeColorComposite(device: GPUDevice, encoder: GPUCommandEncoder, input: ColorCompositeInput): void {
+export function encodeColorComposite(
+  device: GPUDevice, encoder: GPUCommandEncoder, input: ColorCompositeInput, flush?: Flush,
+): { destroy(): void } {
   const { width: w, height: h } = input.height;
   const lookback = input.lossRunoffM > 0 ? Math.ceil(input.lossRunoffM / input.metresPerPx) : 0;
   // Half the reach, kept to 32..128 rows: short chunks re-walk too much, long ones leave the GPU idle (R33).
   const chunk = lookback > 0 ? Math.min(128, Math.max(32, Math.ceil(lookback / 2))) : 8;
-  const pipeline = device.createComputePipeline({
+  const ao = input.aoOnMacro ? 1 : 0;
+  const pipeline = cached(device, `colorComposite:${chunk}:${lookback}:${ao}`, () => device.createComputePipeline({
     layout: 'auto',
     compute: {
-      module: device.createShaderModule({ code: withCommon(colorCompositeWgsl) }),
+      module: cached(device, 'colorComposite.module', () =>
+        device.createShaderModule({ code: withCommon(colorCompositeWgsl) })),
       entryPoint: 'main',
-      constants: { MIN_BAND_M, CHUNK_ROWS: chunk, LOOKBACK_ROWS: lookback, AO_ON_MACRO: input.aoOnMacro ? 1 : 0 },
+      constants: { MIN_BAND_M, CHUNK_ROWS: chunk, LOOKBACK_ROWS: lookback, AO_ON_MACRO: ao },
     },
-  });
+  }));
+  const chunks = Math.ceil(h / chunk);
+  const perBand = Math.max(1, Math.floor((input.bandRows ?? BAND_ROWS) / chunk));
+  const bands = Math.ceil(chunks / perBand);
+  // One uniform slot per band: its first chunk (bandOffset.x in colorComposite.wgsl).
+  const offsets = device.createBuffer({ size: bands * BAND_SLOT, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+  const offsetData = new Uint32Array((bands * BAND_SLOT) / 4);
+  for (let b = 0; b < bands; b++) offsetData[(b * BAND_SLOT) / 4] = b * perBand;
+  device.queue.writeBuffer(offsets, 0, offsetData);
   const sub = input.substrate ?? input.material;
   const maps = (base: number, m: ColorMaps) => [m.baseColor, m.roughness, m.metallic, m.ao].map((t, i) => ({
     binding: base + i, resource: t.createView(),
   }));
-  const group = device.createBindGroup({
+  const sampler = device.createSampler({
+    addressModeU: 'repeat', addressModeV: 'repeat', magFilter: 'linear', minFilter: 'linear',
+  });
+  const group = (b: number) => device.createBindGroup({
     layout: pipeline.getBindGroupLayout(0),
     entries: [
       { binding: 0, resource: { buffer: input.params } },
       { binding: 1, resource: { buffer: input.rects } },
       { binding: 2, resource: input.rectId.createView() },
-      {
-        binding: 3,
-        resource: device.createSampler({
-          addressModeU: 'repeat', addressModeV: 'repeat', magFilter: 'linear', minFilter: 'linear',
-        }),
-      },
+      { binding: 3, resource: sampler },
       { binding: 4, resource: { buffer: input.wear } },
       { binding: 5, resource: input.height.createView() },
       { binding: 6, resource: input.loss.createView() },
@@ -308,11 +352,21 @@ export function encodeColorComposite(device: GPUDevice, encoder: GPUCommandEncod
       ...maps(13, sub),
       ...maps(17, input.out),
       { binding: 21, resource: input.macroHeight.createView() },
+      { binding: 22, resource: { buffer: offsets, offset: b * BAND_SLOT, size: 16 } },
     ],
   });
-  const pass = encoder.beginComputePass();
-  pass.setPipeline(pipeline);
-  pass.setBindGroup(0, group);
-  pass.dispatchWorkgroups(Math.ceil(w / 64), Math.ceil(h / chunk));
-  pass.end();
+  let enc = encoder;
+  for (let b = 0; b < bands; b++) {
+    if (flush && b > 0) enc = flush();
+    const pass = enc.beginComputePass();
+    pass.setPipeline(pipeline);
+    pass.setBindGroup(0, group(b));
+    pass.dispatchWorkgroups(Math.ceil(w / 64), Math.min(perBand, chunks - b * perBand));
+    pass.end();
+  }
+  return {
+    destroy() {
+      offsets.destroy();
+    },
+  };
 }

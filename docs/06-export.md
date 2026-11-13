@@ -52,6 +52,14 @@ Formatos adicionales opcionales:
 - **HarryTools ProBuilder Extensions**: un `.json` que un pequeño importador del lado de Unity pueda convertir en `HotspotLayout` (World Width, patches con Allow Rotation, Allow Mirror X/Y, Allow Tiling, Inset). El importador de Unity queda fuera de este repo; no se toca la herramienta existente.
 - **Blender**: el JSON propio. Un addon de Blender queda fuera del alcance de v1.
 
+## Exportar a 8192
+
+- El dispositivo se pide con el `maxBufferSize` que ofrece el adaptador (2 GiB en una RTX 3060). Con el límite por defecto (256 MiB), Dawn pierde el dispositivo al limpiar una textura rgba16float de 8192² (512 MiB de staging).
+- El compose va en varios `queue.submit`, uno por grupo de pasadas. La pasada de color y cada paso del JFA van en bandas de unas 1024 filas, cada una en su propio submit, para que ningún trabajo de GPU dure lo bastante como para que Windows reinicie el driver (TDR). La salida no depende de las bandas: un test la compara byte a byte.
+- Si se pierde la GPU, la app muestra el motivo y el mensaje del driver en lugar de quedarse esperando.
+- Los pipelines se crean una vez por dispositivo dentro de un `pushErrorScope('validation')`: un error de WGSL sale como error del compose, no como mapas en blanco.
+- Prueba manual: `HS_PROBE_8K=1 npx playwright test e2e/probe8k.spec.ts` (en `apps/web`) exporta bricks wall 13 a 8192 y dice cómo acaba.
+
 ## Carpeta de salida
 
 La elige el usuario y se recuerda por proyecto. Al volver a exportar se sobrescriben los mismos nombres de archivo, para que los motores mantengan las referencias. También se puede exportar todo en un `.zip`.

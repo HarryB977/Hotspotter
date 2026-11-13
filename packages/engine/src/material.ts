@@ -1,6 +1,7 @@
 import { MAP_DEFAULTS } from '@hotspotter/core';
 import type { MapKind, MaterialSettings } from '@hotspotter/core';
 import type { GpuContext } from './gpu';
+import { cached } from './pipelines';
 import { createConstTexture, uploadRgba8 } from './textures';
 import flipGreenWgsl from './shaders/flipGreen.wgsl?raw';
 
@@ -45,10 +46,10 @@ function flipGreen(ctx: GpuContext, src: GPUTexture): GPUTexture {
     format: 'rgba8unorm',
     usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC,
   });
-  const pipeline = device.createComputePipeline({
+  const pipeline = cached(device, 'flipGreen', () => device.createComputePipeline({
     layout: 'auto',
     compute: { module: device.createShaderModule({ code: flipGreenWgsl }), entryPoint: 'main' },
-  });
+  }));
   const bindGroup = device.createBindGroup({
     layout: pipeline.getBindGroupLayout(0),
     entries: [
