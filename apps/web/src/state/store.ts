@@ -8,7 +8,7 @@ import type {
   NodeType, ProjectDoc, ProportionIssue, RectPlacement, StructureResult,
 } from '@hotspotter/core';
 import {
-  composeAtlas, hasMapFromFiles, initGpu, readbackR32, readbackRgba8, uploadMaterial, uploadRgba8, uploadStructure,
+  composeAtlas, hasMapFromFiles, initGpu, readbackR32, readbackRgba16f, readbackRgba8, uploadMaterial, uploadRgba8, uploadStructure,
   WebGpuUnavailableError,
 } from '@hotspotter/engine';
 import type { AtlasMaps, ComposeInput, GpuContext, GpuMaterial, GpuStructure, LoadedMaterial } from '@hotspotter/engine';
@@ -769,7 +769,7 @@ export const useProject = create<ProjectState>()((set, get) => ({
 function destroyMaps(m: AtlasMaps): void {
   for (const t of [
     m.baseColor, m.normal, m.height, m.macroHeight, m.roughness, m.metallic, m.ao, m.rectId, m.pieceId, m.jointDistM,
-    m.loss, m.border, m.wearMask,
+    m.loss, m.border, m.wearMask, ...(m.matNormal ? [m.matNormal] : []),
   ]) {
     t.destroy();
   }
@@ -829,9 +829,11 @@ async function recompose(): Promise<void> {
     const t0 = performance.now();
     // composeAtlas binds every texture (structure, mask, substrate) before its first await, so a later replacement
     // may destroy them.
-    maps = await composeAtlas(
-      gpu, composeInputFor({ doc, gpuMaterial, structure, mask, substrate }, { layout, placements }, previewRes),
-    );
+    // The preview keeps matNormal so a 2048 preview can stand in for the evaluation (R41 normal check).
+    maps = await composeAtlas(gpu, {
+      ...composeInputFor({ doc, gpuMaterial, structure, mask, substrate }, { layout, placements }, previewRes),
+      keepMatNormal: true,
+    });
     await gpu.device.queue.onSubmittedWorkDone();
     const gpuMs = performance.now() - t0;
     if (mine !== composeGen) {
@@ -962,7 +964,9 @@ async function evaluate(mine: number, opts?: EvaluationOptions): Promise<CheckRe
     }
     const maps = current
       ? atlas.maps
-      : await composeAtlas(gpu, composeInputFor({ doc, gpuMaterial, structure, mask, substrate }, inputs, EVAL_RES));
+      : await composeAtlas(gpu, {
+        ...composeInputFor({ doc, gpuMaterial, structure, mask, substrate }, inputs, EVAL_RES), keepMatNormal: true,
+      });
     // Every copy is submitted before the first await, so the maps may be destroyed (ours right below, the preview's
     // by a recomposition) while the reads are in flight.
     let reads;
@@ -971,6 +975,9 @@ async function evaluate(mine: number, opts?: EvaluationOptions): Promise<CheckRe
         readbackR32(gpu, maps.rectId),
         readbackR32(gpu, maps.macroHeight),
         readbackR32(gpu, maps.height),
+        maps.matNormal
+          ? readbackRgba16f(gpu, maps.matNormal)
+          : Promise.reject(new Error('evaluation maps lack matNormal')),
         readbackRgba8(gpu, maps.normal),
         readbackRgba8(gpu, maps.wearMask),
         joints && compareSubstrate ? substrateMean(gpu, substrate.gpu) : null,
@@ -978,14 +985,14 @@ async function evaluate(mine: number, opts?: EvaluationOptions): Promise<CheckRe
     } finally {
       if (!current) destroyMaps(maps);
     }
-    const [rectId, macro, total, normal, wearRgba, subMean] = await reads;
+    const [rectId, macro, total, matNormal, normal, wearRgba, subMean] = await reads;
     const { width, height } = rectId;
     // The grey wearMask's red channel; a 1 × 1 placeholder (wear off) stays 1 byte long.
     const wearMask = new Uint8Array(wearRgba.data.length / 4);
     for (let i = 0; i < wearMask.length; i++) wearMask[i] = wearRgba.data[i * 4];
     const maps8 = {
       width, height, rectId: rectId.data as Uint32Array, wearMask, macroHeight: macro.data as Float32Array,
-      heightM: total.data as Float32Array,
+      heightM: total.data as Float32Array, matNormal: matNormal.data,
       normal: normal.data,
     };
     const output = doc.nodes.find((n): n is DocNode<'output'> => n.type === 'output');

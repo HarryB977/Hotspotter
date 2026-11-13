@@ -7,13 +7,14 @@ export const MAX_AGAINST = 0.005;
 const MAX_POINTS = 32;
 
 /**
- * Normal coherence (R40): Sobel on the macro height and on the material's own relief (final height − macro height),
- * y up as normalFromHeight.wgsl. Only pixels where the macro slope exceeds 0.2 AND beats the material relief slope
- * count: there the final normal must satisfy dot(n.xy, −grad macro) ≥ 0. Where the material relief is steeper, the
+ * Normal coherence (R40, R41): Sobel on the macro height and on the material's own relief (final height − macro
+ * height), y up as normalFromHeight.wgsl. The material slope is the larger of that relief's and the detail normal's
+ * (|n_mat.xy| / n_mat.z, from matNormal): a normal map can carry much more relief than its height map. Only pixels
+ * where the macro slope exceeds 0.2 AND beats the material slope count: there the final normal must satisfy dot(n.xy, −grad macro) ≥ 0. Where the material relief is steeper, the
  * normal rightly follows the material and is not judged. More than 0.5 % of the counted pixels failing is an error.
  */
 export function checkNormal(ctx: CheckContext): CheckResult {
-  const { width: w, height: h, macroHeight, heightM, normal, rectId } = ctx.maps;
+  const { width: w, height: h, macroHeight, heightM, matNormal, normal, rectId } = ctx.maps;
   const mpp = ctx.layout.worldWidthM / w;
   const at = (x: number, y: number) => Math.min(h - 1, Math.max(0, y)) * w + Math.min(w - 1, Math.max(0, x));
   /** Sobel gradient (m/m, y up) of `f` at (x, y). */
@@ -33,10 +34,12 @@ export function checkNormal(ctx: CheckContext): CheckResult {
       const [gx, gy] = grad(macro, x, y);
       const g = Math.hypot(gx, gy);
       if (g <= STEEP_SLOPE) continue;
-      const [rx, ry] = grad(relief, x, y);
-      if (g <= Math.hypot(rx, ry)) continue;
-      steep++;
       const i = y * w + x;
+      const [rx, ry] = grad(relief, x, y);
+      const mz = Math.max(matNormal[i * 4 + 2], 1e-3);
+      const matSlope = Math.max(Math.hypot(rx, ry), Math.hypot(matNormal[i * 4], matNormal[i * 4 + 1]) / mz);
+      if (g <= matSlope) continue;
+      steep++;
       const nx = (normal[i * 4] / 255) * 2 - 1, ny = (normal[i * 4 + 1] / 255) * 2 - 1;
       if (nx * -gx + ny * -gy >= 0) continue;
       against++;

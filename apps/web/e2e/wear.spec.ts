@@ -68,6 +68,8 @@ interface WearProbe {
   /** Final height and macro height, metres. */
   height: Float32Array;
   macroHeight: Float32Array;
+  /** RGBA f32 material detail normal in atlas space (matNormal, R41). */
+  matNormal: Float32Array;
   /** RGBA8 final normal (GL). */
   normal: Uint8Array;
   /** Signed metres to the loss contour (negative inside), or null when it is a 1 × 1 placeholder. */
@@ -240,7 +242,7 @@ test.beforeEach(async ({ page }) => {
           layout, material: gpuMaterial, placements, resolutionPx, structure: gpuStructure,
           wear: wearParams, mask: maskTex, grainAxis, substrateMaterial,
           dirt: dirt ? { ...core.DEFAULT_DIRT, ...dirt } : undefined,
-          bandRows,
+          bandRows, keepMatNormal: true,
         } as import('@hotspotter/engine').ComposeInput);
         const packed = new Uint32Array(await readTexels(ctx, maps.loss, 4));
         const loss = new Float32Array(packed.length * 2);
@@ -257,6 +259,8 @@ test.beforeEach(async ({ page }) => {
         const jointDistBytes = await readTexels(ctx, maps.jointDistM, 4);
         const jointDistM = new Float32Array(jointDistBytes);
         const heightBytes = await readTexels(ctx, maps.height, 4);
+        const matNormal = new Float32Array(Array.from(new Uint16Array(await readTexels(ctx, maps.matNormal!, 8)), halfToFloat));
+        maps.matNormal!.destroy();
         const normalBytes = await readTexels(ctx, maps.normal, 4);
         const bytes = {
           baseColor: new Uint8Array(await readTexels(ctx, maps.baseColor, 4)),
@@ -297,7 +301,7 @@ test.beforeEach(async ({ page }) => {
         maskTex?.destroy();
         return {
           w, h, lossSize, loss, rectId, jointDistM, rects, refScale, ppm, halfGroovePx, grooveWidthM: groove.widthM,
-          height: new Float32Array(heightBytes), macroHeight, normal: new Uint8Array(normalBytes), border, wearMask,
+          height: new Float32Array(heightBytes), macroHeight, matNormal, normal: new Uint8Array(normalBytes), border, wearMask,
           borderSize, wearMaskSize, bytes, heightRangeM: maps.heightRangeM, floorMarker,
           originM: placements.map((p) => p.originM), rotate90: placements.map((p) => p.rotate90),
           structureType: analysis ? analysis.type : null, jointFraction: analysis ? analysis.jointFraction : 0,
@@ -857,8 +861,10 @@ test('normals follow the macro height and the detail normal fades inside the los
     const { w, h, mpp } = m;
     const at = (x: number, y: number) => Math.min(h - 1, Math.max(0, y)) * w + Math.min(w - 1, Math.max(0, x));
     const H = (x: number, y: number) => m.macroHeight[at(x, y)];
-    // The material's own relief (final − macro height), for the R40 dominance rule of the normal check.
+    // The material's own relief (final − macro height) and its detail normal, for the R40/R41 dominance rule.
     const R = (x: number, y: number) => m.height[at(x, y)] - m.macroHeight[at(x, y)];
+    const detailSlope = (i: number) =>
+      Math.hypot(m.matNormal[i * 4], m.matNormal[i * 4 + 1]) / Math.max(m.matNormal[i * 4 + 2], 1e-3);
     let steep = 0, against = 0, againstFlipped = 0;
     let inSum = 0, inN = 0, outSum = 0, outN = 0;
     for (let y = 0; y < h; y++) {
@@ -871,8 +877,9 @@ test('normals follow the macro height and the detail normal fades inside the los
         const rx = ((R(x + 1, y - 1) + 2 * R(x + 1, y) + R(x + 1, y + 1)) - (R(x - 1, y - 1) + 2 * R(x - 1, y) + R(x - 1, y + 1))) / (8 * mpp);
         const ry = -((R(x - 1, y + 1) + 2 * R(x, y + 1) + R(x + 1, y + 1)) - (R(x - 1, y - 1) + 2 * R(x, y - 1) + R(x + 1, y - 1))) / (8 * mpp);
         const n = [0, 1, 2].map((c) => (m.normal[i * 4 + c] / 255) * 2 - 1);
-        // R40: only where the macro slope is steep and beats the material relief.
-        if (Math.hypot(gx, gy) > 0.2 && Math.hypot(gx, gy) > Math.hypot(rx, ry)) {
+        // R40/R41: only where the macro slope is steep and beats the material slope (height relief or detail normal).
+        const matSlope = Math.max(Math.hypot(rx, ry), detailSlope(i));
+        if (Math.hypot(gx, gy) > 0.2 && Math.hypot(gx, gy) > matSlope) {
           steep++;
           if (n[0] * -gx + n[1] * -gy < 0) against++;
           // A normal with inverted xy must fail on (almost) every counted pixel: the rule still discriminates.

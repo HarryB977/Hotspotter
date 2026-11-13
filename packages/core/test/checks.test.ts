@@ -30,6 +30,7 @@ function flatMaps(n: number): EvalMaps {
   return {
     width: n, height: n, rectId: new Uint32Array(n * n).fill(1), wearMask: new Uint8Array(n * n),
     macroHeight: new Float32Array(n * n), heightM: new Float32Array(n * n), normal,
+    matNormal: new Float32Array(n * n * 4).map((_, i) => (i % 4 === 2 ? 1 : 0)),
   };
 }
 
@@ -184,6 +185,31 @@ describe('runChecks', () => {
     // The macro slope dominates (material relief 0.1) and the normal is inverted: still an error.
     expect(get(runChecks(ctxWith(build(0.1, 1))), 'normal').status).toBe('error');
     // Same with the correct normal: ok.
+    expect(get(runChecks(ctxWith(build(0.1, -1))), 'normal').status).toBe('ok');
+  });
+
+  it('normal (R41) also takes the material relief from the detail normal', () => {
+    const n = 128;
+    const mpp = 1 / n;
+    /** Macro slope 0.5 towards +x, flat height relief; detail normal of slope `matSlope` towards +x (height falls). */
+    const build = (matSlope: number, nxSign: number) => {
+      const m = flatMaps(n);
+      const len = Math.hypot(0.5, 1);
+      for (let i = 0; i < n * n; i++) {
+        const x = i % n;
+        m.macroHeight[i] = 0.5 * x * mpp;
+        m.heightM[i] = m.macroHeight[i];
+        // Unnormalised on purpose: the check uses |n.xy| / n.z.
+        m.matNormal.set([matSlope, 0, 1, 0], i * 4);
+        m.normal[i * 4] = Math.round(((nxSign * 0.5) / len * 0.5 + 0.5) * 255);
+        m.normal[i * 4 + 2] = Math.round(((1 / len) * 0.5 + 0.5) * 255);
+      }
+      return m;
+    };
+    // Relief only in the normal map (slope 1.5, opposing the macro slope): the normal follows it, ok.
+    expect(get(runChecks(ctxWith(build(1.5, 1))), 'normal').status).toBe('ok');
+    // A weak detail normal (0.1): the macro dominates, and an inverted normal is still an error.
+    expect(get(runChecks(ctxWith(build(0.1, 1))), 'normal').status).toBe('error');
     expect(get(runChecks(ctxWith(build(0.1, -1))), 'normal').status).toBe('ok');
   });
 

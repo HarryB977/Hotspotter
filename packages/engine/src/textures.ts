@@ -23,13 +23,13 @@ export function createConstTexture(ctx: GpuContext, rgba: [number, number, numbe
 }
 
 /**
- * Copies a 4-byte-per-texel texture into a mappable buffer and returns the unpadded bytes. The copy is submitted
+ * Copies a `texelBytes`-per-texel texture into a mappable buffer and returns the unpadded bytes. The copy is submitted
  * before the first await, so the caller may destroy `tex` as soon as this returns its promise.
  */
-async function readback4(ctx: GpuContext, tex: GPUTexture): Promise<Uint8Array> {
+async function readback4(ctx: GpuContext, tex: GPUTexture, texelBytes = 4): Promise<Uint8Array> {
   const { device } = ctx;
   const { width, height } = tex;
-  const rowBytes = width * 4;
+  const rowBytes = width * texelBytes;
   const bytesPerRow = Math.ceil(rowBytes / 256) * 256;
   const buffer = device.createBuffer({
     size: bytesPerRow * height,
@@ -76,6 +76,32 @@ export function readbackR32(
     const data = format === 'r32float'
       ? new Float32Array(b.buffer, b.byteOffset, n)
       : new Uint32Array(b.buffer, b.byteOffset, n);
+    return { width, height, data };
+  });
+}
+
+/** IEEE half (as u16 bits) to number. */
+function halfToFloat(b: number): number {
+  const e = (b >> 10) & 0x1f, f = b & 0x3ff, sign = b & 0x8000 ? -1 : 1;
+  if (e === 0) return sign * f * 2 ** -24;
+  if (e === 31) return f ? NaN : sign * Infinity;
+  return sign * (1 + f / 1024) * 2 ** (e - 15);
+}
+
+/**
+ * Reads back an rgba16float texture as a Float32Array (4 floats per texel, row-major). Like readbackRgba8, the copy is
+ * submitted before the first await.
+ */
+export function readbackRgba16f(
+  ctx: GpuContext,
+  tex: GPUTexture,
+): Promise<{ width: number; height: number; data: Float32Array }> {
+  const { width, height, format } = tex;
+  if (format !== 'rgba16float') return Promise.reject(new Error(`readbackRgba16f: unsupported format ${format}`));
+  return readback4(ctx, tex, 8).then((b) => {
+    const half = new Uint16Array(b.buffer, b.byteOffset, width * height * 4);
+    const data = new Float32Array(half.length);
+    for (let i = 0; i < half.length; i++) data[i] = halfToFloat(half[i]);
     return { width, height, data };
   });
 }

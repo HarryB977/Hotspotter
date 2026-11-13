@@ -57,6 +57,33 @@ test('readbackR32 reads r32float and r32uint row by row and rejects other format
   expect(r).toEqual({ sizes: [70, 3, 70, 3], kinds: [true, true], f: true, u: true, rejected: true });
 });
 
+test('readbackRgba16f decodes rgba16float row by row and rejects other formats', async ({ page }) => {
+  await page.goto('/');
+  await page.waitForFunction(() => !!window.__hs);
+  const r = await page.evaluate(async () => {
+    const hs = window.__hs!;
+    await hs.store.getState().initGpu();
+    const gpu = hs.store.getState().gpu!;
+    // 40 px × 8 B = 320 B per row: padded to 512 in the copy.
+    const w = 40, h = 3;
+    // Halves exactly representable: 0, ±1, 0.5, 1.5, -2, 0.25 … and one subnormal (2^-24).
+    const values = [0, 1, -1, 0.5, 1.5, -2, 0.25, 2 ** -24];
+    const toHalf: Record<number, number> = { 0: 0, 1: 0x3c00, '-1': 0xbc00, 0.5: 0x3800, 1.5: 0x3e00, '-2': 0xc000, 0.25: 0x3400 };
+    toHalf[2 ** -24] = 1;
+    const src = new Float32Array(w * h * 4).map((_, i) => values[i % values.length]);
+    const half = new Uint16Array(src.length).map((_, i) => toHalf[src[i]]);
+    const t = gpu.device.createTexture({ size: [w, h], format: 'rgba16float', usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC });
+    gpu.device.queue.writeTexture({ texture: t }, half, { bytesPerRow: w * 8 }, [w, h]);
+    const out = await hs.engine.readbackRgba16f(gpu, t);
+    t.destroy();
+    const rgba = gpu.device.createTexture({ size: [1, 1], format: 'rgba8unorm', usage: GPUTextureUsage.COPY_SRC });
+    const rejected = await hs.engine.readbackRgba16f(gpu, rgba).then(() => false, () => true);
+    rgba.destroy();
+    return { size: [out.width, out.height], same: Array.from(out.data).every((v, i) => v === src[i]), rejected };
+  });
+  expect(r).toEqual({ size: [40, 3], same: true, rejected: true });
+});
+
 test.describe('with bricks wall 13', () => {
   test.skip(!existsSync(BRICKS), 'samples/pbr/bricks wall 13 not present');
 

@@ -38,6 +38,11 @@ export interface ComposeInput {
    * not depend on it; tests use it to prove that.
    */
   bandRows?: number;
+  /**
+   * Keep the material detail normal (matNormal) as AtlasMaps.matNormal instead of freeing it, for the normal check
+   * (R41). The preview and the evaluation keep it; the export does not. Changes no output.
+   */
+  keepMatNormal?: boolean;
 }
 
 export interface AtlasMaps {
@@ -73,6 +78,11 @@ export interface AtlasMaps {
   border: GPUTexture;
   /** rgba8unorm grey: the smoothed final loss (smoothstep(0, bandM, −border)), exportable. 1×1 placeholder without wear. */
   wearMask: GPUTexture;
+  /**
+   * rgba16float: the material detail normal in atlas space (xyz decoded, GL, rotation applied; the material default
+   * (0.5, 0.5, 1) decoded, i.e. flat, without a normal map), alpha = f16 groove height. Only with keepMatNormal.
+   */
+  matNormal?: GPUTexture;
   heightRangeM: [number, number];
 }
 
@@ -258,9 +268,11 @@ export async function composeAtlas(ctx: GpuContext, input: ComposeInput): Promis
   const rectId = tex('r32uint', GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_SRC);
   const baseColor = tex('rgba8unorm');
   // RENDER_ATTACHMENT: cleared by a render pass below. As a storage-only texture, Dawn's lazy clear would stage
-  // 8 B/px (512 MiB at 8192²), over the default maxBufferSize (R39).
+  // 8 B/px (512 MiB at 8192²), over the default maxBufferSize (R39). COPY_SRC: the evaluation reads it back (R41).
   const matNormal = tex(
-    'rgba16float', GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT,
+    'rgba16float',
+    GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT |
+      GPUTextureUsage.COPY_SRC,
   );
   const height = tex('r32float');
   const macroHeight = tex('r32float');
@@ -422,11 +434,11 @@ export async function composeAtlas(ctx: GpuContext, input: ComposeInput): Promis
     params.destroy();
     rects.destroy();
   }
-  matNormal.destroy();
+  if (!input.keepMatNormal) matNormal.destroy();
 
   return {
     baseColor, normal, height, macroHeight, roughness, metallic, ao, rectId, pieceId, jointDistM, loss, border, wearMask,
-    heightRangeM,
+    heightRangeM, ...(input.keepMatNormal ? { matNormal } : {}),
   };
 }
 
