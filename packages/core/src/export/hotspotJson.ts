@@ -1,9 +1,20 @@
 import { pxPerMetre, type HotspotLayout, type HotspotRect } from '../layout';
+import type { CheckId, CheckStatus } from '../checks';
+import type { WearFamily } from '../wear/params';
 
-export function toHotspotJson(
-  l: HotspotLayout,
-  meta: { name: string; heightRangeM: [number, number]; maps: string[] },
-): string {
+export interface HotspotJsonMeta {
+  name: string;
+  heightRangeM: [number, number];
+  maps: string[];
+  /** Wear family and seed the maps were composed with. */
+  wear?: { family: WearFamily; seed: number };
+  /** Automatic check statuses at export time (docs/04-wear.md). */
+  checks?: { id: CheckId; status: CheckStatus }[];
+  /** The maps carry downward runoff streaks: allowMirrorY is written false, a vertical flip would run them upward. */
+  runoff?: boolean;
+}
+
+export function toHotspotJson(l: HotspotLayout, meta: HotspotJsonMeta): string {
   const { widthPx: W, heightPx: H } = l;
   const out = {
     version: 1,
@@ -11,6 +22,8 @@ export function toHotspotJson(
     atlas: { widthPx: W, heightPx: H, worldWidthM: l.worldWidthM, pxPerMetre: pxPerMetre(l) },
     heightRangeM: meta.heightRangeM,
     maps: meta.maps,
+    ...(meta.wear ? { wear: { family: meta.wear.family, seed: meta.wear.seed } } : {}),
+    ...(meta.checks ? { checks: meta.checks.map((c) => ({ id: c.id, status: c.status })) } : {}),
     groove: l.groove,
     rects: l.rects.map((r) => ({
       id: r.id,
@@ -19,7 +32,7 @@ export function toHotspotJson(
       uv: { u0: r.x / W, v0: 1 - (r.y + r.h) / H, u1: (r.x + r.w) / W, v1: 1 - r.y / H },
       allowRotation: r.allowRotation,
       allowMirrorX: r.allowMirrorX,
-      allowMirrorY: r.allowMirrorY,
+      allowMirrorY: r.allowMirrorY && !meta.runoff,
       tileU: r.tileU,
       tileV: r.tileV,
       useOn: r.useOn,

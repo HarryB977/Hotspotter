@@ -1,15 +1,24 @@
 import { useState } from 'react';
-import type { ExportPreset } from '@hotspotter/core';
+import type { CheckResult, DocNode, ExportPreset, ProjectDoc } from '@hotspotter/core';
 import { es } from '../i18n/es';
 import { useProject } from '../state/store';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Dialog, DialogContent, DialogTitle, DialogTrigger } from '../components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
+import { CheckRow } from '../panels/ChecksPanel';
 import { ExportUploadError, exportProject } from './encode';
 
 const DIR_KEY = 'hotspotter.exportDir';
 const RESOLUTIONS = [1024, 2048, 4096, 8192];
+
+function outputNode(doc: ProjectDoc | null): DocNode<'output'> | undefined {
+  return doc?.nodes.find((n): n is DocNode<'output'> => n.type === 'output');
+}
+
+function dirtNode(doc: ProjectDoc | null): DocNode<'dirt'> | undefined {
+  return doc?.nodes.find((n): n is DocNode<'dirt'> => n.type === 'dirt');
+}
 
 function loadDir(): string {
   try {
@@ -32,8 +41,14 @@ export function ExportDialog() {
   const [open, setOpen] = useState(false);
   const [dir, setDir] = useState(loadDir);
   const [preset, setPreset] = useState<ExportPreset>('unity-urp');
-  const [res, setRes] = useState(4096);
+  // The output node holds the export resolution: the Checks panel and the export read the same value.
+  const res = useProject((s) => outputNode(s.doc)?.params.resolutionPx ?? 4096);
+  const runoff = useProject((s) => (dirtNode(s.doc)?.params.runoff ?? 0) > 0);
+  const setRes = (r: number) => useProject.getState().updateNode<'output'>('output', { resolutionPx: r });
   const [busy, setBusy] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const [checks, setChecks] = useState<CheckResult[] | null>(null);
+  const [checksFailed, setChecksFailed] = useState(false);
   const [progress, setProgress] = useState<{ index: number; total: number; name: string } | null>(null);
   const [paths, setPaths] = useState<string[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -44,18 +59,28 @@ export function ExportDialog() {
     setError(null);
     setPaths(null);
     setProgress(null);
+    setChecks(null);
+    setChecksFailed(false);
     try {
+      // The checks at the export resolution; warnings never block the export, nor does a failed evaluation.
+      setChecking(true);
+      const results = await useProject.getState().runEvaluation({ exportResolutionPx: res, force: true });
+      setChecking(false);
+      setChecks(results);
+      setChecksFailed(results === null);
       setPaths(
         await exportProject({
           dir,
           preset,
           resolutionPx: res,
+          checks: results ?? undefined,
           onProgress: (index, total, name) => setProgress({ index, total, name }),
         }),
       );
     } catch (e) {
       setError(e instanceof ExportUploadError ? es.export.serverError(e.message) : es.export.failed(String(e)));
     } finally {
+      setChecking(false);
       setBusy(false);
     }
   };
@@ -90,16 +115,30 @@ export function ExportDialog() {
             </div>
             <div className="flex flex-1 flex-col gap-1 text-xs text-zinc-400">
               {es.export.resolution}
-              <Select value={String(res)} onValueChange={(v) => setRes(Number(v))}>
+              <Select value={String(res)} onValueChange={(v) => setRes(Number(v))} disabled={busy}>
                 <SelectTrigger data-testid="export-res"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {RESOLUTIONS.map((r) => <SelectItem key={r} value={String(r)}>{String(r)}</SelectItem>)}
+                  {(RESOLUTIONS.includes(res) ? RESOLUTIONS : [...RESOLUTIONS, res].sort((a, b) => a - b)).map((r) => (
+                    <SelectItem key={r} value={String(r)}>{String(r)}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
           </div>
           {res === 8192 && (
             <div className="text-xs text-amber-400" data-testid="export-warning">{es.export.bigWarning}</div>
+          )}
+          {checking && <div className="text-xs text-zinc-400" data-testid="export-checking">{es.export.checking}</div>}
+          {(checks || checksFailed) && (
+            <div className="flex flex-col text-xs" data-testid="export-checks">
+              <div className="text-zinc-400">{es.export.checksTitle}</div>
+              {checksFailed && <div className="text-amber-400">{es.export.checksFailed}</div>}
+              {checks?.map((r) => <CheckRow key={r.id} r={r} testId="export-check-row" />)}
+              {checks?.some((r) => r.status !== 'ok') && <div className="text-zinc-500">{es.export.checksNote}</div>}
+              {runoff && (
+                <div className="mt-1 text-amber-400" data-testid="export-runoff-warning">{es.export.runoffWarning}</div>
+              )}
+            </div>
           )}
           {progress && busy && (
             <div className="text-xs text-zinc-400">

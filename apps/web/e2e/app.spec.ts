@@ -158,6 +158,8 @@ function decodeRgbaPng(buf: Buffer): { w: number; h: number; data: Buffer } {
 }
 
 test('exports Unity URP maps, hotspot.json and Anvil csv to a folder, and overwrites on re-export', async ({ page }) => {
+  // Import, analysis, the checks and two exports (a known load timeout at the default 30 s).
+  test.setTimeout(120_000);
   await page.goto('/');
   await page.getByTestId('folder-input').setInputFiles(SAMPLE_DIR);
   await expect(page.getByTestId('material-name')).toHaveValue('bricks_wall_13');
@@ -172,14 +174,23 @@ test('exports Unity URP maps, hotspot.json and Anvil csv to a folder, and overwr
   await page.getByRole('option', { name: 'Unity URP' }).click();
   await page.getByTestId('export-res').click();
   await page.getByRole('option', { name: '1024' }).click();
+  // One resolution: the dialog writes the output node, which the Checks panel reads.
+  await expect.poll(() => page.evaluate(() => {
+    const o = window.__hs!.store.getState().doc!.nodes.find((n) => n.type === 'output')!;
+    return (o.params as { resolutionPx: number }).resolutionPx;
+  })).toBe(1024);
 
   const run = async () => {
     await page.getByTestId('export-run').click();
     await expect(page.getByTestId('export-done')).toBeVisible({ timeout: 60_000 });
   };
   await run();
+  // The checks ran at the export resolution before the export, and their warnings did not block it.
+  await expect(page.getByTestId('export-checks').getByTestId('export-check-row')).toHaveCount(6);
+  // Default dirt has runoff: rotating the rects in the engine would turn the streaks.
+  await expect(page.getByTestId('export-runoff-warning')).toBeVisible();
 
-  const names = ['BaseColor', 'Normal', 'MetallicSmoothness', 'Occlusion', 'Height'].map(
+  const names = ['BaseColor', 'Normal', 'MetallicSmoothness', 'Occlusion', 'Height', 'WearMask', 'RectID'].map(
     (k) => `bricks_wall_13_${k}.png`,
   );
   for (const n of names) {
@@ -187,6 +198,14 @@ test('exports Unity URP maps, hotspot.json and Anvil csv to a folder, and overwr
     expect(buf.subarray(1, 4).toString('latin1')).toBe('PNG');
     expect([buf.readUInt32BE(16), buf.readUInt32BE(20)]).toEqual([1024, 1024]);
   }
+  const wm = decodeRgbaPng(readFileSync(join(dir, 'bricks_wall_13_WearMask.png')));
+  // Not uniform: worn and intact pixels (the 6 mm band is under a pixel at 1024, so few grey levels in between).
+  let worn = 0, intact = 0;
+  for (let i = 0; i < wm.data.length; i += 4) {
+    if (wm.data[i] > 128) worn++;
+    else if (wm.data[i] === 0) intact++;
+  }
+  expect(Math.min(worn, intact)).toBeGreaterThan(1000);
   // R must hold metallic untouched where smoothness (A) < 255; compare with a fresh readback of the preview atlas.
   const ms = decodeRgbaPng(readFileSync(join(dir, 'bricks_wall_13_MetallicSmoothness.png')));
   const metalRef = await page.evaluate(async () => {
@@ -217,10 +236,27 @@ test('exports Unity URP maps, hotspot.json and Anvil csv to a folder, and overwr
   // The layout is resolved at the export resolution, so px metadata matches the 1024 maps.
   expect(json.atlas.widthPx).toBe(1024);
   expect(json.maps).toEqual(names);
-  expect(existsSync(join(dir, 'bricks_wall_13.anvil.csv'))).toBe(true);
+  expect(json.wear.family).toBe('brittle');
+  expect(typeof json.wear.seed).toBe('number');
+  expect(json.checks).toHaveLength(6);
+  expect(json.checks.map((c: { id: string }) => c.id)).toEqual(
+    ['coverage', 'islands', 'normal', 'proportions', 'bleed', 'substrate'],
+  );
+  // Runoff on: no vertical mirror in hotspot.json, and Anvil's single mirror flag is off.
+  expect(json.rects.every((r: { allowMirrorY: boolean }) => !r.allowMirrorY)).toBe(true);
+  const csv = readFileSync(join(dir, 'bricks_wall_13.anvil.csv'), 'utf8').split(String.fromCharCode(13, 10));
+  expect(csv.slice(2).every((l) => l.split(',')[6] === 'no')).toBe(true);
+
+  // _RectID: the view's hash colour of each rect at its centre.
+  const ids = decodeRgbaPng(readFileSync(join(dir, 'bricks_wall_13_RectID.png')));
+  const colours = await page.evaluate((n) => Array.from({ length: n + 1 }, (_, i) => window.__hs!.core.rectIdRgb(i)), rectTotal);
+  json.rects.forEach((r: { px: { x: number; y: number; w: number; h: number } }, i: number) => {
+    const o = (Math.floor(r.px.y + r.px.h / 2) * 1024 + Math.floor(r.px.x + r.px.w / 2)) * 4;
+    expect(Array.from(ids.data.subarray(o, o + 4))).toEqual([...colours[i + 1], 255]);
+  });
 
   const listing = readdirSync(dir).sort();
-  expect(listing).toHaveLength(7);
+  expect(listing).toHaveLength(9);
   await run();
   expect(readdirSync(dir).sort()).toEqual(listing);
 });
@@ -621,6 +657,125 @@ test.describe('wear and dirt controls (bricks wall 13)', () => {
     // Without runoff its length has no effect on the strips.
     await setField(page, 'Longitud (cm)', '10');
     expect(await strips()).toEqual(clean);
+  });
+
+  test('the export composes what the preview shows: runoff, a black mask and a second material (R34)', async ({ page }, testInfo) => {
+    test.setTimeout(240_000);
+    // Preview and export at 1024 with the layout resolved at 1024 too: the same compose input, so the same bytes.
+    await page.evaluate(() => window.__hs!.store.getState().updateNode<'output'>('output', { resolutionPx: 1024 }));
+    await settled(page);
+    const fnv = (d: Uint8Array) => {
+      let h = 0x811c9dc5;
+      for (let i = 0; i < d.length; i++) h = Math.imul(h ^ d[i], 0x01000193) >>> 0;
+      return h;
+    };
+    type Rect = { px: { x: number; y: number; w: number; h: number } };
+    let n = 0;
+    const exported = async () => {
+      const dir = testInfo.outputPath(`export-${n++}`);
+      await page.evaluate((d) => window.__hs!.exportProject({ dir: d, preset: 'unity-urp', resolutionPx: 1024 }), dir);
+      const read = (k: string) => decodeRgbaPng(readFileSync(join(dir, `bricks_wall_13_${k}.png`)));
+      const json = JSON.parse(readFileSync(join(dir, 'bricks_wall_13.hotspot.json'), 'utf8'));
+      return { base: read('BaseColor'), wear: read('WearMask'), rects: json.rects as Rect[], ppm: json.atlas.pxPerMetre as number };
+    };
+    const previewHashes = () =>
+      page.evaluate(async () => {
+        const hs = window.__hs!;
+        const s = hs.store.getState();
+        const h = (d: Uint8Array) => {
+          let x = 0x811c9dc5;
+          for (let i = 0; i < d.length; i++) x = Math.imul(x ^ d[i], 0x01000193) >>> 0;
+          return x;
+        };
+        return {
+          base: h((await hs.engine.readbackRgba8(s.gpu!, s.atlas!.maps.baseColor)).data),
+          wear: h((await hs.engine.readbackRgba8(s.gpu!, s.atlas!.maps.wearMask)).data),
+        };
+      });
+    const expectParity = async (e: Awaited<ReturnType<typeof exported>>) => {
+      expect({ base: fnv(e.base.data), wear: fnv(e.wear.data) }).toEqual(await previewHashes());
+    };
+    /** Mean red 1–10 cm below the top edge of every tall enough rect, central half of its width. */
+    const topStrip = (e: Awaited<ReturnType<typeof exported>>) => {
+      let sum = 0, cnt = 0;
+      for (const { px: r } of e.rects) {
+        if (r.h < 0.12 * e.ppm) continue;
+        for (let y = Math.ceil(r.y + 0.01 * e.ppm); y < Math.floor(r.y + 0.1 * e.ppm); y++) {
+          for (let x = Math.ceil(r.x + r.w * 0.25); x < Math.floor(r.x + r.w * 0.75); x++) {
+            sum += e.base.data[(y * e.base.w + x) * 4];
+            cnt++;
+          }
+        }
+      }
+      expect(cnt).toBeGreaterThan(1000);
+      return sum / cnt;
+    };
+    /** Deepest wearMask pixel, in metres from its rect's outer edge. */
+    const maxDepthM = (e: Awaited<ReturnType<typeof exported>>) => {
+      let max = 0;
+      for (const { px: r } of e.rects) {
+        for (let y = r.y; y < r.y + r.h; y++) {
+          for (let x = r.x; x < r.x + r.w; x++) {
+            if (e.wear.data[(y * e.wear.w + x) * 4] === 0) continue;
+            const d = Math.min(x + 0.5 - r.x, r.x + r.w - x - 0.5, y + 0.5 - r.y, r.y + r.h - y - 0.5);
+            max = Math.max(max, d / e.ppm);
+          }
+        }
+      }
+      return max;
+    };
+    /** Mean base colour where the exported wear mask is nearly full. */
+    const lossRgb = (e: Awaited<ReturnType<typeof exported>>) => {
+      const sum = [0, 0, 0];
+      let cnt = 0;
+      for (let i = 0; i < e.wear.data.length; i += 4) {
+        if (e.wear.data[i] < 200) continue;
+        for (let c = 0; c < 3; c++) sum[c] += e.base.data[i + c];
+        cnt++;
+      }
+      expect(cnt).toBeGreaterThan(100);
+      return sum.map((v) => v / cnt);
+    };
+
+    // Runoff: the exported top strips darken.
+    await setField(page, 'Escorrentía', '1');
+    const runoff = await exported();
+    await expectParity(runoff);
+    await setField(page, 'Escorrentía', '0');
+    const clean = await exported();
+    expect(topStrip(clean)).toBeGreaterThan(topStrip(runoff) + 2);
+
+    // Black mask: nothing is lost beyond the rim in the exported wear mask.
+    await setField(page, 'Intensidad', '1');
+    const unmasked = await exported();
+    mkdirSync(testInfo.outputPath(), { recursive: true });
+    const png = testInfo.outputPath('black-mask.png');
+    writeFileSync(png, greyPng(64, 64, 0));
+    await page.getByTestId('wear-mask-input').setInputFiles(png);
+    await expect(page.getByTestId('wear-mask-name')).toHaveText('black-mask.png');
+    await settled(page);
+    const masked = await exported();
+    await expectParity(masked);
+    // Rim: half the groove floor (6 mm) + 1.6 · minEdgeM (4 mm), plus 1.5 px of filtering.
+    const bound = 0.003 + 1.6 * 0.004 + 1.5 / masked.ppm;
+    expect(maxDepthM(unmasked)).toBeGreaterThan(bound);
+    expect(maxDepthM(masked)).toBeGreaterThan(0);
+    expect(maxDepthM(masked)).toBeLessThanOrEqual(bound);
+    await page.getByTestId('wear-mask-clear').click();
+    await settled(page);
+
+    // Second material: the exported loss colour changes.
+    await page.getByTestId('substrate-source').click();
+    await page.getByRole('option', { name: 'Segundo material' }).click();
+    await settled(page);
+    const interior = await exported();
+    await page.getByTestId('substrate-input').setInputFiles(readdirSync(CONCRETE_DIR).map((f) => join(CONCRETE_DIR, f)));
+    await expect(page.getByTestId('substrate-name')).toHaveText('concrete_wall_01');
+    await settled(page);
+    const second = await exported();
+    await expectParity(second);
+    const a = lossRgb(interior), b = lossRgb(second);
+    expect(Math.max(...a.map((v, c) => Math.abs(v - b[c])))).toBeGreaterThan(8);
   });
 
   test('the Desgaste tab shows the wear mask', async ({ page }) => {

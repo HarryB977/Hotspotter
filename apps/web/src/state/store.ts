@@ -113,9 +113,10 @@ export interface ProjectState {
    * and runs the automatic checks. Never runs concurrently with itself: requests queue, and a queued request that a
    * newer one supersedes is skipped (resolves null). The results are stored only if no newer request or
    * recomposition came meanwhile, and are returned to the caller either way. `exportResolutionPx` defaults to the
-   * output node's.
+   * output node's. `force` runs the request even if a newer one supersedes it (export needs a result, not a skip); it
+   * still resolves null if the evaluation fails.
    */
-  runEvaluation(opts?: { exportResolutionPx?: number }): Promise<CheckResult[] | null>;
+  runEvaluation(opts?: EvaluationOptions): Promise<CheckResult[] | null>;
   setPreviewRes(r: PreviewRes): void;
   setActiveMap(m: ActiveMap): void;
   /** Shallow-merges params into a node. */
@@ -789,8 +790,8 @@ async function runCompose(): Promise<void> {
   }
 }
 
-/** Compose input for the current state at `resolutionPx`: preview and evaluation compose the same atlas. */
-function composeInputFor(
+/** Compose input for the current state at `resolutionPx`: preview, evaluation and export compose the same atlas. */
+export function composeInputFor(
   s: Pick<ProjectState, 'structure' | 'mask' | 'substrate'> & { doc: ProjectDoc; gpuMaterial: GpuMaterial },
   inputs: { layout: HotspotLayout; placements: RectPlacement[] },
   resolutionPx: number,
@@ -907,7 +908,12 @@ export function materialJointMean(
   return mean;
 }
 
-function requestEvaluation(opts?: { exportResolutionPx?: number }): Promise<CheckResult[] | null> {
+export interface EvaluationOptions {
+  exportResolutionPx?: number;
+  force?: boolean;
+}
+
+function requestEvaluation(opts?: EvaluationOptions): Promise<CheckResult[] | null> {
   const mine = ++evalGen;
   if (!useProject.getState().checksPending) useProject.setState({ checksPending: true });
   const run = evalChain.then(() => evaluate(mine, opts));
@@ -915,9 +921,9 @@ function requestEvaluation(opts?: { exportResolutionPx?: number }): Promise<Chec
   return run;
 }
 
-async function evaluate(mine: number, opts?: { exportResolutionPx?: number }): Promise<CheckResult[] | null> {
+async function evaluate(mine: number, opts?: EvaluationOptions): Promise<CheckResult[] | null> {
   // A newer request is queued behind this one and will evaluate a fresher state.
-  if (mine !== evalGen) return null;
+  if (mine !== evalGen && !opts?.force) return null;
   const { doc, gpuMaterial, gpu, structure, mask, substrate, atlas, material } = useProject.getState();
   if (!doc || !gpuMaterial || !gpu) {
     if (mine === evalGen) useProject.setState({ checksPending: false });

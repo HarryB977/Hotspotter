@@ -10,7 +10,8 @@ const ICON: Record<CheckStatus, { Icon: typeof CircleCheck; className: string }>
   error: { Icon: CircleX, className: 'text-red-500' },
 };
 
-function CheckRow({ r, onFocus }: { r: CheckResult; onFocus?: () => void }) {
+/** One check: icon, name and, unless ok, its message. A row with `onFocus` is a button that shows the problem. */
+export function CheckRow({ r, onFocus, testId = 'check-row' }: { r: CheckResult; onFocus?: () => void; testId?: string }) {
   const { Icon, className } = ICON[r.status];
   const body = (
     <>
@@ -22,7 +23,7 @@ function CheckRow({ r, onFocus }: { r: CheckResult; onFocus?: () => void }) {
     </>
   );
   const common = {
-    'data-testid': 'check-row',
+    'data-testid': testId,
     'data-check-id': r.id,
     'data-status': r.status,
     title: r.message,

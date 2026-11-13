@@ -65,6 +65,13 @@ export const es = {
     done: (n: number) => `Exportación completa: ${n} archivos escritos.`,
     serverError: (msg: string) => `El servidor rechazó la exportación: ${msg}`,
     failed: (msg: string) => `La exportación falló: ${msg}`,
+    checking: 'Comprobando el resultado…',
+    checksTitle: 'Comprobaciones a esta resolución',
+    checksFailed: 'No se pudieron hacer las comprobaciones; se exporta igualmente.',
+    checksNote: 'Los avisos no impiden exportar.',
+    runoffWarning:
+      'La escorrentía cae hacia abajo. Si giras estos rectángulos en el motor, las manchas quedarán de lado o hacia ' +
+      'arriba. Por eso se exportan sin volteo vertical.',
   },
   atlas: { title: 'Atlas 2D', empty: 'Importa un material para empezar' },
   layout: {

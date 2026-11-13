@@ -26,6 +26,8 @@ export {
 } from './document';
 export type { ComposeInputs, NodeType, NodeParams, DocNode, DocEdge, ProjectDoc, StackEntry } from './document';
 export { toHotspotJson, parseHotspotJson } from './export/hotspotJson';
+export type { HotspotJsonMeta } from './export/hotspotJson';
+export { rectIdRgb, rectIdImage } from './export/rectId';
 export { toAnvilTable } from './export/anvilTable';
 export { packMaps } from './export/packing';
 export type { ExportPreset, MapPixels, PackedFile } from './export/packing';

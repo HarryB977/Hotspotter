@@ -32,17 +32,18 @@ const COLOR_FS = /* wgsl */ `
 }
 `;
 
+// Same hash and byte mapping as rectIdRgb in @hotspotter/core (the exported _RectID map); keep them in sync.
 const ID_FS = /* wgsl */ `
 @group(0) @binding(0) var tex: texture_2d<u32>;
 @fragment fn fs(@location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
   let id = textureLoad(tex, vec2<i32>(uv * vec2<f32>(textureDimensions(tex))), 0).r;
-  if (id == 0u) { return vec4<f32>(0.05, 0.05, 0.05, 1.0); }
+  if (id == 0u) { return vec4<f32>(vec3<f32>(13.0 / 255.0), 1.0); }
   var h = id * 2654435761u;
   h = h ^ (h >> 15u);
   h = h * 2246822519u;
   h = h ^ (h >> 13u);
-  let c = vec3<f32>(f32(h & 255u), f32((h >> 8u) & 255u), f32((h >> 16u) & 255u)) / 255.0;
-  return vec4<f32>(0.25 + 0.65 * c, 1.0);
+  let b = vec3<u32>(h & 255u, (h >> 8u) & 255u, (h >> 16u) & 255u);
+  return vec4<f32>(vec3<f32>(64u + ((b * 166u) >> vec3<u32>(8u))) / 255.0, 1.0);
 }
 `;
 

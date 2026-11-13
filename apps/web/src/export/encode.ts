@@ -1,8 +1,10 @@
-import { composeInputsFromDoc, encodePngRgba8, packMaps, toAnvilTable, toHotspotJson } from '@hotspotter/core';
-import type { ExportPreset, MapPixels } from '@hotspotter/core';
-import { composeAtlas, heightToRgba8, readbackRgba8 } from '@hotspotter/engine';
+import {
+  composeInputsFromDoc, encodePngRgba8, packMaps, rectIdImage, toAnvilTable, toHotspotJson,
+} from '@hotspotter/core';
+import type { CheckResult, ExportPreset, MapPixels } from '@hotspotter/core';
+import { composeAtlas, heightToRgba8, readbackR32, readbackRgba8 } from '@hotspotter/engine';
 import type { AtlasMaps } from '@hotspotter/engine';
-import { useProject } from '../state/store';
+import { composeInputFor, useProject } from '../state/store';
 
 export async function encodePng(p: MapPixels): Promise<Blob> {
   return new Blob([await encodePngRgba8(p)], { type: 'image/png' });
@@ -12,6 +14,8 @@ export interface ExportOptions {
   dir: string;
   preset: ExportPreset;
   resolutionPx: number;
+  /** Check results to record in hotspot.json (id and status); omitted when the evaluation failed. */
+  checks?: CheckResult[];
   /** Called before each file upload with the 0-based index, the total and the file name. */
   onProgress?: (index: number, total: number, name: string) => void;
 }
@@ -31,36 +35,53 @@ async function upload(dir: string, name: string, body: Blob | string): Promise<s
   return json.path;
 }
 
-/** Composes a fresh atlas at `resolutionPx`, uploads maps, hotspot.json and Anvil csv, returns written paths. */
+/**
+ * Composes a fresh atlas at `resolutionPx` from the same inputs as the preview (composeInputFor: wear, dirt, mask,
+ * second set, grain axis), uploads the maps, _WearMask, _RectID, hotspot.json and the Anvil csv, and returns the
+ * written paths.
+ */
 export async function exportProject(opts: ExportOptions): Promise<string[]> {
-  const { doc, gpuMaterial, gpu, structure } = useProject.getState();
+  const state = useProject.getState();
+  const { doc, gpuMaterial, gpu } = state;
   if (!doc || !gpuMaterial || !gpu) throw new Error('No project');
   // Resolved at the export resolution, so hotspot.json and the Anvil csv px match the PNGs.
-  const { layout, placements, material: mat } = composeInputsFromDoc(doc, opts.resolutionPx);
+  const inputs = composeInputsFromDoc(doc, opts.resolutionPx);
+  const { layout, material: mat, wear, dirt } = inputs;
+  // Downward streaks: a vertical mirror (or a rotation) in the engine would turn them (docs/06).
+  const runoff = dirt.runoff > 0;
   let maps: AtlasMaps | null = null;
   let heightTex: GPUTexture | null = null;
   try {
-    maps = await composeAtlas(gpu, {
-      layout, material: gpuMaterial, placements, resolutionPx: opts.resolutionPx, structure: structure?.gpu,
-    });
-    // Not exported: free them before the readbacks, which peak in memory at 8192. wearMask is exportable, so it stays.
+    maps = await composeAtlas(gpu, composeInputFor({ ...state, doc, gpuMaterial }, inputs, opts.resolutionPx));
+    // Not exported: free them before the readbacks, which peak in memory at 8192.
     for (const t of [maps.loss, maps.pieceId, maps.jointDistM, maps.border, maps.macroHeight]) t.destroy();
     heightTex = heightToRgba8(gpu, maps);
-    // One readback at a time keeps the staging buffers and CPU copies from stacking up at 8192.
+    maps.height.destroy();
+    // One readback at a time keeps the staging buffers and CPU copies from stacking up at 8192 (R12); each GPU map
+    // is freed as soon as its pixels are on the CPU.
+    const take = async (t: GPUTexture) => {
+      try {
+        return await readbackRgba8(gpu, t);
+      } finally {
+        t.destroy();
+      }
+    };
     const atlas = maps;
     const heightRgba = heightTex;
     const readAll = async () => {
-      const baseColor = await readbackRgba8(gpu, atlas.baseColor);
-      const normal = await readbackRgba8(gpu, atlas.normal);
-      const height = await readbackRgba8(gpu, heightRgba);
-      const roughness = await readbackRgba8(gpu, atlas.roughness);
-      const metallic = await readbackRgba8(gpu, atlas.metallic);
-      const ao = await readbackRgba8(gpu, atlas.ao);
+      const baseColor = await take(atlas.baseColor);
+      const normal = await take(atlas.normal);
+      const height = await take(heightRgba);
+      const roughness = await take(atlas.roughness);
+      const metallic = await take(atlas.metallic);
+      const ao = await take(atlas.ao);
       return { baseColor, normal, height, roughness, metallic, ao };
     };
     const packed = packMaps(opts.preset, await readAll());
     const pngNames = packed.map((f) => `${mat.name}${f.suffix}.png`);
-    const total = packed.length + 2;
+    const wearName = `${mat.name}_WearMask.png`;
+    const rectIdName = `${mat.name}_RectID.png`;
+    const total = packed.length + 4;
     const written: string[] = [];
     let i = 0;
     const put = async (name: string, body: Blob | string) => {
@@ -69,14 +90,33 @@ export async function exportProject(opts: ExportOptions): Promise<string[]> {
     };
     // Shift each file off the list so its pixels can be collected once uploaded.
     for (const name of pngNames) await put(name, await encodePng(packed.shift()!.pixels));
-    const json = toHotspotJson(layout, { name: mat.name, heightRangeM: maps.heightRangeM, maps: pngNames });
+
+    const { width, height } = atlas.rectId;
+    // Without wear the mask is a 1 × 1 placeholder: export it black at full size.
+    const wearMask = atlas.wearMask.width === 1
+      ? { width, height, data: new Uint8Array(width * height * 4).map((_, k) => (k % 4 === 3 ? 255 : 0)) }
+      : await take(atlas.wearMask);
+    atlas.wearMask.destroy();
+    await put(wearName, await encodePng(wearMask));
+
+    const ids = await readbackR32(gpu, atlas.rectId);
+    atlas.rectId.destroy();
+    await put(rectIdName, await encodePng(rectIdImage(ids.data as Uint32Array, ids.width, ids.height)));
+
+    const json = toHotspotJson(layout, {
+      name: mat.name, heightRangeM: atlas.heightRangeM, maps: [...pngNames, wearName, rectIdName],
+      wear: { family: wear.family, seed: wear.seed },
+      checks: opts.checks?.map((c) => ({ id: c.id, status: c.status })),
+      runoff,
+    });
     await put(`${mat.name}.hotspot.json`, json);
-    await put(`${mat.name}.anvil.csv`, toAnvilTable(layout));
+    await put(`${mat.name}.anvil.csv`, toAnvilTable(layout, { runoff }));
     opts.onProgress?.(total, total, '');
     return written;
   } finally {
     heightTex?.destroy();
     if (maps) {
+      // destroy() is idempotent: the maps already freed above are skipped.
       const m = maps;
       for (const t of [m.baseColor, m.normal, m.height, m.roughness, m.metallic, m.ao, m.rectId, m.wearMask]) {
         t.destroy();

@@ -4,6 +4,12 @@
 
 Se exporta un PNG por mapa (8 o 16 bits; height también en EXR de 32 bits) con un prefijo común: `<nombre>_BaseColor`, `_Normal`, `_Height`, `_Roughness`, `_Metallic`, `_AO`, `_Opacity` (si existe), más dos auxiliares: `_RectID` (color por rectángulo) y `_WearMask` (daño 0–1, útil para shaders).
 
+- El export compone con las mismas entradas que la vista previa (desgaste, suciedad, máscara B/N, segundo material y eje de veta), solo que a su resolución. Con la misma resolución y el mismo layout, los mapas salen idénticos byte a byte a los de la vista previa.
+- `_WearMask` es el `wearMask` del compose en gris (R = G = B, A = 255). Sin desgaste sale negro.
+- `_RectID` pinta cada rectángulo con el mismo color hash que la vista "IDs rect" (`rectIdRgb` en `packages/core`, `ID_FS` en la vista: 64 + (byte · 166 >> 8) por canal). La ranura vacía es gris oscuro (13).
+- La resolución del diálogo de exportar es `resolutionPx` del nodo de salida: el panel de comprobaciones y el export leen el mismo valor.
+- Antes de exportar, el diálogo pasa las seis comprobaciones de [04](04-wear.md) a la resolución de exportación y muestra el resumen. Los avisos (o un fallo de las comprobaciones) no bloquean la exportación.
+
 ### Presets por destino
 
 | Preset | Normal | Empaquetado |
@@ -19,6 +25,25 @@ Se exporta un PNG por mapa (8 o 16 bits; height también en EXR de 32 bits) con 
 ## Definición de rectángulos
 
 Siempre se exporta `<nombre>.hotspot.json`, el formato propio y la fuente de verdad: versión, tamaño del atlas en px, ancho en metros, densidad y la lista de rectángulos con todos los campos de [03](03-material-and-layout.md) en píxeles (origen arriba a la izquierda) y en UV (0–1, origen abajo a la izquierda).
+
+Campos de `hotspot.json` (versión 1):
+
+| Campo | Contenido |
+|---|---|
+| `version`, `name` | 1 y el nombre del material |
+| `atlas` | `widthPx`, `heightPx`, `worldWidthM`, `pxPerMetre` |
+| `heightRangeM` | rango de altura en metros que mapea el `_Height` 0–255 |
+| `maps` | nombres de los PNG escritos, `_WearMask` y `_RectID` incluidos |
+| `wear` | `{ family, seed }` del desgaste con que se compuso |
+| `checks` | `[{ id, status }]` de las comprobaciones al exportar (`ok`, `warn` o `error`); falta si no se pudieron hacer |
+| `groove` | ancho, profundidad, bisel y perfil de la ranura |
+| `rects` | `id`, `px`, `uv`, `allowRotation`, `allowMirrorX/Y`, `tileU/V`, `useOn`, `inset`, `group` |
+
+**Escorrentía y volteos.** La escorrentía (`dirt.runoff > 0`) pinta chorretones que caen hacia −Y del atlas. Girar o voltear en vertical un rectángulo en el motor los deja de lado o hacia arriba. Por eso, con escorrentía:
+
+- `hotspot.json` escribe `allowMirrorY: false` en todos los rectángulos (el volteo horizontal se respeta).
+- La tabla de Anvil escribe `Can mirror` = `no`: Anvil tiene un único flag de volteo para los dos ejes y no puede limitarlo al horizontal.
+- `allowRotation` / `Can rotate` no cambian, pero el resumen del diálogo avisa de que girar esos rectángulos en el motor gira los chorretones.
 
 Formatos adicionales opcionales:
 

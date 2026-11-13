@@ -652,7 +652,15 @@ test('packWear byte layout and sanitising of saved values', async ({ page }) => 
       intensity: bv.getFloat32(4, true), widthM: bv.getFloat32(8, true), sizeM: bv.getFloat32(16, true),
       pieceBias: bv.getFloat32(32, true), maskStrength: bv.getFloat32(40, true), maskEnabled: bv.getUint32(44, true),
     };
-    return { layout, sanitized, unbound };
+    // runoffLengthM is clamped to the atlas height (R33); a shorter one is kept.
+    const tall = { ...core.DEFAULT_DIRT, runoffLengthM: 5 };
+    const clampExtra = { hasPieces: false, grainAxis: null, maskBound: false, atlasHeightM: 0.75 };
+    const runoffClamp = [
+      new DataView(engine.packWear(core.DEFAULT_WEAR, tall, core.WEAR_FAMILIES.brittle, clampExtra)).getFloat32(88, true),
+      new DataView(engine.packWear(core.DEFAULT_WEAR, { ...tall, runoffLengthM: 0.5 }, core.WEAR_FAMILIES.brittle, clampExtra))
+        .getFloat32(88, true),
+    ];
+    return { layout, sanitized, unbound, runoffClamp };
   });
   expect(r.layout).toEqual({
     bytes: 144, enabled: 1, intensity: 0.25, widthM: expect.closeTo(0.05, 7), minEdgeM: expect.closeTo(0.003, 7),
@@ -664,6 +672,7 @@ test('packWear byte layout and sanitising of saved values', async ({ page }) => 
     substrateTileM: [0.5, 0.75], substrateGloss: 1,
   });
   expect(r.unbound).toBe(0);
+  expect(r.runoffClamp).toEqual([0.75, 0.5]);
   expect(r.sanitized).toEqual({
     intensity: 0.5, widthM: 0, sizeM: expect.closeTo(0.03, 7), pieceBias: 1, maskStrength: 1, maskEnabled: 0,
   });
@@ -676,7 +685,11 @@ test('packWear byte layout and sanitising of saved values', async ({ page }) => 
 test('without wear the compose matches a wear compose that loses nothing (normal within 1 LSB), with and without dirt', async ({ page }) => {
   const r = await page.evaluate(async () => {
     const out: Record<string, unknown> = {};
-    const cases = { heightOnly: { normalMap: false }, normalMap: { normalMap: true }, dirt: { normalMap: false, dirt: { runoff: 1 } } };
+    const cases = {
+      heightOnly: { normalMap: false }, normalMap: { normalMap: true }, dirt: { normalMap: false, dirt: { runoff: 1 } },
+      // A real AO map moves height AO onto the macro height (R33) in both paths.
+      aoMap: { normalMap: false, aoMap: true, dirt: { cavity: 1 } },
+    };
     for (const [name, opts] of Object.entries(cases)) {
       // widthM 0 disables edge wear entirely (R30): the wear passes run but change nothing, edge tone included. Height
       // AO and dirt run in both paths.
@@ -698,7 +711,7 @@ test('without wear the compose matches a wear compose that loses nothing (normal
     }
     return out;
   });
-  for (const k of ['heightOnly', 'normalMap', 'dirt']) {
+  for (const k of ['heightOnly', 'normalMap', 'dirt', 'aoMap']) {
     expect(r[k]).toEqual({
       differing: [], normalMaxLsb: expect.any(Number), sameRange: true, border: [1, 1], wearMask: [1, 1],
       zeroBorder: [1024, 1024],

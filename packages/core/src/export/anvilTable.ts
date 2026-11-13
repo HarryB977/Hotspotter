@@ -10,14 +10,18 @@ const cell = (v: string | number) => {
   return s.includes(',') ? `"${s.replace(/"/g, '""')}"` : s;
 };
 
-export function toAnvilTable(l: HotspotLayout): string {
+/**
+ * `runoff`: the atlas carries downward runoff streaks. Anvil has one mirror flag for both axes, so it is written
+ * "no": a vertical mirror would make the streaks run upward (docs/06).
+ */
+export function toAnvilTable(l: HotspotLayout, opts?: { runoff?: boolean }): string {
   const lines = [
     `Sheet Width (m),${l.worldWidthM}`,
     'Name,X,Y,Width,Height,Can rotate,Can mirror,Repeats across,Repeats down,Use on',
     ...l.rects.map((r) =>
       [
         r.id, r.x, r.y, r.w, r.h,
-        yn(r.allowRotation), yn(r.allowMirrorX || r.allowMirrorY),
+        yn(r.allowRotation), yn(!opts?.runoff && (r.allowMirrorX || r.allowMirrorY)),
         yn(r.tileU), yn(r.tileV), USE_ON[r.useOn],
       ].map(cell).join(','),
     ),

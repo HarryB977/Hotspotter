@@ -2,6 +2,7 @@ import * as core from '@hotspotter/core';
 import * as engine from '@hotspotter/engine';
 import type { AtlasMaps } from '@hotspotter/engine';
 import { evalStats, materialJointMean, useProject } from '../state/store';
+import { exportProject } from '../export/encode';
 
 export interface SampleFile {
   name: string;
@@ -40,6 +41,8 @@ export interface HsHarness {
   evalStats: typeof evalStats;
   /** The store's material-space joint colour (R37) of the current material and structure, or null. */
   jointMean(): [number, number, number] | null;
+  /** The export the dialog runs, without the dialog (no checks recorded unless passed). */
+  exportProject: typeof exportProject;
 }
 
 declare global {
@@ -95,6 +98,7 @@ export function installHarness(): void {
     runCompute,
     store: useProject,
     evalStats,
+    exportProject,
     jointMean() {
       const { gpuMaterial, structure, material } = useProject.getState();
       return gpuMaterial && structure ? materialJointMean(gpuMaterial, structure, material?.images.baseColor) : null;

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  toHotspotJson, parseHotspotJson, toAnvilTable, packMaps, makeRect, DEFAULT_GROOVE,
+  toHotspotJson, parseHotspotJson, toAnvilTable, packMaps, makeRect, DEFAULT_GROOVE, rectIdRgb, rectIdImage,
 } from '../src';
 import type { HotspotLayout, MapPixels } from '../src';
 
@@ -81,5 +81,49 @@ describe('packMaps', () => {
   it('throws on size mismatch', () => {
     const bad = { ...maps, ao: { width: 2, height: 1, data: new Uint8Array(8) } };
     expect(() => packMaps('unity-urp', bad)).toThrow();
+  });
+});
+
+describe('wear export metadata (Task 13)', () => {
+  it('writes the wear family and seed, and the check statuses', () => {
+    const j = JSON.parse(toHotspotJson(layout, {
+      ...meta,
+      wear: { family: 'brittle', seed: 7 },
+      checks: [{ id: 'coverage', status: 'ok' }, { id: 'islands', status: 'warn' }],
+    }));
+    expect(j.wear).toEqual({ family: 'brittle', seed: 7 });
+    expect(j.checks).toEqual([{ id: 'coverage', status: 'ok' }, { id: 'islands', status: 'warn' }]);
+  });
+  it('downward runoff forbids vertical mirroring in hotspot.json and keeps the rest', () => {
+    const l = { ...layout, rects: [makeRect({ id: 'y', x: 0, y: 0, w: 8, h: 8, allowMirrorX: true, allowMirrorY: true })] };
+    const j = JSON.parse(toHotspotJson(l, { ...meta, runoff: true }));
+    expect([j.rects[0].allowMirrorX, j.rects[0].allowMirrorY]).toEqual([true, false]);
+    expect(JSON.parse(toHotspotJson(l, meta)).rects[0].allowMirrorY).toBe(true);
+  });
+  it('downward runoff writes Can mirror no in the Anvil table (one flag for both axes)', () => {
+    const l = { ...layout, rects: [makeRect({ id: 'x', x: 0, y: 0, w: 8, h: 8, allowMirrorX: true })] };
+    expect(toAnvilTable(l, { runoff: true }).split('\r\n')[2]).toBe('x,0,0,8,8,no,no,no,no,Any');
+    expect(toAnvilTable(l).split('\r\n')[2]).toBe('x,0,0,8,8,no,yes,no,no,Any');
+  });
+});
+
+describe('rect id colours', () => {
+  it('match the atlas view hash: 64 + (byte · 166 >> 8) per channel, dark grey for the groove', () => {
+    // id 1: h = 2654435761; h ^= h >> 15; h *= 2246822519; h ^= h >> 13 (u32).
+    let h = Math.imul(1, 2654435761) >>> 0;
+    h = (h ^ (h >>> 15)) >>> 0;
+    h = Math.imul(h, 2246822519) >>> 0;
+    h = (h ^ (h >>> 13)) >>> 0;
+    const ch = (b: number) => 64 + ((b * 166) >> 8);
+    expect(rectIdRgb(1)).toEqual([ch(h & 255), ch((h >>> 8) & 255), ch((h >>> 16) & 255)]);
+    expect(rectIdRgb(0)).toEqual([13, 13, 13]);
+    expect(rectIdRgb(2)).not.toEqual(rectIdRgb(1));
+  });
+  it('rectIdImage colours every pixel by its id, opaque', () => {
+    const img = rectIdImage(new Uint32Array([0, 1, 2, 1]), 2, 2);
+    expect([img.width, img.height]).toEqual([2, 2]);
+    expect(Array.from(img.data.subarray(4, 8))).toEqual([...rectIdRgb(1), 255]);
+    expect(Array.from(img.data.subarray(12, 16))).toEqual([...rectIdRgb(1), 255]);
+    expect(Array.from(img.data.subarray(0, 4))).toEqual([13, 13, 13, 255]);
   });
 });
