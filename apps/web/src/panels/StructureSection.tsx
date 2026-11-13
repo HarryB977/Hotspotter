@@ -37,6 +37,10 @@ export function StructureSection() {
         <NumField
           nullable
           aria-label={es.structure.threshold}
+          step={0.005}
+          min={0}
+          max={1}
+          live={false}
           title={es.structure.thresholdHint}
           data-testid="structure-threshold"
           placeholder={es.structure.auto}

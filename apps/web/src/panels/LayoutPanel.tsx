@@ -66,6 +66,8 @@ export function LayoutPanel() {
             <NumField
               data-testid="layout-seed"
               aria-label={es.layout.seed}
+              step={1}
+              min={0}
               value={p.seed}
               onCommit={(v) =>
                 v !== null && Number.isInteger(v) && v >= 0 &&

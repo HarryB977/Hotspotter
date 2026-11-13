@@ -54,12 +54,34 @@ interface NumFieldProps extends Omit<InputHTMLAttributes<HTMLInputElement>, 'val
   /** Called with a finite number, or null when the field is emptied and `nullable` is set. */
   onCommit(v: number | null): void;
   nullable?: boolean;
+  /** Value change per pixel of horizontal drag (Shift ×0.1, Ctrl ×10). Default 0.01. */
+  step?: number;
+  min?: number;
+  max?: number;
+  /** Commit while dragging (default). False commits once on release, for edits that trigger a slow re-analysis. */
+  live?: boolean;
 }
 
-/** Text field that edits a number locally and commits on blur or Enter, only when the value changed. */
-export function NumField({ value, onCommit, nullable, className, ...rest }: NumFieldProps) {
+/** Pixels the pointer must travel before a press becomes a drag instead of a click to type. */
+const DRAG_THRESHOLD_PX = 3;
+
+const decimalsOf = (step: number) => Math.max(0, Math.min(6, Math.ceil(-Math.log10(step) - 1e-9)));
+
+/**
+ * Text field that edits a number locally and commits on blur or Enter, only when the value changed.
+ * Not focused, it shows a horizontal-resize cursor: press and drag left or right to scrub the value; a click without
+ * moving focuses the field and selects its text for typing.
+ */
+export function NumField({
+  value, onCommit, nullable, className, step = 0.01, min, max, live = true, disabled, ...rest
+}: NumFieldProps) {
   const [text, setText] = useState(value === null ? '' : String(value));
+  const [focused, setFocused] = useState(false);
+  const [scrubbing, setScrubbing] = useState(false);
+  const drag = useRef<{ id: number; x: number; start: number; moved: boolean; last: number | null } | null>(null);
+  const frame = useRef(0);
   useEffect(() => setText(value === null ? '' : String(value)), [value]);
+  useEffect(() => () => cancelAnimationFrame(frame.current), []);
   const commit = () => {
     const t = text.trim().replace(',', '.');
     if (t === '') {
@@ -71,15 +93,68 @@ export function NumField({ value, onCommit, nullable, className, ...rest }: NumF
     if (Number.isFinite(n) && n !== value) onCommit(n);
     else setText(value === null ? '' : String(value));
   };
+  const scrubTo = (e: React.PointerEvent<HTMLInputElement>) => {
+    const d = drag.current!;
+    const mult = e.shiftKey ? 0.1 : e.ctrlKey || e.metaKey ? 10 : 1;
+    const s = step * mult;
+    let v = d.start + Math.round(e.clientX - d.x) * s;
+    if (min !== undefined) v = Math.max(min, v);
+    if (max !== undefined) v = Math.min(max, v);
+    v = Number(v.toFixed(decimalsOf(s)));
+    if (v === d.last) return;
+    d.last = v;
+    setText(String(v));
+    if (live) {
+      // One commit per frame: the store coalesces recompositions, but a commit per pointer event is wasted work.
+      cancelAnimationFrame(frame.current);
+      frame.current = requestAnimationFrame(() => onCommit(v));
+    }
+  };
   return (
     <Input
       {...rest}
+      disabled={disabled}
       inputMode="decimal"
-      className={cn('text-right', className)}
+      className={cn('text-right', !focused && !disabled && 'cursor-ew-resize', className)}
       value={text}
       onChange={(e) => setText(e.target.value)}
-      onBlur={commit}
+      onFocus={() => setFocused(true)}
+      onBlur={() => { setFocused(false); commit(); }}
       onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+      onPointerDown={(e) => {
+        if (focused || disabled || e.button !== 0) return;
+        // Keep the browser from placing a text caret; the field is focused on release if the press was a click.
+        e.preventDefault();
+        e.currentTarget.setPointerCapture(e.pointerId);
+        drag.current = { id: e.pointerId, x: e.clientX, start: value ?? 0, moved: false, last: null };
+      }}
+      onPointerMove={(e) => {
+        const d = drag.current;
+        if (!d || d.id !== e.pointerId) return;
+        if (!d.moved && Math.abs(e.clientX - d.x) < DRAG_THRESHOLD_PX) return;
+        if (!d.moved) { d.moved = true; setScrubbing(true); }
+        scrubTo(e);
+      }}
+      onPointerUp={(e) => {
+        const d = drag.current;
+        if (!d || d.id !== e.pointerId) return;
+        drag.current = null;
+        e.currentTarget.releasePointerCapture(e.pointerId);
+        if (!d.moved) {
+          e.currentTarget.focus();
+          e.currentTarget.select();
+          return;
+        }
+        setScrubbing(false);
+        cancelAnimationFrame(frame.current);
+        if (d.last !== null && d.last !== value) onCommit(d.last);
+      }}
+      onPointerCancel={() => {
+        drag.current = null;
+        setScrubbing(false);
+        setText(value === null ? '' : String(value));
+      }}
+      data-scrubbing={scrubbing || undefined}
     />
   );
 }
@@ -295,11 +370,15 @@ export function MaterialPanel() {
             <Row label={es.material.tileSize}>
               <NumField
                 aria-label={`${es.material.tileSize} ${es.material.axisX}`}
+                min={0.01}
+                live={false}
                 value={s.tileSizeM[0]}
                 onCommit={(v) => v !== null && v > 0 && void updateSettings({ tileSizeM: [v, s.tileSizeM[1]] })}
               />
               <NumField
                 aria-label={`${es.material.tileSize} ${es.material.axisY}`}
+                min={0.01}
+                live={false}
                 value={s.tileSizeM[1]}
                 onCommit={(v) => v !== null && v > 0 && void updateSettings({ tileSizeM: [s.tileSizeM[0], v] })}
               />
@@ -315,6 +394,9 @@ export function MaterialPanel() {
               <NumField
                 className="w-12 shrink-0"
                 aria-label={es.material.heightScale}
+                step={0.1}
+                min={0}
+                live={false}
                 value={Math.round(s.heightScaleM * 1000) / 10}
                 onCommit={(v) => v !== null && v >= 0 && void updateSettings({ heightScaleM: v / 100 })}
               />
@@ -376,6 +458,9 @@ export function MaterialPanel() {
               <NumField
                 nullable
                 aria-label={`${es.material.period} ${es.material.axisX}`}
+                step={0.001}
+                min={0.001}
+                live={false}
                 placeholder="X"
                 value={s.period.x}
                 onCommit={(v) => (v === null || v > 0) && setPeriod({ x: v })}
@@ -383,6 +468,9 @@ export function MaterialPanel() {
               <NumField
                 nullable
                 aria-label={`${es.material.period} ${es.material.axisY}`}
+                step={0.001}
+                min={0.001}
+                live={false}
                 placeholder="Y"
                 value={s.period.y}
                 onCommit={(v) => (v === null || v > 0) && setPeriod({ y: v })}
@@ -391,11 +479,15 @@ export function MaterialPanel() {
             <Row label={es.material.phase}>
               <NumField
                 aria-label={`${es.material.phase} ${es.material.axisX}`}
+                step={0.001}
+                live={false}
                 value={s.period.phaseX}
                 onCommit={(v) => v !== null && setPeriod({ phaseX: v })}
               />
               <NumField
                 aria-label={`${es.material.phase} ${es.material.axisY}`}
+                step={0.001}
+                live={false}
                 value={s.period.phaseY}
                 onCommit={(v) => v !== null && setPeriod({ phaseY: v })}
               />

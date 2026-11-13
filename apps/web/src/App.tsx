@@ -60,18 +60,18 @@ export function App() {
 
   return (
     <TooltipProvider delayDuration={400}>
-      <div className="grid h-full grid-cols-[240px_1fr_280px] grid-rows-[30px_1fr_28px]">
+      <div className="grid h-full grid-cols-[240px_minmax(0,1fr)_280px] grid-rows-[30px_minmax(0,1fr)_28px] overflow-hidden">
         <header className="col-span-3 flex items-center gap-3 border-b border-zinc-800 bg-zinc-900 px-2">
           <span className="font-semibold text-zinc-100">{es.appName}</span>
           <span className="text-zinc-500">{es.topBar.project}</span>
           <span className="ml-auto"><ExportDialog /></span>
         </header>
-        <aside className="overflow-y-auto border-r border-zinc-800 bg-zinc-900" data-testid="left-column">
+        <aside className="min-h-0 overflow-y-auto border-r border-zinc-800 bg-zinc-900" data-testid="left-column">
           <MaterialPanel />
           <ChecksPanel />
           <LayoutPanel />
         </aside>
-        <main className="flex min-w-0 flex-col bg-zinc-950">
+        <main className="flex min-h-0 min-w-0 flex-col bg-zinc-950">
           <PanelTitle>{es.atlas.title}</PanelTitle>
           {atlas ? (
             <AtlasView maps={atlas.maps} layout={atlas.layout} activeMap={activeMap} issues={atlas.issues} />
@@ -79,11 +79,11 @@ export function App() {
             <div className="flex flex-1 items-center justify-center text-zinc-600">{es.atlas.empty}</div>
           )}
         </main>
-        <aside className="flex flex-col border-l border-zinc-800 bg-zinc-900">
+        <aside className="flex min-h-0 flex-col border-l border-zinc-800 bg-zinc-900">
           <PanelTitle>{es.inspector.title}</PanelTitle>
           <Inspector />
         </aside>
-        <footer className="col-span-3 flex items-stretch justify-between border-t border-zinc-800 bg-zinc-900">
+        <footer className="col-span-3 flex min-w-0 items-stretch justify-between overflow-hidden border-t border-zinc-800 bg-zinc-900">
           <Tabs value={activeMap} onValueChange={(v) => setActiveMap(v as ActiveMap)} className="h-full">
             <TabsList className="h-full">
               {MAP_TABS.map((k) => (

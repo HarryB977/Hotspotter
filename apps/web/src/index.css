@@ -8,6 +8,10 @@
     @apply bg-zinc-950 text-zinc-200 text-base antialiased;
     font-variant-numeric: tabular-nums;
     overflow: hidden;
+    /* A tool, not a page: no text selection or I-beam except where text is edited. */
+    user-select: none;
+    cursor: default;
   }
+  input, textarea, [contenteditable="true"] { user-select: text; }
   * { scrollbar-width: thin; scrollbar-color: theme('colors.zinc.700') transparent; }
 }

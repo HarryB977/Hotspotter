@@ -30,6 +30,9 @@ export function SliderField({ label, hint, value, min, max, step, onChange, disa
         aria-label={label}
         title={hint}
         disabled={disabled}
+        step={step}
+        min={min}
+        max={max}
         value={round(value)}
         onCommit={(v) => v !== null && v >= min && v <= max && onChange(v)}
       />
@@ -47,6 +50,8 @@ export function LengthField({ label, hint, valueM, unit, onChange }: {
       <NumField
         aria-label={label}
         title={hint}
+        step={0.1}
+        min={0}
         value={round(valueM * k, 2)}
         onCommit={(v) => v !== null && v >= 0 && onChange(v / k)}
       />
@@ -125,6 +130,8 @@ export function WearSection() {
       <Row label={t.seed} hint={t.seedHint}>
         <NumField
           aria-label={t.seed}
+          step={1}
+          min={0}
           title={t.seedHint}
           value={w.seed}
           onCommit={(v) => v !== null && Number.isInteger(v) && v >= 0 && v <= 0xffffffff && set({ seed: v })}
@@ -241,12 +248,14 @@ export function WearSection() {
         <Row label={t.substrateTile} hint={t.substrateTileHint}>
           <NumField
             aria-label={`${t.substrateTile} X`}
+            min={0.01}
             title={t.substrateTileHint}
             value={substrate.gpu.settings.tileSizeM[0]}
             onCommit={(v) => v !== null && v > 0 && setSubstrateTileSize([v, substrate.gpu.settings.tileSizeM[1]])}
           />
           <NumField
             aria-label={`${t.substrateTile} Y`}
+            min={0.01}
             title={t.substrateTileHint}
             value={substrate.gpu.settings.tileSizeM[1]}
             onCommit={(v) => v !== null && v > 0 && setSubstrateTileSize([substrate.gpu.settings.tileSizeM[0], v])}

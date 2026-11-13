@@ -25,7 +25,7 @@ export function Inspector() {
   const setGroove = (patch: Partial<typeof g>) => updateNode<'output'>('output', { groove: { ...g, ...patch } });
 
   return (
-    <div className="overflow-y-auto">
+    <div className="min-h-0 flex-1 overflow-y-auto">
       <StructureSection />
       <Section title={es.atlas.title}>
         <Row label={es.inspector.preview}>
@@ -41,6 +41,8 @@ export function Inspector() {
         <Row label={es.inspector.worldWidth}>
           <NumField
             aria-label={es.inspector.worldWidth}
+            step={0.1}
+            min={0.1}
             value={output.worldWidthM}
             onCommit={(v) => v !== null && v > 0 && updateNode<'output'>('output', { worldWidthM: v })}
           />
@@ -58,6 +60,8 @@ export function Inspector() {
           <NumField
             className="w-12 shrink-0"
             aria-label={es.inspector.variation}
+            min={0}
+            max={1}
             value={placement.variation}
             onCommit={(v) => v !== null && v >= 0 && v <= 1 && updateNode<'placement'>('placement', { variation: v })}
           />
@@ -65,6 +69,8 @@ export function Inspector() {
         <Row label={es.inspector.placementSeed}>
           <NumField
             aria-label={es.inspector.placementSeed}
+            step={1}
+            min={0}
             value={placement.seed}
             onCommit={(v) =>
               v !== null && Number.isInteger(v) && v >= 0 && updateNode<'placement'>('placement', { seed: v })}
@@ -75,6 +81,8 @@ export function Inspector() {
         <Row label={es.inspector.grooveWidth} hint={es.inspector.grooveWidthHint}>
           <NumField
             aria-label={es.inspector.grooveWidth}
+            step={0.1}
+            min={0}
             title={es.inspector.grooveWidthHint}
             value={Math.round(g.widthM * 1e4) / 10}
             onCommit={(v) => v !== null && v >= 0 && setGroove({ widthM: v / 1000 })}
@@ -83,6 +91,8 @@ export function Inspector() {
         <Row label={es.inspector.grooveBevel} hint={es.inspector.grooveBevelHint}>
           <NumField
             aria-label={es.inspector.grooveBevel}
+            step={0.1}
+            min={0}
             title={es.inspector.grooveBevelHint}
             value={Math.round(g.bevelM * 1e4) / 10}
             onCommit={(v) => v !== null && v >= 0 && setGroove({ bevelM: v / 1000 })}
@@ -91,6 +101,8 @@ export function Inspector() {
         <Row label={es.inspector.grooveDepth}>
           <NumField
             aria-label={es.inspector.grooveDepth}
+            step={0.1}
+            min={0}
             value={Math.round(g.depthM * 1e4) / 10}
             onCommit={(v) => v !== null && v >= 0 && setGroove({ depthM: v / 1000 })}
           />
