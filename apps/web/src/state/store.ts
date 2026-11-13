@@ -970,6 +970,7 @@ async function evaluate(mine: number, opts?: EvaluationOptions): Promise<CheckRe
       reads = Promise.all([
         readbackR32(gpu, maps.rectId),
         readbackR32(gpu, maps.macroHeight),
+        readbackR32(gpu, maps.height),
         readbackRgba8(gpu, maps.normal),
         readbackRgba8(gpu, maps.wearMask),
         joints && compareSubstrate ? substrateMean(gpu, substrate.gpu) : null,
@@ -977,13 +978,14 @@ async function evaluate(mine: number, opts?: EvaluationOptions): Promise<CheckRe
     } finally {
       if (!current) destroyMaps(maps);
     }
-    const [rectId, macro, normal, wearRgba, subMean] = await reads;
+    const [rectId, macro, total, normal, wearRgba, subMean] = await reads;
     const { width, height } = rectId;
     // The grey wearMask's red channel; a 1 × 1 placeholder (wear off) stays 1 byte long.
     const wearMask = new Uint8Array(wearRgba.data.length / 4);
     for (let i = 0; i < wearMask.length; i++) wearMask[i] = wearRgba.data[i * 4];
     const maps8 = {
       width, height, rectId: rectId.data as Uint32Array, wearMask, macroHeight: macro.data as Float32Array,
+      heightM: total.data as Float32Array,
       normal: normal.data,
     };
     const output = doc.nodes.find((n): n is DocNode<'output'> => n.type === 'output');

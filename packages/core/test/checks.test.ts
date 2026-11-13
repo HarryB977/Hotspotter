@@ -29,7 +29,7 @@ function flatMaps(n: number): EvalMaps {
   for (let i = 0; i < n * n; i++) normal.set([128, 128, 255, 255], i * 4);
   return {
     width: n, height: n, rectId: new Uint32Array(n * n).fill(1), wearMask: new Uint8Array(n * n),
-    macroHeight: new Float32Array(n * n), normal,
+    macroHeight: new Float32Array(n * n), heightM: new Float32Array(n * n), normal,
   };
 }
 
@@ -144,6 +144,7 @@ describe('runChecks', () => {
         for (let x = 0; x < n; x++) {
           const i = y * n + x;
           m.macroHeight[i] = 0.5 * x * mpp; // slope 0.5 towards +x
+          m.heightM[i] = m.macroHeight[i];
           // The surface tilts towards −x; a flipped pixel points up the slope.
           const nx = (i % flipEvery === 0 ? 0.5 : -0.5) / len;
           m.normal[i * 4] = Math.round((nx * 0.5 + 0.5) * 255);
@@ -157,6 +158,33 @@ describe('runChecks', () => {
     expect(bad.points!.length).toBeGreaterThan(0);
     expect(get(runChecks(ctxWith(build(400))), 'normal').status).toBe('ok');
     expect(get(runChecks(ctxWith(flatMaps(n))), 'normal').status).toBe('ok');
+  });
+
+  it('normal (R40) only counts pixels where the macro slope beats the material relief', () => {
+    const n = 128;
+    const mpp = 1 / n;
+    /** Macro slope 0.5 towards +x; material relief slope `rel` towards +x; normal tilted towards `nx` sign. */
+    const build = (rel: number, nxSign: number) => {
+      const m = flatMaps(n);
+      const len = Math.hypot(0.5, 1);
+      for (let y = 0; y < n; y++) {
+        for (let x = 0; x < n; x++) {
+          const i = y * n + x;
+          m.macroHeight[i] = 0.5 * x * mpp;
+          m.heightM[i] = m.macroHeight[i] + rel * x * mpp;
+          m.normal[i * 4] = Math.round(((nxSign * 0.5) / len * 0.5 + 0.5) * 255);
+          m.normal[i * 4 + 2] = Math.round(((1 / len) * 0.5 + 0.5) * 255);
+        }
+      }
+      return m;
+    };
+    // The material relief (slope −2: total −1.5, towards −x) dominates and opposes the macro slope: the normal follows
+    // the material (tilts towards +x), which is right.
+    expect(get(runChecks(ctxWith(build(-2, 1))), 'normal').status).toBe('ok');
+    // The macro slope dominates (material relief 0.1) and the normal is inverted: still an error.
+    expect(get(runChecks(ctxWith(build(0.1, 1))), 'normal').status).toBe('error');
+    // Same with the correct normal: ok.
+    expect(get(runChecks(ctxWith(build(0.1, -1))), 'normal').status).toBe('ok');
   });
 
   it('proportions uses the rotated period and points at the rect', () => {

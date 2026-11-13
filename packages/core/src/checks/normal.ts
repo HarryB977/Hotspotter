@@ -7,24 +7,34 @@ export const MAX_AGAINST = 0.005;
 const MAX_POINTS = 32;
 
 /**
- * Normal coherence, the same definition as the Task 9 e2e test: Sobel on the macro height (y up, as
- * normalFromHeight.wgsl), and where the slope exceeds 0.2 the final normal must satisfy dot(n.xy, −grad) ≥ 0. More
- * than 0.5 % of steep pixels failing is an error.
+ * Normal coherence (R40): Sobel on the macro height and on the material's own relief (final height − macro height),
+ * y up as normalFromHeight.wgsl. Only pixels where the macro slope exceeds 0.2 AND beats the material relief slope
+ * count: there the final normal must satisfy dot(n.xy, −grad macro) ≥ 0. Where the material relief is steeper, the
+ * normal rightly follows the material and is not judged. More than 0.5 % of the counted pixels failing is an error.
  */
 export function checkNormal(ctx: CheckContext): CheckResult {
-  const { width: w, height: h, macroHeight, normal, rectId } = ctx.maps;
+  const { width: w, height: h, macroHeight, heightM, normal, rectId } = ctx.maps;
   const mpp = ctx.layout.worldWidthM / w;
-  const H = (x: number, y: number) =>
-    macroHeight[Math.min(h - 1, Math.max(0, y)) * w + Math.min(w - 1, Math.max(0, x))];
+  const at = (x: number, y: number) => Math.min(h - 1, Math.max(0, y)) * w + Math.min(w - 1, Math.max(0, x));
+  /** Sobel gradient (m/m, y up) of `f` at (x, y). */
+  const grad = (f: (i: number) => number, x: number, y: number): [number, number] => {
+    const F = (dx: number, dy: number) => f(at(x + dx, y + dy));
+    const sx = (F(1, -1) + 2 * F(1, 0) + F(1, 1)) - (F(-1, -1) + 2 * F(-1, 0) + F(-1, 1));
+    const sr = (F(-1, 1) + 2 * F(0, 1) + F(1, 1)) - (F(-1, -1) + 2 * F(0, -1) + F(1, -1));
+    return [sx / (8 * mpp), -sr / (8 * mpp)];
+  };
+  const macro = (i: number) => macroHeight[i];
+  const relief = (i: number) => heightM[i] - macroHeight[i];
   let steep = 0, against = 0;
   const points: [number, number][] = [];
   const rectIds = new Set<string>();
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
-      const sx = (H(x + 1, y - 1) + 2 * H(x + 1, y) + H(x + 1, y + 1)) - (H(x - 1, y - 1) + 2 * H(x - 1, y) + H(x - 1, y + 1));
-      const sr = (H(x - 1, y + 1) + 2 * H(x, y + 1) + H(x + 1, y + 1)) - (H(x - 1, y - 1) + 2 * H(x, y - 1) + H(x + 1, y - 1));
-      const gx = sx / (8 * mpp), gy = -sr / (8 * mpp);
-      if (Math.hypot(gx, gy) <= STEEP_SLOPE) continue;
+      const [gx, gy] = grad(macro, x, y);
+      const g = Math.hypot(gx, gy);
+      if (g <= STEEP_SLOPE) continue;
+      const [rx, ry] = grad(relief, x, y);
+      if (g <= Math.hypot(rx, ry)) continue;
       steep++;
       const i = y * w + x;
       const nx = (normal[i * 4] / 255) * 2 - 1, ny = (normal[i * 4 + 1] / 255) * 2 - 1;

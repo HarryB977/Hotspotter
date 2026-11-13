@@ -35,6 +35,8 @@ export interface EvalMaps {
   wearMask: Uint8Array;
   /** Metres: groove, bevel and wear, without the intact material relief. */
   macroHeight: Float32Array;
+  /** Metres: the final height (macro plus the material relief); heightM − macroHeight is the material's own relief. */
+  heightM: Float32Array;
   /** RGBA8, GL convention. */
   normal: Uint8Array;
 }

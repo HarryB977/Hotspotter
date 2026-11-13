@@ -855,8 +855,11 @@ test('normals follow the macro height and the detail normal fades inside the los
   const r = await page.evaluate(async () => {
     const m = await window.__t8!.compose({ normalMap: true, wear: { intensity: 0.8 } });
     const { w, h, mpp } = m;
-    const H = (x: number, y: number) => m.macroHeight[Math.min(h - 1, Math.max(0, y)) * w + Math.min(w - 1, Math.max(0, x))];
-    let steep = 0, against = 0;
+    const at = (x: number, y: number) => Math.min(h - 1, Math.max(0, y)) * w + Math.min(w - 1, Math.max(0, x));
+    const H = (x: number, y: number) => m.macroHeight[at(x, y)];
+    // The material's own relief (final − macro height), for the R40 dominance rule of the normal check.
+    const R = (x: number, y: number) => m.height[at(x, y)] - m.macroHeight[at(x, y)];
+    let steep = 0, against = 0, againstFlipped = 0;
     let inSum = 0, inN = 0, outSum = 0, outN = 0;
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
@@ -865,10 +868,15 @@ test('normals follow the macro height and the detail normal fades inside the los
         const sx = (H(x + 1, y - 1) + 2 * H(x + 1, y) + H(x + 1, y + 1)) - (H(x - 1, y - 1) + 2 * H(x - 1, y) + H(x - 1, y + 1));
         const sr = (H(x - 1, y + 1) + 2 * H(x, y + 1) + H(x + 1, y + 1)) - (H(x - 1, y - 1) + 2 * H(x, y - 1) + H(x + 1, y - 1));
         const gx = sx / (8 * mpp), gy = -sr / (8 * mpp);
+        const rx = ((R(x + 1, y - 1) + 2 * R(x + 1, y) + R(x + 1, y + 1)) - (R(x - 1, y - 1) + 2 * R(x - 1, y) + R(x - 1, y + 1))) / (8 * mpp);
+        const ry = -((R(x - 1, y + 1) + 2 * R(x, y + 1) + R(x + 1, y + 1)) - (R(x - 1, y - 1) + 2 * R(x, y - 1) + R(x + 1, y - 1))) / (8 * mpp);
         const n = [0, 1, 2].map((c) => (m.normal[i * 4 + c] / 255) * 2 - 1);
-        if (Math.hypot(gx, gy) > 0.2) {
+        // R40: only where the macro slope is steep and beats the material relief.
+        if (Math.hypot(gx, gy) > 0.2 && Math.hypot(gx, gy) > Math.hypot(rx, ry)) {
           steep++;
           if (n[0] * -gx + n[1] * -gy < 0) against++;
+          // A normal with inverted xy must fail on (almost) every counted pixel: the rule still discriminates.
+          if (-n[0] * -gx + -n[1] * -gy < 0) againstFlipped++;
         }
         if (m.rectId[i] === 0) continue;
         // Angle between the final normal and the Sobel macro normal.
@@ -878,10 +886,11 @@ test('normals follow the macro height and the detail normal fades inside the los
         if (b < -0.006) { inSum += dev; inN++; } else if (b >= 0.024 - 1e-6) { outSum += dev; outN++; }
       }
     }
-    return { steep, against, inMean: inSum / inN, inN, outMean: outSum / outN, outN };
+    return { steep, against, againstFlipped, inMean: inSum / inN, inN, outMean: outSum / outN, outN };
   });
   expect(r.steep).toBeGreaterThan(1000);
   expect(r.against).toBe(0);
+  expect(r.againstFlipped).toBeGreaterThan(0.95 * r.steep);
   expect(r.inN).toBeGreaterThan(1000);
   expect(r.outN).toBeGreaterThan(1000);
   expect(r.inMean).toBeLessThan(0.5 * r.outMean);
