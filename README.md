@@ -1,6 +1,6 @@
 # Hotspotter
 
-Herramienta local para profesionales que convierte un material PBR tileable en un atlas de hotspots (WebGPU) y lo exporta para Unity (URP/HDRP) y Anvil.
+Herramienta que convierte un material PBR tileable en un atlas de hotspots (WebGPU) y lo exporta para Unity (URP/HDRP) y Anvil.
 
 ## Requisitos
 
