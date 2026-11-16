@@ -19,9 +19,12 @@ async function importBricks(page: Page): Promise<void> {
   await page.getByTestId('folder-input').setInputFiles(BRICKS);
   await expect(page.getByTestId('material-name')).toHaveValue('bricks_wall_13');
   await expect(page.getByTestId('structure-type')).toHaveText('Piezas');
+  // The analysis runs in a Worker, so the first atlas may be composed before the structure lands: wait for the
+  // atlas composed from the current structure.
   await page.waitForFunction(() => {
     const s = window.__hs?.store.getState();
-    return !!s?.atlas && !!s.structure && s.atlas.maps.pieceId.width === s.atlas.resolutionPx;
+    return !!s?.atlas && !!s.structure && s.atlas.structure === s.structure &&
+      s.atlas.maps.pieceId.width === s.atlas.resolutionPx;
   });
 }
 
@@ -282,4 +285,58 @@ test('an analysis is discarded when the material maps change while it runs', asy
   });
   // Without the staleness guard the pending analysis would commit a new structure.
   expect(r).toBe(true);
+});
+
+test('analysis does not block the main thread', async ({ page }) => {
+  await importBricks(page);
+  await page.waitForFunction(() => window.__hs!.store.getState().analysisIdle);
+  const r = await page.evaluate(async () => {
+    const store = window.__hs!.store;
+    const prev = store.getState().structure;
+    // Wall-clock time between frame callbacks (a frame's own timestamp can predate a long task).
+    let last = 0;
+    let max = 0;
+    let running = true;
+    const tick = () => {
+      const now = performance.now();
+      max = Math.max(max, now - last);
+      last = now;
+      if (running) requestAnimationFrame(tick);
+    };
+    await new Promise<void>((r) => requestAnimationFrame(() => { last = performance.now(); r(); }));
+    requestAnimationFrame(tick);
+    void store.getState().analyze({ applyPeriod: true });
+    await new Promise<void>((r) => {
+      const check = () => (store.getState().analysisIdle ? r() : setTimeout(check, 10));
+      check();
+    });
+    running = false;
+    return { maxGap: max, analysed: store.getState().structure !== prev };
+  });
+  expect(r.analysed).toBe(true);
+  expect(r.maxGap).toBeLessThan(120);
+});
+
+test('a worker crash during analysis shows the Spanish error and the next analysis works', async ({ page }) => {
+  await importBricks(page);
+  const crashed = 'El análisis en segundo plano falló; vuelve a intentarlo.';
+  const before = await page.evaluate(async () => {
+    const hs = window.__hs!;
+    const prev = hs.store.getState().structure;
+    hs.failNextWorkerCall('analyze');
+    await hs.store.getState().analyze();
+    const s = hs.store.getState();
+    return { kept: s.structure === prev, idle: s.analysisIdle };
+  });
+  expect(before).toEqual({ kept: true, idle: true });
+  await expect(page.getByTestId('structure-error')).toHaveText(crashed);
+  const after = await page.evaluate(async () => {
+    const store = window.__hs!.store;
+    const prev = store.getState().structure;
+    await store.getState().analyze();
+    const s = store.getState();
+    return { replaced: s.structure !== null && s.structure !== prev, error: s.structureError, idle: s.analysisIdle };
+  });
+  expect(after).toEqual({ replaced: true, error: null, idle: true });
+  await expect(page.getByTestId('structure-error')).toHaveCount(0);
 });

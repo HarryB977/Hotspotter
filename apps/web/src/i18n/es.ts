@@ -129,6 +129,9 @@ export const es = {
     detect: 'Detectar',
     failed: (msg: string) => `No se pudo analizar la estructura: ${msg}`,
   },
+  worker: {
+    crashed: 'El análisis en segundo plano falló; vuelve a intentarlo.',
+  },
   wear: {
     title: 'Desgaste',
     enabled: 'Activar',

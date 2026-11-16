@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import {
-  CONTINUOUS, analyzeStructure, chooseMaps, classifyMapFile, composeInputsFromDoc, createDefaultDoc, downsample,
+  CONTINUOUS, chooseMaps, classifyMapFile, composeInputsFromDoc, createDefaultDoc, downsample,
   jointMeanRgb, meanRgb, proposeFamily, resolveMaterialName, runChecks, toGray, updateNodeParams, validateLayout,
 } from '@hotspotter/core';
 import type {
@@ -13,6 +13,7 @@ import {
 } from '@hotspotter/engine';
 import type { AtlasMaps, ComposeInput, GpuContext, GpuMaterial, GpuStructure, LoadedMaterial } from '@hotspotter/engine';
 import { es } from '../i18n/es';
+import { WorkerCrashedError, workerCall } from '../workers/client';
 
 export type PreviewRes = 512 | 1024 | 2048;
 export type ActiveMap = MapKind | 'rectId' | 'pieceId' | 'wearMask';
@@ -599,9 +600,9 @@ export const useProject = create<ProjectState>()((set, get) => ({
     try {
       const mine = ++analyzeGen;
       const startImages = get().material?.images;
-      // Let the UI paint before the CPU work; anything committed meanwhile is caught below.
+      // Let the UI paint before reading the maps; anything committed meanwhile is caught below.
       await new Promise((r) => setTimeout(r, 0));
-      const { material, gpu, doc } = get();
+      let { material, gpu, doc } = get();
       if (mine !== analyzeGen || !material || !gpu || !doc) return;
       // The maps changed while this request waited; that change requests its own analysis.
       if (material.images !== startImages) return;
@@ -621,12 +622,24 @@ export const useProject = create<ProjectState>()((set, get) => ({
         }
         source = input.source;
         const threshold = node?.params.threshold ?? null;
-        result = analyzeStructure(input.gray, material.settings.tileSizeM, threshold === null ? undefined : { threshold });
+        result = await workerCall(
+          'analyze',
+          { gray: input.gray, tileSizeM: material.settings.tileSizeM, threshold: threshold ?? undefined },
+          [input.gray.data.buffer],
+        );
       } catch (e) {
+        if (mine !== analyzeGen) return;
         console.error('structure analysis failed', e);
-        set({ structureError: es.structure.failed(e instanceof Error ? e.message : String(e)) });
+        set({
+          structureError: e instanceof WorkerCrashedError
+            ? e.message
+            : es.structure.failed(e instanceof Error ? e.message : String(e)),
+        });
         return;
       }
+      // Commit on the state after the Worker returned; a newer request or new maps make this result stale.
+      ({ material, gpu, doc } = get());
+      if (mine !== analyzeGen || !material || !gpu || !doc || material.images !== startImages) return;
       const gpuStructure = uploadStructure(gpu, result);
       let settings = material.settings;
       const p = result.period;

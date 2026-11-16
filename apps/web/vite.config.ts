@@ -51,6 +51,8 @@ function samplesPlugin(): Plugin {
 
 export default defineConfig({
   plugins: [react(), samplesPlugin()],
+  // Module workers (`type: 'module'`), matching how workers/client.ts creates them.
+  worker: { format: 'es' },
   server: {
     port: 5173,
     strictPort: true,

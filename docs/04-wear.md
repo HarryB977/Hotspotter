@@ -216,7 +216,7 @@ Las secciones Desgaste y Suciedad tienen un interruptor "Activar" en la cabecera
 
 Los ajustes de la sección se conservan y se ven atenuados mientras está apagada. La escorrentía empieza en 0 por defecto, así que el espejo está libre mientras el usuario no pida chorretones.
 
-Las islas y las demás comprobaciones nunca bloquean: solo la coherencia de normal puede dar error, y aun así se puede exportar. `runChecks` y el análisis de estructura corren en el hilo principal (unos 0.5–0.7 s y 1.3 s); pasarlos a un Worker queda pendiente (ver [10](10-roadmap.md)).
+Las islas y las demás comprobaciones nunca bloquean: solo la coherencia de normal puede dar error, y aun así se puede exportar. El análisis de estructura corre en un Web Worker; el hilo principal solo lee el mapa a gris y sube el resultado a la GPU. `runChecks` aún corre en el hilo principal (unos 0.5–0.7 s); pasarlo al Worker queda pendiente (ver [10](10-roadmap.md)).
 
 ## Variedad
 
