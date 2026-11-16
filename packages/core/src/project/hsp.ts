@@ -20,6 +20,7 @@ export interface HspManifest {
 }
 
 const MANIFEST_PATH = 'project.json';
+const PREFIXES = ['material/', 'mask/', 'substrate/'];
 const DAMAGED = 'El proyecto está dañado';
 
 export function packProject(p: {
@@ -79,13 +80,20 @@ export async function unpackProject(bytes: Uint8Array): Promise<{
   }
 
   const resources = new Map<string, Uint8Array>();
-  for (const f of files) if (f.path !== MANIFEST_PATH) resources.set(f.path, f.bytes);
-  const needed = [
-    ...(manifest.material?.files ?? []),
-    ...(manifest.mask ? [manifest.mask.file] : []),
-    ...(manifest.substrate?.files ?? []),
+  for (const f of files) {
+    if (f.path === MANIFEST_PATH) continue;
+    if (!PREFIXES.some((pre) => f.path.startsWith(pre))) {
+      throw new HspError(`${DAMAGED}: ${f.path} está en un sitio no permitido`);
+    }
+    resources.set(f.path, f.bytes);
+  }
+  const needed: [string, string][] = [
+    ...(manifest.material?.files ?? []).map((f): [string, string] => [f, 'material/']),
+    ...(manifest.mask ? [[manifest.mask.file, 'mask/'] as [string, string]] : []),
+    ...(manifest.substrate?.files ?? []).map((f): [string, string] => [f, 'substrate/']),
   ];
-  for (const path of needed) {
+  for (const [path, prefix] of needed) {
+    if (!path.startsWith(prefix)) throw new HspError(`${DAMAGED}: ${path} no está en ${prefix}`);
     if (!resources.has(path)) throw new HspError(`Falta el archivo ${path} dentro del proyecto`);
   }
   return { manifest, doc, resources };

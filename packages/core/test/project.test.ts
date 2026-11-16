@@ -79,7 +79,51 @@ describe('zip codec', () => {
   });
 });
 
+describe('zip hardening', () => {
+  it('rejects unsafe paths and duplicate entries', async () => {
+    for (const path of ['../../evil', '/abs', 'a/../b', 'C:/x', 'a\\b', '']) {
+      const zip = await writeZip([{ path, bytes: enc.encode('x') }]);
+      expect(await readZip(zip).catch((e) => e), path).toBeInstanceOf(HspError);
+    }
+    const dup = await writeZip([{ path: 'a', bytes: enc.encode('1') }, { path: 'a', bytes: enc.encode('2') }]);
+    const err = await readZip(dup).catch((e) => e);
+    expect(err).toBeInstanceOf(HspError);
+    expect(err.message).toMatch(/repetido/);
+  });
+
+  it('rejects a declared ratio that is too high and output larger than declared', async () => {
+    const zip = await writeZip([{ path: 'z.bin', bytes: new Uint8Array(100000) }]);
+    const cd = zip.length - 22 - (46 + 5);
+    const ratio = zip.slice();
+    new DataView(ratio.buffer).setUint32(cd + 24, 0x7fffffff, true);
+    expect(await readZip(ratio).catch((e) => e)).toBeInstanceOf(HspError);
+    const lie = zip.slice();
+    new DataView(lie.buffer).setUint32(cd + 24, 50, true);
+    const err = await readZip(lie).catch((e) => e);
+    expect(err).toBeInstanceOf(HspError);
+    expect(err.message).toMatch(/más grande/);
+  });
+
+  it('rejects trailing bytes after the end record', async () => {
+    const zip = await writeZip([{ path: 'a', bytes: enc.encode('1') }]);
+    const longer = new Uint8Array(zip.length + 3);
+    longer.set(zip);
+    expect(await readZip(longer).catch((e) => e)).toBeInstanceOf(HspError);
+  });
+});
+
 describe('.hsp project', () => {
+  it('rejects resources outside the allowed folders and manifest paths with the wrong prefix', async () => {
+    const m = { ...manifestBase(createDefaultDoc(material)), format: 'hotspotter-project', version: 1, savedAt: 'x' };
+    const png = { path: 'material/bricks_basecolor.png', bytes: noise(10) };
+    const pj = { path: 'project.json', bytes: enc.encode(JSON.stringify(m)) };
+    const stray = await writeZip([pj, png, { path: 'evil.dll', bytes: noise(5) }]);
+    expect(await unpackProject(stray).catch((e) => e)).toBeInstanceOf(HspError);
+    const wrong = { ...m, material: { ...m.material!, files: ['mask/x.png'] } };
+    const z2 = await writeZip([{ path: 'project.json', bytes: enc.encode(JSON.stringify(wrong)) }, { path: 'mask/x.png', bytes: noise(5) }]);
+    expect(await unpackProject(z2).catch((e) => e)).toBeInstanceOf(HspError);
+  });
+
   it('round-trips manifest, doc and resources', async () => {
     const doc = createDefaultDoc(material);
     const bytes = noise(500);

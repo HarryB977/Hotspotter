@@ -24,6 +24,10 @@ const MAX_ENTRIES = 0xffff;
 const MAX_SIZE = 0xffffffff;
 const DAMAGED = 'El proyecto está dañado';
 const TOO_BIG = 'El proyecto es demasiado grande para guardarse (máximo 4 GB)';
+/** Max total declared uncompressed size of one archive. */
+const MAX_UNPACKED_TOTAL = 1024 * 1024 * 1024;
+/** Deflate cannot exceed ~1032:1; a declared ratio above this is a bomb or damage. */
+const MAX_DEFLATE_RATIO = 1032;
 const ZIP64 = 'Este proyecto usa un formato de archivo no admitido (zip64)';
 
 const CRC_TABLE = (() => {
@@ -51,7 +55,36 @@ async function pipe(bytes: Uint8Array, stream: CompressionStream | Decompression
 }
 
 const deflateRaw = (b: Uint8Array) => pipe(b, new CompressionStream('deflate-raw'));
-const inflateRaw = (b: Uint8Array) => pipe(b, new DecompressionStream('deflate-raw'));
+
+/** Inflate, aborting as soon as the output grows past `limit` bytes. Returns null when it does. */
+async function inflateRaw(raw: Uint8Array, limit: number): Promise<Uint8Array | null> {
+  const ds = new DecompressionStream('deflate-raw');
+  const writer = ds.writable.getWriter();
+  writer.write(raw as BufferSource).catch(() => undefined);
+  writer.close().catch(() => undefined);
+  const reader = ds.readable.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.length;
+    if (total > limit) {
+      await reader.cancel().catch(() => undefined);
+      return null;
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(total);
+  let o = 0;
+  for (const c of chunks) { out.set(c, o); o += c.length; }
+  return out;
+}
+
+function validPath(path: string): boolean {
+  if (path === '' || path.startsWith('/') || /[\\:\0]/.test(path)) return false;
+  return !path.split('/').some((seg) => seg === '..');
+}
 
 interface Entry { name: Uint8Array; crc: number; method: number; data: Uint8Array; size: number; offset: number }
 
@@ -127,7 +160,9 @@ export async function readZip(bytes: Uint8Array): Promise<ProjectFile[]> {
   for (let i = bytes.length - 22; i >= Math.max(0, bytes.length - 22 - 0xffff); i--) {
     if (dv.getUint32(i, true) === SIG_EOCD) { eocd = i; break; }
   }
-  if (eocd < 0) throw bad('no es un archivo de proyecto válido');
+  if (eocd < 0 || eocd + 22 + dv.getUint16(eocd + 20, true) !== bytes.length) {
+    throw bad('no es un archivo de proyecto válido');
+  }
   const count = dv.getUint16(eocd + 10, true);
   const cdSize = dv.getUint32(eocd + 12, true);
   const cdOffset = dv.getUint32(eocd + 16, true);
@@ -135,6 +170,8 @@ export async function readZip(bytes: Uint8Array): Promise<ProjectFile[]> {
   if (cdOffset + cdSize > eocd) throw bad('el índice de archivos está cortado');
   const dec = new TextDecoder('utf-8', { fatal: true });
   const out: ProjectFile[] = [];
+  const seen = new Set<string>();
+  let unpackedTotal = 0;
   let p = cdOffset;
   for (let i = 0; i < count; i++) {
     if (p + 46 > bytes.length || dv.getUint32(p, true) !== SIG_CENTRAL) throw bad('el índice de archivos no es válido');
@@ -155,9 +192,16 @@ export async function readZip(bytes: Uint8Array): Promise<ProjectFile[]> {
       throw bad('un nombre de archivo no es válido');
     }
     p += 46 + nlen + elen + clen;
+    if (!validPath(path)) throw bad('un nombre de archivo no es seguro');
+    if (seen.has(path)) throw bad(`archivo repetido: ${path}`);
+    seen.add(path);
     if (flags & FLAG_ENCRYPTED) throw new HspError('Este proyecto está cifrado y no se puede abrir');
     if (csize === MAX_SIZE || usize === MAX_SIZE || lho === MAX_SIZE) throw new HspError(ZIP64);
     if (method !== 0 && method !== 8) throw bad(`${path} usa una compresión no admitida`);
+    unpackedTotal += usize;
+    if (unpackedTotal > MAX_UNPACKED_TOTAL || (method === 8 && usize > csize * MAX_DEFLATE_RATIO)) {
+      throw bad(`${path} declara un tamaño descomprimido excesivo`);
+    }
     if (lho + 30 > bytes.length || dv.getUint32(lho, true) !== SIG_LOCAL) throw bad(`falta la cabecera de ${path}`);
     // Sizes come from the central directory, so a data descriptor (flag bit 3) needs no special handling.
     const start = lho + 30 + dv.getUint16(lho + 26, true) + dv.getUint16(lho + 28, true);
@@ -167,11 +211,14 @@ export async function readZip(bytes: Uint8Array): Promise<ProjectFile[]> {
     if (method === 0) {
       data = raw;
     } else {
+      let inflated: Uint8Array | null;
       try {
-        data = await inflateRaw(raw);
+        inflated = await inflateRaw(raw, usize);
       } catch {
         throw bad(`no se pudo descomprimir ${path}`);
       }
+      if (!inflated) throw bad(`${path} es más grande de lo declarado`);
+      data = inflated;
     }
     if (data.length !== usize || crc32(data) !== crc) throw bad(`${path} está corrupto`);
     out.push({ path, bytes: data.slice() });
