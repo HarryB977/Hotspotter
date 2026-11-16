@@ -64,6 +64,8 @@ export interface HsHarness {
     readonly reads: number;
     /** Textures the mounted renderer holds (renderer.info.memory.textures), or null when none is mounted. */
     gpuTextures(): number | null;
+    /** Geometries the mounted renderer holds (renderer.info.memory.geometries), or null when none is mounted. */
+    gpuGeometries(): number | null;
     faces(): FaceOnScreen[];
     probe(): ReturnType<View3DScene['probe']> | null;
     remount(): void;
@@ -147,6 +149,7 @@ export function installHarness(): void {
       get renderers() { return view3dDebug.renderers; },
       get reads() { return atlasTextureStats.reads; },
       gpuTextures: () => view3dDebug.scene?.gpuTextures ?? null,
+      gpuGeometries: () => view3dDebug.scene?.renderer.info.memory.geometries ?? null,
       faces: () => view3dDebug.scene?.facesOnScreen() ?? [],
       probe: () => view3dDebug.scene?.probe() ?? null,
       remount: () => view3dDebug.remount?.(),

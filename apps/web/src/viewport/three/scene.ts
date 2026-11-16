@@ -167,7 +167,7 @@ export class View3DScene {
   private readonly camera = new THREE.PerspectiveCamera(40, 1, 0.02, 200);
   private readonly controls: OrbitControls;
   private readonly light = new THREE.DirectionalLight(0xffffff, DIRECTIONAL_INTENSITY);
-  private readonly envTarget: THREE.WebGLRenderTarget;
+  private envTarget: THREE.WebGLRenderTarget;
   private readonly lit = new THREE.MeshStandardMaterial({ color: 0x808080, roughness: 0.8, metalness: 0 });
   private readonly unlit = new THREE.ShaderMaterial({
     vertexShader: UNLIT_VERTEX,
@@ -184,8 +184,30 @@ export class View3DScene {
   private height = 0;
   private frame = 0;
   private disposed = false;
+  private contextLost = false;
+  private readonly canvas: HTMLCanvasElement;
+  private readonly onContextLost = (e: Event) => {
+    // Without preventDefault the browser never restores the context (three does it too; this does not rely on that).
+    e.preventDefault();
+    this.contextLost = true;
+    cancelAnimationFrame(this.frame);
+    this.frame = 0;
+  };
+  /**
+   * three has already rebuilt its GL state (its listener was added first, in the renderer's constructor) and re-uploads
+   * textures and geometry from their CPU copies on the next draw. The PMREM room was only ever on the GPU: build it
+   * again. The old target is dropped, not disposed: its GL objects died with the lost context.
+   */
+  private readonly onContextRestored = () => {
+    if (this.disposed) return;
+    this.contextLost = false;
+    this.envTarget = this.roomEnvironment();
+    this.scene.environment = this.envTarget.texture;
+    this.requestRender();
+  };
 
   constructor(canvas: HTMLCanvasElement) {
+    this.canvas = canvas;
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
     view3dDebug.renderers++;
     view3dDebug.scene = this;
@@ -193,17 +215,25 @@ export class View3DScene {
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.NeutralToneMapping;
     this.scene.background = new THREE.Color(BACKGROUND);
-    const pmrem = new THREE.PMREMGenerator(this.renderer);
-    const room = new RoomEnvironment();
-    this.envTarget = pmrem.fromScene(room, 0.04);
-    room.dispose();
-    pmrem.dispose();
+    this.envTarget = this.roomEnvironment();
     this.scene.environment = this.envTarget.texture;
     this.scene.environmentIntensity = ENVIRONMENT_INTENSITY;
     this.scene.add(this.light, this.shape);
     this.lit.normalScale.copy(NORMAL_SCALE);
     this.controls = new OrbitControls(this.camera, canvas);
     this.controls.addEventListener('change', () => this.requestRender());
+    canvas.addEventListener('webglcontextlost', this.onContextLost);
+    canvas.addEventListener('webglcontextrestored', this.onContextRestored);
+  }
+
+  /** three's procedural RoomEnvironment, prefiltered for image-based lighting. */
+  private roomEnvironment(): THREE.WebGLRenderTarget {
+    const pmrem = new THREE.PMREMGenerator(this.renderer);
+    const room = new RoomEnvironment();
+    const target = pmrem.fromScene(room, 0.04);
+    room.dispose();
+    pmrem.dispose();
+    return target;
   }
 
   /** Canvas size in CSS pixels; 0 × 0 (a hidden pane) stops drawing until a real size comes back. */
@@ -225,7 +255,8 @@ export class View3DScene {
     for (const t of textureList(set)) {
       await new Promise((ok) => setTimeout(ok, 0));
       if (this.disposed || !isCurrent()) return false;
-      this.renderer.initTexture(t);
+      // While the context is lost three uploads from the CPU copy on the first draw after the restore.
+      if (!this.contextLost) this.renderer.initTexture(t);
     }
     return true;
   }
@@ -336,7 +367,7 @@ export class View3DScene {
   }
 
   private draw(): void {
-    if (this.disposed || this.width === 0 || this.height === 0) return;
+    if (this.disposed || this.contextLost || this.width === 0 || this.height === 0) return;
     this.renderer.render(this.scene, this.camera);
     view3dDebug.frames++;
   }
@@ -425,6 +456,8 @@ export class View3DScene {
     if (this.disposed) return;
     this.disposed = true;
     cancelAnimationFrame(this.frame);
+    this.canvas.removeEventListener('webglcontextlost', this.onContextLost);
+    this.canvas.removeEventListener('webglcontextrestored', this.onContextRestored);
     this.clearShape();
     this.controls.dispose();
     this.lit.dispose();

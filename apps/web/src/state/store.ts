@@ -1252,6 +1252,12 @@ export function composesRunoff(input: Pick<ComposeInput, 'dirt'>): boolean {
   return (input.dirt?.runoff ?? 0) > 0;
 }
 
+/** `composesRunoff` for a document: its dirt section is on and has runoff, as `composeInputFor` reads it. */
+export function runoffOf(doc: ProjectDoc): boolean {
+  const dirt = dirtNode(doc)?.params;
+  return composesRunoff({ dirt: dirt?.enabled ? dirt : undefined });
+}
+
 async function recompose(): Promise<void> {
   const { doc, gpuMaterial, gpu, previewRes, structure, mask, substrate } = useProject.getState();
   const mine = ++composeGen;

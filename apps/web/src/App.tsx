@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { Suspense, lazy, useEffect } from 'react';
 import { es } from './i18n/es';
 import { useProject } from './state/store';
 import { MaterialPanel } from './panels/MaterialPanel';
@@ -9,12 +9,14 @@ import { StackPanel } from './panels/StackPanel';
 import { Inspector } from './panels/Inspector';
 import { AtlasView } from './viewport/AtlasView';
 import { ViewportSplit } from './viewport/ViewportSplit';
-import { View3DPane } from './viewport/View3D';
 import { ExportDialog } from './export/ExportDialog';
 import { FileMenu, ProjectName } from './project/FileMenu';
 import { MAP_TABS } from './state/store';
 import type { ActiveMap } from './state/store';
 import { mapLabel } from './viewport/mapLabel';
+
+// three.js is half the bundle: the 3D view loads in its own chunk.
+const View3DPane = lazy(() => import('./viewport/View3D'));
 
 function PanelTitle({ children }: { children: React.ReactNode }) {
   return (
@@ -82,7 +84,11 @@ export function App() {
             ) : (
               <div className="flex flex-1 items-center justify-center text-zinc-600">{es.atlas.empty}</div>
             )}
-            right={<View3DPane />}
+            right={(
+              <Suspense fallback={<div className="flex-1" data-testid="view3d-loading" />}>
+                <View3DPane />
+              </Suspense>
+            )}
           />
         </main>
         <aside className="flex min-h-0 flex-col border-l border-zinc-800 bg-zinc-900">

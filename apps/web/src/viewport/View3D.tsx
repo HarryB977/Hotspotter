@@ -4,7 +4,7 @@ import { buildShape, fitFaces } from '@hotspotter/core';
 import type { DocNode, HotspotFit, ShapeFace, TestShape } from '@hotspotter/core';
 import { es } from '../i18n/es';
 import {
-  VIEW3D_MODES, VIEW3D_SHAPES, composeInputFor, composesRunoff, useProject,
+  VIEW3D_MODES, VIEW3D_SHAPES, runoffOf, useProject,
 } from '../state/store';
 import type { AtlasResult, View3dMode } from '../state/store';
 import { Button } from '../components/ui/button';
@@ -30,9 +30,11 @@ function fitShape(atlas: AtlasResult, shape: TestShape): { faces: ShapeFace[]; f
   const faces = buildShape(shape);
   const rotations = new Map(atlas.placements.map((p) => [p.rectId, p.rotate90]));
   const seed = atlas.doc.nodes.find((n): n is DocNode<'wear'> => n.type === 'wear')?.params.seed ?? 0;
-  const runoff = composesRunoff(composeInputFor(atlas, atlas, atlas.resolutionPx));
+  const runoff = runoffOf(atlas.doc);
   return { faces, fits: fitFaces(faces, atlas.layout, rotations, { seed, runoff }) };
 }
+
+export default View3DPane;
 
 /** The 3D view, remountable by the test harness (`view3dDebug.remount`) to check that nothing leaks. */
 export function View3DPane() {
@@ -198,23 +200,22 @@ function View3D() {
             {VIEW3D_MODES.map((m) => <SelectItem key={m} value={m}>{modeLabel(m)}</SelectItem>)}
           </SelectContent>
         </Select>
-        <label className="flex items-center gap-1" title={t.lightAzimuthHint}>
-          {t.lightAzimuth}
+        <div className="flex items-center gap-1">
+          <span title={t.lightHint}>{t.light}</span>
           <NumField
             className="w-11"
             aria-label={t.lightAzimuth}
+            title={t.lightAzimuthHint}
             value={Math.round(lightAzimuthDeg)}
             step={1}
             onCommit={(v) => v !== null && setView3d({ lightAzimuthDeg: v })}
             data-testid="view3d-light-azimuth"
           />
           °
-        </label>
-        <label className="flex items-center gap-1" title={t.lightElevationHint}>
-          {t.lightElevation}
           <NumField
             className="w-10"
             aria-label={t.lightElevation}
+            title={t.lightElevationHint}
             value={Math.round(lightElevationDeg)}
             step={1}
             min={0}
@@ -223,7 +224,7 @@ function View3D() {
             data-testid="view3d-light-elevation"
           />
           °
-        </label>
+        </div>
         <label className="flex items-center gap-1" title={t.pointFilterHint}>
           <Switch
             checked={pointFilter}
@@ -234,15 +235,15 @@ function View3D() {
           {t.pointFilter}
         </label>
         <Button
-          size="sm"
+          size="icon"
           variant="ghost"
-          className="ml-auto text-xs"
+          className="ml-auto h-6 w-6"
+          aria-label={t.fit}
           title={t.fitHint}
           onClick={() => sceneRef.current?.fit(shape)}
           data-testid="view3d-fit"
         >
-          <Focus size={12} aria-hidden />
-          {t.fit}
+          <Focus size={14} aria-hidden />
         </Button>
       </div>
       <div

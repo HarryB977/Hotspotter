@@ -57,9 +57,18 @@ async function choose(page: Page, select: 'view3d-shape' | 'view3d-mode', option
   await expect(page.getByTestId(select)).toHaveText(option);
 }
 
-interface Stats { mean: number; max: number; variance: number; accent: number; width: number; height: number }
+interface Stats {
+  mean: number; max: number; variance: number; accent: number; width: number; height: number;
+  /** Pixels brighter than 200 (grey). */
+  bright: number;
+  /** Pixels that are not the background (#09090b): the shape. */
+  shape: number;
+}
 
-/** Grey mean, max and variance of a screenshot, and how many pixels have the accent colour (#f59e0b). */
+/**
+ * Grey mean, max and variance of a screenshot, how many pixels have the accent colour (#f59e0b), how many are bright
+ * and how many show the shape.
+ */
 function stats(page: Page, b64: string): Promise<Stats> {
   return page.evaluate(async (b64) => {
     const bmp = await createImageBitmap(await (await fetch(`data:image/png;base64,${b64}`)).blob());
@@ -67,7 +76,7 @@ function stats(page: Page, b64: string): Promise<Stats> {
     g.drawImage(bmp, 0, 0);
     const px = g.getImageData(0, 0, bmp.width, bmp.height).data;
     const n = bmp.width * bmp.height;
-    let sum = 0, sq = 0, max = 0, accent = 0;
+    let sum = 0, sq = 0, max = 0, accent = 0, bright = 0, shape = 0;
     for (let i = 0; i < n; i++) {
       const [r, gg, b] = [px[i * 4], px[i * 4 + 1], px[i * 4 + 2]];
       const v = (r + gg + b) / 3;
@@ -75,9 +84,11 @@ function stats(page: Page, b64: string): Promise<Stats> {
       sq += v * v;
       max = Math.max(max, r, gg, b);
       if (Math.abs(r - 245) < 25 && Math.abs(gg - 158) < 30 && b < 60) accent++;
+      if (v > 200) bright++;
+      if (Math.abs(r - 9) + Math.abs(gg - 9) + Math.abs(b - 11) > 6) shape++;
     }
     const mean = sum / n;
-    return { mean, max, variance: sq / n - mean * mean, accent, width: bmp.width, height: bmp.height };
+    return { mean, max, variance: sq / n - mean * mean, accent, bright, shape, width: bmp.width, height: bmp.height };
   }, b64);
 }
 
@@ -161,12 +172,23 @@ test('the lit cube shows the atlas: non-blank, and its front face has the colour
   for (let c = 0; c < 3; c++) expect(Math.abs(result.screen[c] - result.atlas[c])).toBeLessThanOrEqual(40);
 });
 
-test('switching the shape changes the picture', async ({ page }) => {
+test('switching the shape changes the picture and frees the old geometry', async ({ page }) => {
   await importBricks(page);
   const cube = await shot(page);
+  /** GPU geometries of the mounted renderer and faces of the shape: one geometry per face is drawn in lit mode. */
+  const geometry = () => page.evaluate(() => ({
+    gpu: window.__hs!.view3d.gpuGeometries(), faces: window.__hs!.view3d.faces().length,
+  }));
+  const cubeGeometry = await geometry();
+  expect(cubeGeometry).toEqual({ gpu: 6, faces: 6 });
   await choose(page, 'view3d-shape', 'Columna');
   await settleFrames(page);
   expect(await changedFraction(page, cube, await shot(page))).toBeGreaterThan(0.05);
+  const column = await geometry();
+  expect(column.gpu).toBe(column.faces);
+  await choose(page, 'view3d-shape', 'Cubo');
+  await settleFrames(page);
+  expect(await geometry()).toEqual(cubeGeometry);
   for (const name of ['Pared con huecos', 'Pasillo', 'Escalera']) {
     await choose(page, 'view3d-shape', name);
     await settleFrames(page);
@@ -174,13 +196,20 @@ test('switching the shape changes the picture', async ({ page }) => {
   }
 });
 
-test('the Desgaste mode shows the wear mask unlit: dark with bright edges', async ({ page }) => {
+test('the Desgaste mode shows the wear mask unlit: dark with a few bright edges, unlike Height', async ({ page }) => {
   await importBricks(page);
+  /** A wear mask on bricks: mostly black, with bright worn edges (some, but at most 5 % of the shape). */
+  const wearLike = (s: Stats) => s.mean < 80 && s.max > 200 && s.bright >= 30 && s.bright / s.shape <= 0.05;
   await choose(page, 'view3d-mode', 'Desgaste');
   await settleFrames(page);
-  const s = await stats(page, await shot(page));
-  expect(s.mean).toBeLessThan(80);
-  expect(s.max).toBeGreaterThan(200);
+  expect(wearLike(await stats(page, await shot(page)))).toBe(true);
+  // Height is dark around the shape too (on the cube its mean is below 80 as well), but its brick faces are bright:
+  // it must not pass for the wear mask.
+  await choose(page, 'view3d-mode', 'Height');
+  await settleFrames(page);
+  const height = await stats(page, await shot(page));
+  expect(height.bright / height.shape).toBeGreaterThan(0.2);
+  expect(wearLike(height)).toBe(false);
 });
 
 test('the Rectángulos mode outlines the rects and names the one under the pointer', async ({ page }) => {
@@ -209,6 +238,71 @@ test('a recomposition replaces the 3D texture set and frees the old one', async 
   await expect.poll(() => page.evaluate(() => window.__hs!.view3dTextureGen)).toBeGreaterThan(before.gen);
   await settle(page);
   expect(await page.evaluate(() => window.__hs!.view3d.liveTextures)).toBe(before.live);
+});
+
+test('a remount in the middle of a readback leaks no textures or renderers', async ({ page }) => {
+  await importBricks(page);
+  const baseline = await page.evaluate(() => ({
+    gpu: window.__hs!.view3d.gpuTextures(), live: window.__hs!.view3d.liveTextures,
+  }));
+  const midway = await page.evaluate(async () => {
+    const hs = window.__hs!;
+    const reads = hs.view3d.reads;
+    const gen = hs.view3dTextureGen;
+    hs.store.getState().updateNode('wear', { seed: 11 });
+    // Remount as soon as the first read of the new atlas has started, before its set is built.
+    const t0 = performance.now();
+    while (hs.view3d.reads === reads && performance.now() - t0 < 10_000) await new Promise((ok) => setTimeout(ok, 0));
+    hs.view3d.remount();
+    return { started: hs.view3d.reads > reads, built: hs.view3dTextureGen !== gen };
+  });
+  expect(midway).toEqual({ started: true, built: false });
+  await settle(page);
+  const after = await page.evaluate(() => ({
+    gpu: window.__hs!.view3d.gpuTextures(), live: window.__hs!.view3d.liveTextures,
+    renderers: window.__hs!.view3d.renderers,
+  }));
+  expect(after).toEqual({ ...baseline, renderers: 1 });
+});
+
+test('a lost WebGL context comes back and is drawn again without any input', async ({ page }) => {
+  await importBricks(page);
+  const before = await stats(page, await shot(page));
+  const frames = await page.evaluate(() => window.__hs!.view3dFrames);
+  await page.evaluate(async () => {
+    const cv = document.querySelector<HTMLCanvasElement>('[data-testid="view3d-canvas"]')!;
+    const ext = cv.getContext('webgl2')!.getExtension('WEBGL_lose_context')!;
+    const lost = new Promise((ok) => cv.addEventListener('webglcontextlost', ok, { once: true }));
+    ext.loseContext();
+    await lost;
+    // Chrome allows the restore only once the lost event's dispatch is over (it checks preventDefault after it).
+    await new Promise((ok) => setTimeout(ok, 50));
+    const restored = new Promise((ok) => cv.addEventListener('webglcontextrestored', ok, { once: true }));
+    ext.restoreContext();
+    await restored;
+  });
+  await expect.poll(() => page.evaluate(() => window.__hs!.view3dFrames)).toBeGreaterThan(frames);
+  await settleFrames(page);
+  const after = await stats(page, await shot(page));
+  expect(after.variance).toBeGreaterThan(200);
+  // The same picture: the textures and the room lighting are back, not just the background.
+  expect(Math.abs(after.mean - before.mean)).toBeLessThan(before.mean * 0.1 + 2);
+});
+
+test('the toolbar fits on one row at a 50 % split on a 1600 px window', async ({ page }) => {
+  await importBricks(page);
+  // The widest choices.
+  await choose(page, 'view3d-shape', 'Pared con huecos');
+  await choose(page, 'view3d-mode', 'Rectángulos');
+  await expect(page.getByRole('button', { name: 'Encajar vista' })).toHaveAttribute('title', /Encajar vista/);
+  const toolbar = page.getByTestId('view3d-toolbar');
+  // One row: every control's vertical centre on the same line (they differ in height, so their tops do not).
+  const centres = await toolbar.evaluate((el) => [...el.children].map((c) => {
+    const r = c.getBoundingClientRect();
+    return r.top + r.height / 2;
+  }));
+  expect(Math.max(...centres) - Math.min(...centres)).toBeLessThanOrEqual(2);
+  expect((await toolbar.boundingBox())!.height).toBeLessThanOrEqual(34);
 });
 
 test('unmounting and remounting 10 times leaks no textures or WebGL contexts', async ({ page }) => {
