@@ -192,20 +192,33 @@ describe('matchHotspot', () => {
     expect(rectOf(walls, fallback).useOn).toBe('walls');
   });
 
-  it('the seed changes ties only', () => {
-    // walls preset: two 0.4 x 2.6 m rects tie exactly for a 0.4 x 2.6 m face.
-    const tied = new Set<string>();
+  it('the seed only changes the pick among in-tolerance rects within 0.15 of the best', () => {
+    // walls preset: the two 0.4 x 2.6 m rects score 0 and are the only ones within ±25 % of a 0.4 x 2.6 m face.
+    const windowed = new Set<string>();
     const single = new Set<string>();
     for (let seed = 0; seed < 32; seed++) {
-      tied.add(matchHotspot(wall(0.4, 2.6), walls, NO_ROT, { seed }).rectId);
+      windowed.add(matchHotspot(wall(0.4, 2.6), walls, NO_ROT, { seed }).rectId);
+      // 1 x 2 m falls through to the closest rect (step 3), which ignores the seed.
       single.add(matchHotspot(wall(1, 2), walls, NO_ROT, { seed }).rectId);
     }
-    expect(tied.size).toBe(2);
+    expect(windowed.size).toBe(2);
     expect(single.size).toBe(1);
     // Same seed, same answer.
     expect(matchHotspot(wall(0.4, 2.6), walls, NO_ROT, { seed: 7 })).toEqual(
       matchHotspot(wall(0.4, 2.6), walls, NO_ROT, { seed: 7 }),
     );
+  });
+
+  it('a rect just outside the 0.15 window is never picked, whatever the seed', () => {
+    // 1 x 1 m face; all three rects are within ±25 %. Scores: exact 0, near 2.5 ln 1.05 = 0.122 (inside the
+    // window), far 2.5 ln 1.07 = 0.169 (outside).
+    const exact = makeRect({ id: 'exact', x: 0, y: 0, w: 100, h: 100 });
+    const near = makeRect({ id: 'near', x: 100, y: 0, w: 105, h: 100 });
+    const far = makeRect({ id: 'far', x: 205, y: 0, w: 107, h: 100 });
+    const layout = custom([exact, near, far]);
+    const seen = new Set<string>();
+    for (let seed = 0; seed < 64; seed++) seen.add(matchHotspot(wall(1, 1), layout, NO_ROT, { seed }).rectId);
+    expect([...seen].sort()).toEqual(['exact', 'near']);
   });
 
   it('mirrors only along the axes the rect allows, picked by the seed', () => {

@@ -31,8 +31,8 @@ export interface HotspotFit {
 
 /** ProBuilder's default Scale Tolerance (±25 %), as a log ratio with its epsilon. */
 const MAX_LOG = Math.log(1 + 0.25) + 1e-5;
-/** Scores closer than this are a tie, broken by the seeded RNG. */
-const TIE_EPSILON = 1e-9;
+/** ProBuilder's default Random Tolerance: in-tolerance rects scoring within this of the best are picked at random. */
+const RANDOM_TOLERANCE = 0.15;
 
 type TileAxis = 'u' | 'v' | null;
 
@@ -59,24 +59,37 @@ const usableSize = (m: { w: number; h: number }) => Number.isFinite(m.w) && Numb
 
 const lerp = (a: number, b: number, f: number) => (1 - f) * a + f * b;
 
-/** Lowest-valued candidate; exact ties go to the seeded RNG. */
-function pickBest(cands: Candidate[], value: (c: Candidate) => number, rng: Rng): { c: Candidate; value: number } {
+function finiteOf(cands: Candidate[], value: (c: Candidate) => number): Candidate[] {
   const finite = cands.filter((c) => Number.isFinite(value(c)));
   if (finite.length === 0) throw new RangeError('matchHotspot: no rect has a finite score for this face');
-  const best = Math.min(...finite.map(value));
-  const tied = finite.filter((c) => value(c) - best <= TIE_EPSILON);
-  const c = tied.length === 1 ? tied[0] : rng.pick(tied);
+  return finite;
+}
+
+/** Step 1: a seeded random pick among candidates scoring within the tolerance of the best (inclusive, as ProBuilder). */
+function pickInWindow(cands: Candidate[], rng: Rng): { c: Candidate; value: number } {
+  const finite = finiteOf(cands, (c) => c.score);
+  const best = Math.min(...finite.map((c) => c.score));
+  const c = rng.pick(finite.filter((x) => x.score <= best + RANDOM_TOLERANCE));
+  return { c, value: c.score };
+}
+
+/** Steps 2 and 3: the first candidate with the lowest value, in layout order (unrotated before rotated). */
+function pickFirstMin(cands: Candidate[], value: (c: Candidate) => number): { c: Candidate; value: number } {
+  const finite = finiteOf(cands, value);
+  let c = finite[0];
+  for (const x of finite) if (value(x) < value(c)) c = x;
   return { c, value: value(c) };
 }
 
 /**
  * Picks the hotspot rect for a face and maps the face onto it as ProBuilder's Hotspot UV does
  * (`HotspotTexture.FindBestPatch` + `HotspotMapper.Map`, decision 79 / R46):
- * 1. rects within ±25 % of the face on both axes, best `2·|ln(aspectFace/aspectRect)| + 0.5·|ln(areaFace/areaRect)|`;
- * 2. else tiling strips whose cross size is within ±25 %, least cross error;
- * 3. else the closest rect overall by the same score.
+ * 1. rects within ±25 % of the face on both axes, scored `2·|ln(aspectFace/aspectRect)| + 0.5·|ln(areaFace/areaRect)|`;
+ *    one is picked at random (seeded) among those scoring at most 0.15 above the best;
+ * 2. else tiling strips whose cross size is within ±25 %, the first with the least cross error;
+ * 3. else the first closest rect overall by the same score.
  * Rects whose `useOn` excludes the face are dropped first, unless none remains. Each rect is tried unrotated and,
- * with `allowRotation`, turned 90 degrees. Ties and mirroring (only on the axes the rect allows) come from the
+ * with `allowRotation`, turned 90 degrees. Mirroring (only on the axes the rect allows) also comes from the
  * seeded RNG. The face is stretched onto the rect, shrunk by `inset` px per side, except that a strip repeats in
  * world metres along its tiling axis (and is not inset there).
  *
@@ -130,10 +143,10 @@ export function matchHotspot(
   const inTolerance = candidates.filter((c) => c.inTolerance);
   const strips = candidates.filter((c) => c.stripError !== null);
   const { c: pick, value: score } = inTolerance.length > 0
-    ? pickBest(inTolerance, (c) => c.score, rng)
+    ? pickInWindow(inTolerance, rng)
     : strips.length > 0
-      ? pickBest(strips, (c) => c.stripError as number, rng)
-      : pickBest(candidates, (c) => c.score, rng);
+      ? pickFirstMin(strips, (c) => c.stripError as number)
+      : pickFirstMin(candidates, (c) => c.score);
   const { rect, rotated, axis } = pick;
   const mirrorX = rect.allowMirrorX && rng.next() < 0.5;
   const mirrorY = rect.allowMirrorY && rng.next() < 0.5;
