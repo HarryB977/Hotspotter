@@ -38,7 +38,7 @@ Falta para cerrar la v0.1 (plan v0.1-D):
 - **`.exe` portable** y **aviso de actualizaciones** (ver [08](08-distribution.md)). El servidor importa todo `packages/core`: el empaquetado del `.exe` debe incluirlo (o importar solo el subpath que usa).
 - Islas: marcar también las motas sueltas dentro de la franja `wEff` (decisión 51).
 - Comprobar en Anvil si `Can mirror` es un solo flag para los dos ejes (decisión 54).
-- Vista 3D, por confirmar con el usuario: (1) en el Pasillo de 6 × 3 m las paredes estiran un rectángulo unas 3.75 veces, porque el preset de paredes no tiene rectángulo ni franja para paredes de altura de planta (es lo que haría ProBuilder, pero roza la regla de proporciones); (2) la decisión 80 usa `RepeatWrapping` en todas las caras en lugar de Clamp.
+- **Preset de paredes: franja de altura de planta** (decidido con el usuario, 2026-11-16). Añadir al preset de paredes una franja horizontal repetible de altura de planta, para que paredes grandes como las del Pasillo (6 × 3 m) no estiren un rectángulo (hoy unas 3.75 veces, lo mismo que haría ProBuilder con el preset actual). El `RepeatWrapping` de la decisión 80 queda confirmado por el usuario.
 - Vista 3D, menores: los zócalos del Pasillo tienen sus remates estirados porque no se permite girar (decisión 79); el interruptor "Píxeles" vuelve a subir las seis texturas de golpe; la vista 3D no avisa si el contexto WebGL nunca se recupera.
 - `inset`: no es un fallo. Se escribe en px de la textura exportada, porque la exportación resuelve el layout a la resolución de exportación (`encode.ts` → `document.ts`), y hoy vale siempre 0.
 - Que el usuario valide los sets del banco frente a `samples/examples/` (criterio de [11](11-test-bench.md)).
