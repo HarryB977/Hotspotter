@@ -5,6 +5,8 @@ export const es = {
     `Se perdió la conexión con la GPU (${reason === 'destroyed' ? 'el dispositivo se cerró' : 'motivo desconocido'}). ` +
     'Suele pasar por falta de memoria de vídeo o porque el driver reinició la GPU tras un trabajo muy largo; ' +
     'prueba una resolución menor y recarga la página.' + (message ? ` Detalle: ${message}` : ''),
+  uploadTooBig: (mb: number) =>
+    `El archivo es demasiado grande para guardarlo (máximo ${mb.toLocaleString('es')} MB).`,
   topBar: { project: 'Sin proyecto' },
   project: {
     menu: 'Archivo',
@@ -13,6 +15,8 @@ export const es = {
     save: 'Guardar',
     saveAs: 'Guardar como…',
     untitled: 'Sin título',
+    newShortcutHint: 'En una pestaña normal de Chrome, Ctrl+N abre otra ventana; usa este menú',
+    dismissError: 'Cerrar el aviso',
     unsavedTitle: 'Hay cambios sin guardar',
     unsavedBody: 'Hay cambios sin guardar en el proyecto actual. Si sigues sin guardarlos, se pierden.',
     unsavedSave: 'Guardar',
@@ -31,8 +35,9 @@ export const es = {
     noMaterial: 'El proyecto está dañado: no tiene material',
     substrateNoMaps: 'El proyecto está dañado: el segundo material no tiene mapas',
     missingFile: (path: string) => `Falta el archivo ${path} dentro del proyecto`,
-    tooBig: (gb: number) =>
-      `El proyecto ocupa más de ${gb} GB y no se puede guardar. Usa imágenes más pequeñas para el material.`,
+    tooBig: (mb: number) =>
+      `El proyecto ocupa más de ${mb.toLocaleString('es')} MB y no se puede guardar. ` +
+      'Usa imágenes más pequeñas para el material.',
     openFailed: (msg: string) => `No se pudo abrir el proyecto: ${msg}`,
     saveFailed: (msg: string) => `No se pudo guardar el proyecto: ${msg}`,
   },

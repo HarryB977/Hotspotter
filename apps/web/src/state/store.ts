@@ -223,6 +223,9 @@ let substrateReplacedGen = -1;
 /** Bumped by every open and by newProject; only the latest open may swap its project in. */
 let openGen = 0;
 
+/** Bumped when an open swaps a project in and by newProject: a save that spans it wrote the replaced project. */
+let projectGen = 0;
+
 /** Set while a save, open or new marks the state clean, so the dirty tracker ignores that change. */
 let markingClean = false;
 
@@ -563,6 +566,7 @@ export const useProject = create<ProjectState>()((set, get) => ({
   newProject() {
     // An open still building is dropped too.
     openGen++;
+    projectGen++;
     invalidateInFlight(false);
     clearTimeout(composeTimer);
     const old = get();
@@ -580,6 +584,8 @@ export const useProject = create<ProjectState>()((set, get) => ({
   },
 
   async saveProject(target) {
+    // An open or a new project during the save replaces the project this file belongs to.
+    const startProjectGen = projectGen;
     try {
       const path = get().projectPath;
       const to = target ?? (path && path.dir !== '' ? path : null);
@@ -599,6 +605,8 @@ export const useProject = create<ProjectState>()((set, get) => ({
           : null,
       });
       const written = await putFile(to.dir, name, bytes);
+      // The file was written, but the project in the store is now another one: leave its path and dirty flag alone.
+      if (projectGen !== startProjectGen) return written;
       const now = get();
       const next = { projectPath: { dir: to.dir, name }, projectError: null };
       // A change made while the file was being written is not in it: the project stays dirty.
@@ -627,7 +635,7 @@ export const useProject = create<ProjectState>()((set, get) => ({
       return;
     }
     // Everything is built on the side; the current project is touched only by the swap below.
-    const fresh = new Map<string, ImageBitmap>();
+    let fresh = new Map<string, ImageBitmap>();
     let gpuMaterial: GpuMaterial | null = null;
     let maskTexture: GPUTexture | null = null;
     let substrateGpu: GpuMaterial | null = null;
@@ -697,12 +705,19 @@ export const useProject = create<ProjectState>()((set, get) => ({
       const oldBitmaps = bitmaps;
       bitmaps = fresh;
       invalidateInFlight(true);
+      projectGen++;
       setClean(set, {
         doc, material: { settings, images }, gpuMaterial: { ...gpuMaterial, settings }, sources: c.materialFiles,
         importing: false, importError: null, structure, structureError, mask, substrate, wearError: null,
         composeError: null, checks: null, checksError: null, checksPending: false, viewFocus: null,
         projectPath: { dir: '', name: file.name }, projectError: null, opening: false,
       });
+      // Live now: the cleanup below must never free them.
+      gpuMaterial = null;
+      maskTexture = null;
+      substrateGpu = null;
+      structureGpu = null;
+      fresh = new Map();
       destroyProject(old, oldBitmaps);
     } catch (e) {
       destroyTextures(gpuMaterial);
@@ -1363,8 +1378,8 @@ async function evaluate(mine: number, opts?: EvaluationOptions): Promise<CheckRe
 useProject.subscribe((s, prev) => {
   if (markingClean || s.dirty) return;
   if (
-    s.doc !== prev.doc || s.material?.settings !== prev.material?.settings || s.mask !== prev.mask ||
-    s.substrate !== prev.substrate
+    s.doc !== prev.doc || s.material?.settings !== prev.material?.settings || s.sources !== prev.sources ||
+    s.mask !== prev.mask || s.substrate !== prev.substrate
   ) {
     useProject.setState({ dirty: true });
   }

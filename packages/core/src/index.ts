@@ -45,7 +45,7 @@ export { WEAR_FAMILIES, DEFAULT_WEAR, DEFAULT_DIRT, proposeFamily } from './wear
 export type { WearFamily, FamilyShape, WearParams, DirtParams } from './wear/params';
 export { CHECK_IDS, runChecks, deltaE76, jointMeanRgb, meanRgb } from './checks';
 export type { CheckId, CheckStatus, CheckResult, EvalMaps, CheckContext } from './checks';
-export { writeZip, readZip, crc32, MAX_UNPACKED_TOTAL } from './project/zip';
+export { writeZip, readZip, crc32, MAX_UNPACKED_TOTAL, MAX_PROJECT_UPLOAD_BYTES } from './project/zip';
 export { packProject, unpackProject, HspError } from './project/hsp';
 export type { ProjectFile } from './project/zip';
 export type { HspManifest } from './project/hsp';

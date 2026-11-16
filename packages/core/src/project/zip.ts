@@ -26,6 +26,11 @@ const DAMAGED = 'El proyecto está dañado';
 const TOO_BIG = 'El proyecto es demasiado grande para guardarse (máximo 4 GB)';
 /** Max total declared uncompressed size of one archive. */
 export const MAX_UNPACKED_TOTAL = 1024 * 1024 * 1024;
+/**
+ * Largest project file the app saves: the local server's upload limit (R44). Reading still accepts up to
+ * MAX_UNPACKED_TOTAL.
+ */
+export const MAX_PROJECT_UPLOAD_BYTES = 512 * 2 ** 20;
 /** Deflate cannot exceed ~1032:1; a declared ratio above this is a bomb or damage. */
 const MAX_DEFLATE_RATIO = 1032;
 const ZIP64 = 'Este proyecto usa un formato de archivo no admitido (zip64)';

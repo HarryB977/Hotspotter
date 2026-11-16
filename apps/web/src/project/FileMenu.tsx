@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { X } from 'lucide-react';
 import { es } from '../i18n/es';
 import { useProject } from '../state/store';
 import { Button } from '../components/ui/button';
@@ -42,7 +43,19 @@ export function ProjectName() {
       <span className="truncate text-zinc-400" data-testid="project-name">{hasDoc ? label : es.topBar.project}</span>
       {opening && <span className="text-zinc-500" data-testid="project-opening">{es.project.opening}</span>}
       {error && (
-        <span className="min-w-0 truncate text-red-400" title={error} data-testid="project-error">{error}</span>
+        <span className="flex min-w-0 items-center gap-1">
+          <span className="min-w-0 truncate text-red-400" title={error} data-testid="project-error">{error}</span>
+          <button
+            type="button"
+            className="text-zinc-500 hover:text-zinc-100"
+            title={es.project.dismissError}
+            aria-label={es.project.dismissError}
+            data-testid="project-error-dismiss"
+            onClick={() => useProject.setState({ projectError: null })}
+          >
+            <X className="h-3 w-3" />
+          </button>
+        </span>
       )}
     </>
   );
@@ -109,28 +122,38 @@ export function FileMenu() {
     }
   };
 
-  // The latest handlers, for the window listeners registered once.
-  const actions = useRef({ guard, save, openSaveAs });
-  actions.current = { guard, save, openSaveAs };
+  const canSaveAs = !busy && dir.trim() !== '' && name.trim() !== '';
+
+  // The latest handlers and dialog state, for the window listeners registered once.
+  const live = { guard, save, openSaveAs, runSaveAs, saveAsOpen: saveAs !== null, confirmOpen: confirm !== null, canSaveAs };
+  const actions = useRef(live);
+  actions.current = live;
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
       const key = e.key.toLowerCase();
+      const a = actions.current;
       if (key === 's' && !e.shiftKey) {
-        // Works while typing: the field commits on blur, so the save includes what was typed.
         e.preventDefault();
+        // In Guardar como, Ctrl+S is its Guardar button; the unsaved-changes dialog has its own buttons.
+        if (a.saveAsOpen) {
+          if (a.canSaveAs) void a.runSaveAs();
+          return;
+        }
+        if (a.confirmOpen) return;
+        // Works while typing: the field commits on blur, so the save includes what was typed.
         if (isTyping(document.activeElement)) (document.activeElement as HTMLElement).blur();
-        actions.current.save();
+        a.save();
         return;
       }
-      if (isTyping(e.target)) return;
+      if (isTyping(e.target) || a.saveAsOpen || a.confirmOpen) return;
       if (key === 's' && e.shiftKey) {
         e.preventDefault();
-        if (useProject.getState().doc) actions.current.openSaveAs();
+        if (useProject.getState().doc) a.openSaveAs();
       } else if (key === 'n' && !e.shiftKey) {
         e.preventDefault();
-        actions.current.guard({ kind: 'new' });
+        a.guard({ kind: 'new' });
       } else if (key === 'o' && !e.shiftKey) {
         e.preventDefault();
         inputRef.current?.click();
@@ -167,12 +190,13 @@ export function FileMenu() {
     };
   }, [menuOpen]);
 
-  const item = (label: string, shortcut: string, testId: string, run: () => void, disabled = false) => (
+  const item = (label: string, shortcut: string, testId: string, run: () => void, disabled = false, hint?: string) => (
     <button
       type="button"
       role="menuitem"
       className={ITEM}
       disabled={disabled}
+      title={hint}
       data-testid={testId}
       onClick={() => {
         setMenuOpen(false);
@@ -201,7 +225,7 @@ export function FileMenu() {
           role="menu"
           className="absolute left-0 top-full z-40 mt-1 w-56 rounded border border-zinc-700 bg-zinc-900 py-1 text-xs shadow-lg"
         >
-          {item(es.project.new, 'Ctrl+N', 'file-new', () => guard({ kind: 'new' }))}
+          {item(es.project.new, 'Ctrl+N', 'file-new', () => guard({ kind: 'new' }), false, es.project.newShortcutHint)}
           {item(es.project.open, 'Ctrl+O', 'file-open', () => inputRef.current?.click())}
           {item(es.project.save, 'Ctrl+S', 'file-save', () => save(), !hasProject)}
           {item(es.project.saveAs, 'Ctrl+Shift+S', 'file-save-as', () => openSaveAs(), !hasProject)}
@@ -278,7 +302,7 @@ export function FileMenu() {
             <Button
               type="submit"
               variant="default"
-              disabled={busy || dir.trim() === '' || name.trim() === ''}
+              disabled={!canSaveAs}
               data-testid="save-as-run"
             >
               {busy ? es.project.saving : es.project.saveRun}

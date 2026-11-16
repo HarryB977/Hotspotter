@@ -1,4 +1,4 @@
-import { HspError, MAX_UNPACKED_TOTAL, packProject, unpackProject } from '@hotspotter/core';
+import { HspError, MAX_PROJECT_UPLOAD_BYTES, packProject, unpackProject } from '@hotspotter/core';
 import type { MaterialSettings, ProjectDoc, ProjectFile } from '@hotspotter/core';
 import { es } from '../i18n/es';
 
@@ -13,6 +13,8 @@ export async function putFile(dir: string, name: string, body: Blob | string | U
     headers: { 'Content-Type': 'application/octet-stream', 'X-Hotspotter': '1' },
     body: typeof body === 'string' ? new TextEncoder().encode(body) : body,
   });
+  // The server refuses bodies over its upload limit before the route runs, with an English message.
+  if (res.status === 413) throw new UploadError(es.uploadTooBig(MAX_PROJECT_UPLOAD_BYTES / 2 ** 20));
   const json = (await res.json().catch(() => ({}))) as { path?: string; error?: string };
   if (!res.ok || !json.path) throw new UploadError(json.error ?? `HTTP ${res.status}`);
   return json.path;
@@ -48,7 +50,10 @@ function uniqueByName(files: File[]): File[] {
   return files.filter((f) => !seen.has(f.name) && seen.add(f.name));
 }
 
-/** Packs the project into `.hsp` bytes. Refuses (Spanish message) a project the reader would refuse as too big. */
+/**
+ * Packs the project into `.hsp` bytes. Refuses (Spanish HspError) a project over the server's upload limit (R44),
+ * before reading any image when the sizes already exceed it.
+ */
 export async function packHsp(c: ProjectContents): Promise<Uint8Array> {
   const material = uniqueByName(c.materialFiles);
   const substrate = c.substrate ? uniqueByName(c.substrate.files) : [];
@@ -66,14 +71,15 @@ export async function packHsp(c: ProjectContents): Promise<Uint8Array> {
       ? { name: c.substrate.name, tileSizeM: c.substrate.tileSizeM, files: substrate.map((f) => `substrate/${f.name}`) }
       : null,
   };
-  // The reader caps the uncompressed total (images + project.json); checked before reading any image. The
-  // format, version and savedAt fields packProject adds are well under the 1 KiB margin.
-  const total = entries.reduce((n, [, f]) => n + f.size, 0) + JSON.stringify(manifest).length * 3 + 1024;
-  if (total > MAX_UNPACKED_TOTAL) throw new HspError(es.project.tooBig(MAX_UNPACKED_TOTAL / 2 ** 30));
+  const tooBig = () => new HspError(es.project.tooBig(MAX_PROJECT_UPLOAD_BYTES / 2 ** 20));
+  // Images are stored as they are, so their sizes already bound the file from below.
+  if (entries.reduce((n, [, f]) => n + f.size, 0) > MAX_PROJECT_UPLOAD_BYTES) throw tooBig();
   const resources: ProjectFile[] = await Promise.all(
     entries.map(async ([path, f]) => ({ path, bytes: new Uint8Array(await f.arrayBuffer()) })),
   );
-  return packProject({ manifest, resources });
+  const bytes = await packProject({ manifest, resources });
+  if (bytes.length > MAX_PROJECT_UPLOAD_BYTES) throw tooBig();
+  return bytes;
 }
 
 function fileAt(resources: Map<string, Uint8Array>, path: string, prefix: string): File {

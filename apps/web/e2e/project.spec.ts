@@ -242,11 +242,22 @@ test('opening while a composition is in flight keeps only the opened project and
     } finally {
       clearInterval(timer);
     }
+    // Every atlas committed from now on must come from the opened document: a stale composition is discarded.
     const s = store.getState();
+    const w = window as unknown as { __atlasDocs: unknown[]; __openedDoc: unknown };
+    w.__openedDoc = s.doc;
+    w.__atlasDocs = [];
+    store.subscribe((n, p) => {
+      if (n.atlas && n.atlas !== p.atlas) w.__atlasDocs.push(n.atlas.doc);
+    });
     return { error: s.projectError, dirty: s.dirty };
   });
   expect(r).toEqual({ error: null, dirty: false });
   await settled(page);
+  expect(await page.evaluate(() => {
+    const w = window as unknown as { __atlasDocs: unknown[]; __openedDoc: unknown };
+    return { some: w.__atlasDocs.length > 0, stale: w.__atlasDocs.filter((d) => d !== w.__openedDoc).length };
+  })).toEqual({ some: true, stale: 0 });
   expect(await page.evaluate(() => window.__hs!.store.getState().atlas!.resolutionPx)).toBe(2048);
   await page.evaluate(() => window.__hs!.store.getState().setPreviewRes(1024));
   await settled(page);
@@ -297,4 +308,239 @@ test('dirty: false after open and save, true after one edit; beforeunload asks o
   const intensity = await page.evaluate(() =>
     (window.__hs!.store.getState().doc!.nodes.find((n) => n.id === 'wear')!.params as { intensity: number }).intensity);
   expect(intensity).toBe(0.7);
+});
+
+/** Imports bricks wall 13 alone (untitled, dirty) and waits for the settled atlas. */
+async function importBricks(page: Page): Promise<void> {
+  await page.goto('/');
+  await page.getByTestId('folder-input').setInputFiles(BRICKS);
+  await expect(page.getByTestId('structure-type')).toHaveText('Piezas');
+  await settled(page);
+}
+
+/**
+ * Packs a project in the page from the current material files and opens it through the store, counting the textures
+ * the open created and did not destroy. `variant` picks a junk mask, a junk second set or a v0.1-A document.
+ */
+const openBuilt = (page: Page, variant: 'junkMask' | 'junkSubstrate' | 'oldDoc') =>
+  page.evaluate(async (variant) => {
+    const hs = window.__hs!;
+    const s = hs.store.getState();
+    const settings = s.material!.settings;
+    const files = await Promise.all(
+      s.sources.map(async (f) => ({ path: `material/${f.name}`, bytes: new Uint8Array(await f.arrayBuffer()) })),
+    );
+    const junk = new TextEncoder().encode('no es una imagen');
+    const oldDoc = {
+      version: 1,
+      nodes: [
+        { id: 'material', type: 'material', params: settings },
+        { id: 'layout', type: 'layout', params: { mode: 'preset', preset: 'walls' } },
+        { id: 'placement', type: 'placement', params: { variation: 0.5, seed: 0 } },
+        {
+          id: 'output', type: 'output',
+          params: { resolutionPx: 4096, worldWidthM: 8, groove: { widthM: 0.01, bevelM: 0.005, depthM: 0.002, profile: 'round' } },
+        },
+      ],
+      edges: [
+        { from: 'material', to: 'layout', port: 'period' },
+        { from: 'layout', to: 'placement', port: 'layout' },
+        { from: 'placement', to: 'output', port: 'placement' },
+      ],
+    };
+    const manifest: Record<string, unknown> = {
+      app: 'test',
+      doc: variant === 'oldDoc' ? oldDoc : s.doc,
+      material: { name: settings.name, settings, files: files.map((f) => f.path) },
+      mask: variant === 'junkMask' ? { name: 'junk.png', file: 'mask/junk.png' } : null,
+      substrate: variant === 'junkSubstrate'
+        ? { name: 'junk', tileSizeM: [1, 1], files: ['substrate/junk_basecolor.png'] }
+        : null,
+    };
+    // An older build wrote no mask or substrate keys at all.
+    if (variant === 'oldDoc') {
+      delete manifest.mask;
+      delete manifest.substrate;
+    }
+    const resources = [
+      ...files,
+      ...(variant === 'junkMask' ? [{ path: 'mask/junk.png', bytes: junk }] : []),
+      ...(variant === 'junkSubstrate' ? [{ path: 'substrate/junk_basecolor.png', bytes: junk }] : []),
+    ];
+    const bytes = await hs.core.packProject({ manifest: manifest as never, resources });
+    const device = s.gpu!.device;
+    const create = device.createTexture.bind(device);
+    const live = new Set<GPUTexture>();
+    let created = 0;
+    device.createTexture = (d: GPUTextureDescriptor) => {
+      const t = create(d);
+      created++;
+      live.add(t);
+      const destroy = t.destroy.bind(t);
+      t.destroy = () => {
+        live.delete(t);
+        destroy();
+      };
+      return t;
+    };
+    try {
+      await hs.store.getState().openProject(new File([bytes], `${variant}.hsp`));
+    } finally {
+      device.createTexture = create;
+    }
+    const n = hs.store.getState();
+    return { created, leaked: live.size, error: n.projectError, nodes: n.doc?.nodes.length ?? 0 };
+  }, variant);
+
+test('a .hsp failing after the GPU uploads (junk mask or second set) keeps the project and leaks no texture', async ({ page }) => {
+  await importBricks(page);
+  // No evaluation in flight creates textures of its own meanwhile.
+  await page.waitForFunction(() => !window.__hs!.store.getState().checksPending);
+  await page.evaluate(() => {
+    const s = window.__hs!.store.getState();
+    (window as unknown as { __keep?: object[] }).__keep = [s.doc!, s.gpuMaterial!, s.structure!, s.material!];
+  });
+  const kept = () => page.evaluate(() => {
+    const s = window.__hs!.store.getState();
+    return (window as unknown as { __keep: object[] }).__keep
+      .every((o, i) => o === [s.doc, s.gpuMaterial, s.structure, s.material][i]);
+  });
+  for (const variant of ['junkMask', 'junkSubstrate'] as const) {
+    const r = await openBuilt(page, variant);
+    // The material was uploaded before the failure, and all of it was freed.
+    expect(r.created).toBeGreaterThan(0);
+    expect(r.leaked).toBe(0);
+    expect(r.error).toContain('No se pudo leer la imagen');
+    expect(await kept()).toBe(true);
+    await expect(page.getByTestId('project-error')).toBeVisible();
+  }
+  // The dismiss button clears the message.
+  await page.getByTestId('project-error-dismiss').click();
+  await expect(page.getByTestId('project-error')).toHaveCount(0);
+});
+
+test('an older .hsp (v0.1-A document, no mask or second set entries) opens migrated through the store', async ({ page }) => {
+  await importBricks(page);
+  const r = await openBuilt(page, 'oldDoc');
+  expect(r.error).toBeNull();
+  expect(r.nodes).toBe(7);
+  await settled(page);
+  expect(await page.evaluate(() => {
+    const s = window.__hs!.store.getState();
+    const st = s.doc!.nodes.find((n) => n.type === 'structure')!.params as { analyzed: boolean };
+    return { mask: s.mask, substrate: s.substrate, dirty: s.dirty, analyzed: st.analyzed };
+  })).toEqual({ mask: null, substrate: null, dirty: false, analyzed: true });
+  await expect(page.getByTestId('project-name')).toHaveText('oldDoc');
+});
+
+test('Guardar in the unsaved-changes dialog goes through Guardar como, then runs the deferred Nuevo or Abrir', async ({ page }, testInfo) => {
+  const dir = testInfo.outputPath();
+  mkdirSync(dir, { recursive: true });
+  await importBricks(page);
+
+  // Nuevo → Guardar → Guardar como → saved, then the project empties.
+  await page.getByTestId('file-menu').click();
+  await page.getByTestId('file-new').click();
+  await page.getByTestId('unsaved-save').click();
+  await expect(page.getByTestId('save-as-dialog')).toBeVisible();
+  await page.getByTestId('save-as-dir').fill(dir);
+  await page.getByTestId('save-as-name').fill('antes');
+  await page.getByTestId('save-as-run').click();
+  await expect(page.getByTestId('project-name')).toHaveText('Sin proyecto');
+  expect(existsSync(join(dir, 'antes.hsp'))).toBe(true);
+
+  // Dirty again, then Abrir → Guardar → Guardar como → saved, then the picked file opens.
+  await importBricks(page);
+  await page.getByTestId('project-open-input').setInputFiles(join(dir, 'antes.hsp'));
+  await page.getByTestId('unsaved-save').click();
+  await expect(page.getByTestId('save-as-dir')).toHaveValue(dir);
+  await page.getByTestId('save-as-name').fill('otro');
+  await page.getByTestId('save-as-run').click();
+  await expect(page.getByTestId('project-name')).toHaveText('antes');
+  expect(existsSync(join(dir, 'otro.hsp'))).toBe(true);
+  await settled(page);
+  expect(await dirty(page)).toBe(false);
+
+  // Re-saving an opened project: the browser hides its folder, so Guardar asks, prefilled (decision 74).
+  await setField(page, 'Intensidad', '0.6');
+  await page.getByTestId('file-menu').click();
+  await page.getByTestId('file-save').click();
+  await expect(page.getByTestId('save-as-dialog')).toBeVisible();
+  await expect(page.getByTestId('save-as-name')).toHaveValue('antes');
+  await expect(page.getByTestId('save-as-dir')).toHaveValue(dir);
+  // Ctrl+S inside Guardar como is its Guardar button, not a reset of the dialog.
+  await page.getByTestId('save-as-name').fill('tercero');
+  await page.keyboard.press('Control+s');
+  await expect(page.getByTestId('save-as-dialog')).toHaveCount(0);
+  await expect(page.getByTestId('project-name')).toHaveText('tercero');
+  expect(existsSync(join(dir, 'tercero.hsp'))).toBe(true);
+});
+
+test('shortcuts: Ctrl+O picks a file, Ctrl+Shift+S opens Guardar como, Ctrl+S saves uncommitted typed text', async ({ page }, testInfo) => {
+  const dir = testInfo.outputPath();
+  mkdirSync(dir, { recursive: true });
+  await importBricks(page);
+  await page.getByTestId('project-name').click();
+
+  const chooser = page.waitForEvent('filechooser');
+  await page.keyboard.press('Control+o');
+  expect((await chooser).isMultiple()).toBe(false);
+
+  await page.keyboard.press('Control+Shift+S');
+  await expect(page.getByTestId('save-as-dialog')).toBeVisible();
+  await page.getByTestId('save-as-dir').fill(dir);
+  await page.getByTestId('save-as-name').fill('atajos');
+  await page.getByTestId('save-as-run').click();
+  await expect(page.getByTestId('save-as-dialog')).toHaveCount(0);
+
+  // Typed but not committed (no blur): Ctrl+S commits the field first, and the file holds the new value.
+  const field = page.getByLabel('Intensidad', { exact: true });
+  await field.fill('0.55');
+  await page.keyboard.press('Control+s');
+  await expect.poll(() => dirty(page)).toBe(false);
+  await settled(page);
+  await page.getByTestId('project-open-input').setInputFiles(join(dir, 'atajos.hsp'));
+  await expect(page.getByTestId('project-name')).toHaveText('atajos');
+  await settled(page);
+  expect(await page.evaluate(() =>
+    (window.__hs!.store.getState().doc!.nodes.find((n) => n.id === 'wear')!.params as { intensity: number }).intensity,
+  )).toBe(0.55);
+});
+
+test('a save that finishes after an open leaves the opened project its own path', async ({ page }, testInfo) => {
+  const dir = testInfo.outputPath();
+  mkdirSync(dir, { recursive: true });
+  await importBricks(page);
+  const other = await saveAs(page, dir, 'abierto');
+  await page.evaluate(() => {
+    const input = Object.assign(document.createElement('input'), { type: 'file', id: 'hsp-pick' });
+    document.body.appendChild(input);
+  });
+  await page.setInputFiles('#hsp-pick', other);
+  const r = await page.evaluate(async (dir) => {
+    const store = window.__hs!.store;
+    const file = (document.getElementById('hsp-pick') as HTMLInputElement).files![0];
+    // Hold the save's write until the open has swapped its project in.
+    const fetch0 = window.fetch;
+    let release!: () => void;
+    const gate = new Promise<void>((res) => {
+      release = res;
+    });
+    window.fetch = async (...a: Parameters<typeof fetch>) => {
+      await gate;
+      return fetch0(...a);
+    };
+    try {
+      const save = store.getState().saveProject({ dir, name: 'lento' });
+      await store.getState().openProject(file);
+      release();
+      const written = await save;
+      const s = store.getState();
+      return { written: written.endsWith('lento.hsp'), path: s.projectPath, dirty: s.dirty };
+    } finally {
+      window.fetch = fetch0;
+    }
+  }, dir);
+  expect(r).toEqual({ written: true, path: { dir: '', name: 'abierto.hsp' }, dirty: false });
+  await expect(page.getByTestId('project-name')).toHaveText('abierto');
 });
