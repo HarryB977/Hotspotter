@@ -51,3 +51,5 @@ export type { ProjectFile } from './project/zip';
 export type { HspManifest } from './project/hsp';
 export { matchHotspot } from './fit/match';
 export type { FaceQuad, FaceUv, HotspotFit } from './fit/match';
+export { buildShape } from './fit/shapes';
+export type { TestShape, ShapeFace, Vec3 } from './fit/shapes';
