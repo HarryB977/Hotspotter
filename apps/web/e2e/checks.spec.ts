@@ -160,6 +160,35 @@ test.describe('with bricks wall 13', () => {
     expect(Math.abs(r.y - r.cy)).toBeLessThan(2);
   });
 
+  test('clicking a row while 3D is maximized brings the atlas back, zoomed on the point', async ({ page }) => {
+    await importBricks(page);
+    await page.evaluate(() => {
+      const s = window.__hs!.store.getState();
+      const p = s.material!.settings.period;
+      return s.updateSettings({ period: { ...p, x: 0.37, cutAllowedX: false }, periodUserSet: true });
+    });
+    await expect(row(page, 'proportions')).toHaveAttribute('data-status', 'warn', { timeout: 20_000 });
+    await expect(page.getByTestId('checks')).not.toHaveAttribute('data-pending', 'true', { timeout: 20_000 });
+    await page.getByRole('button', { name: 'Maximizar vista 3D' }).click();
+    await expect(page.getByTestId('viewport-2d')).toBeHidden();
+    await row(page, 'proportions').click();
+    await expect(page.getByTestId('viewport-2d')).toBeVisible();
+    await expect.poll(() => page.getByTestId('atlas-stage').evaluate((el) =>
+      Number(/scale\(([\d.e+-]+)\)/.exec((el as HTMLElement).style.transform)![1]))).toBeGreaterThanOrEqual(4);
+    const r = await page.evaluate(() => {
+      const c = window.__hs!.store.getState().checks!;
+      const p = c.results.find((x) => x.id === 'proportions')!.points![0];
+      const st = document.querySelector('[data-testid="atlas-stage"]')!.getBoundingClientRect();
+      const host = document.querySelector('[data-testid="atlas-view"]')!.getBoundingClientRect();
+      return {
+        x: st.left + (p[0] / c.width) * st.width, y: st.top + (p[1] / c.height) * st.height,
+        cx: host.left + host.width / 2, cy: host.top + host.height / 2,
+      };
+    });
+    expect(Math.abs(r.x - r.cx)).toBeLessThan(2);
+    expect(Math.abs(r.y - r.cy)).toBeLessThan(2);
+  });
+
   test('with a second set the substrate row compares its colour with the joints', async ({ page }) => {
     await importBricks(page);
     await expect(row(page, 'substrate')).toHaveAttribute('title', /propio material/);

@@ -1,7 +1,8 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Maximize2, Minimize2 } from 'lucide-react';
 import { es } from '../i18n/es';
+import { useProject } from '../state/store';
 
 const STORAGE_KEY = 'hs.viewport';
 const MIN_RATIO = 0.2;
@@ -75,17 +76,29 @@ function PaneHeader({ title, maximized, maximizeLabel, onToggle }: PaneHeaderPro
 export function ViewportSplit({ left, right }: ViewportSplitProps) {
   const [state, setState] = useState<Saved>(load);
   const row = useRef<HTMLDivElement>(null);
-  const dragging = useRef(false);
+  const dragging = useRef<{ offset: number; moved: boolean } | null>(null);
+  const latest = useRef(state);
+  latest.current = state;
 
   const update = useCallback((next: Saved) => {
     setState(next);
     save(next);
   }, []);
 
-  const ratioFromPointer = (clientX: number): number | null => {
+  // A check click wants the atlas on screen: leave a maximized 3D pane.
+  const focusSeq = useProject((s) => s.viewFocus?.seq ?? 0);
+  const seenFocus = useRef(focusSeq);
+  useEffect(() => {
+    if (focusSeq === seenFocus.current) return;
+    seenFocus.current = focusSeq;
+    if (latest.current.maximized === 'right') update({ ratio: latest.current.ratio, maximized: null });
+  }, [focusSeq, update]);
+
+  /** Ratio that puts the divider where the pointer is, keeping the point of the divider that was grabbed. */
+  const ratioFromPointer = (clientX: number, offset: number): number | null => {
     const r = row.current?.getBoundingClientRect();
     if (!r || r.width <= 0) return null;
-    return clampRatio((clientX - r.left) / r.width);
+    return clampRatio((clientX - offset - r.left) / r.width);
   };
 
   const { ratio, maximized } = state;
@@ -123,22 +136,41 @@ export function ViewportSplit({ left, right }: ViewportSplitProps) {
             if (e.button !== 0) return;
             e.preventDefault();
             e.currentTarget.setPointerCapture(e.pointerId);
-            dragging.current = true;
+            const r = row.current?.getBoundingClientRect();
+            dragging.current = { offset: r ? e.clientX - (r.left + ratio * r.width) : 0, moved: false };
           }}
           onPointerMove={(e) => {
-            if (!dragging.current) return;
-            const r = ratioFromPointer(e.clientX);
-            if (r !== null) setState((s) => ({ ...s, ratio: r }));
+            const d = dragging.current;
+            if (!d) return;
+            if ((e.buttons & 1) === 0) {
+              // The button was released somewhere we did not see: end the drag.
+              dragging.current = null;
+              if (d.moved) save(latest.current);
+              return;
+            }
+            const r = ratioFromPointer(e.clientX, d.offset);
+            if (r === null || r === latest.current.ratio) return;
+            d.moved = true;
+            setState((s) => ({ ...s, ratio: r }));
           }}
           onPointerUp={(e) => {
-            if (!dragging.current) return;
-            dragging.current = false;
-            const r = ratioFromPointer(e.clientX);
-            update({ ratio: r ?? ratio, maximized: null });
+            const d = dragging.current;
+            dragging.current = null;
+            if (!d?.moved) return;
+            const r = ratioFromPointer(e.clientX, d.offset);
+            update({ ratio: r ?? latest.current.ratio, maximized: null });
           }}
           onPointerCancel={() => {
-            dragging.current = false;
-            save(state);
+            const d = dragging.current;
+            dragging.current = null;
+            if (d?.moved) save(latest.current);
+          }}
+          onLostPointerCapture={(e) => {
+            // The event of a finished drag can arrive after the next pointerdown; that drag owns the capture.
+            if (e.currentTarget.hasPointerCapture(e.pointerId)) return;
+            const d = dragging.current;
+            dragging.current = null;
+            if (d?.moved) save(latest.current);
           }}
           onDoubleClick={() => update({ ratio: DEFAULT.ratio, maximized: null })}
           onKeyDown={(e) => {

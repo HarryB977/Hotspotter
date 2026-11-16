@@ -142,4 +142,57 @@ test.describe('app shell at a laptop-sized window', () => {
     await expect(page.getByRole('separator', { name: 'Cambiar el ancho de las vistas' })).toHaveAttribute('aria-valuenow', '50');
     await expect(page.getByTestId('viewport-3d')).toBeVisible();
   });
+  /** Zoom and the atlas point under the host centre, read from the stage transform. */
+  const readView = (page: import('@playwright/test').Page) => page.evaluate(() => {
+    const st = document.querySelector('[data-testid="atlas-stage"]') as HTMLElement;
+    const host = document.querySelector('[data-testid="atlas-view"]')!.getBoundingClientRect();
+    const r = st.getBoundingClientRect();
+    const k = Number(/scale\(([\d.e+-]+)\)/.exec(st.style.transform)![1]);
+    return { k, u: (host.left + host.width / 2 - r.left) / r.width, v: (host.top + host.height / 2 - r.top) / r.height };
+  });
+
+  test('zoom and pan survive a divider drag and a maximize/restore', async ({ page }) => {
+    const host = (await page.getByTestId('atlas-view').boundingBox())!;
+    await page.mouse.move(host.x + host.width * 0.3, host.y + host.height * 0.4);
+    await page.mouse.wheel(0, -900);
+    await expect.poll(async () => (await readView(page)).k).toBeGreaterThan(2);
+    const before = await readView(page);
+    const sep = page.getByRole('separator', { name: 'Cambiar el ancho de las vistas' });
+    const b = (await sep.boundingBox())!;
+    const y = b.y + b.height / 2;
+    await page.mouse.move(b.x + b.width / 2, y);
+    await page.mouse.down();
+    await page.mouse.move(b.x + b.width / 2 - 150, y, { steps: 6 });
+    await page.mouse.up();
+    await expect.poll(async () => Math.abs((await page.getByTestId('atlas-view').boundingBox())!.width - (host.width - 150))).toBeLessThan(6);
+    const after = await readView(page);
+    expect(after.k).toBeCloseTo(before.k, 5);
+    expect(after.u).toBeCloseTo(before.u, 2);
+    expect(after.v).toBeCloseTo(before.v, 2);
+    await page.getByRole('button', { name: 'Maximizar vista 3D' }).click();
+    await page.getByRole('button', { name: 'Restaurar vistas' }).click();
+    await expect(page.getByTestId('viewport-2d')).toBeVisible();
+    await expect.poll(async () => {
+      const r = await readView(page);
+      return Math.abs(r.k - before.k) + Math.abs(r.u - before.u) + Math.abs(r.v - before.v);
+    }).toBeLessThan(0.01);
+  });
+
+  test('grabbing the divider off-centre does not make it jump, and a click changes nothing', async ({ page }) => {
+    const sep = page.getByRole('separator', { name: 'Cambiar el ancho de las vistas' });
+    const w0 = (await page.getByTestId('viewport-2d').boundingBox())!.width;
+    const b = (await sep.boundingBox())!;
+    const y = b.y + b.height / 2;
+    await page.mouse.move(b.x + 2.9, y);
+    await page.mouse.down();
+    await page.mouse.up();
+    expect(await page.evaluate(() => localStorage.getItem('hs.viewport'))).toBeNull();
+    await expect(sep).toHaveAttribute('aria-valuenow', '50');
+    expect(Math.abs((await page.getByTestId('viewport-2d').boundingBox())!.width - w0)).toBeLessThan(0.5);
+    await page.mouse.move(b.x + 2.9, y);
+    await page.mouse.down();
+    await page.mouse.move(b.x + 2.9 - 100, y, { steps: 5 });
+    await page.mouse.up();
+    expect(Math.abs((await page.getByTestId('viewport-2d').boundingBox())!.width - (w0 - 100))).toBeLessThan(1);
+  });
 });
