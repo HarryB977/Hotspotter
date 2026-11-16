@@ -9,20 +9,12 @@ import { StackPanel } from './panels/StackPanel';
 import { Inspector } from './panels/Inspector';
 import { AtlasView } from './viewport/AtlasView';
 import { ViewportSplit } from './viewport/ViewportSplit';
+import { View3DPane } from './viewport/View3D';
 import { ExportDialog } from './export/ExportDialog';
 import { FileMenu, ProjectName } from './project/FileMenu';
+import { MAP_TABS } from './state/store';
 import type { ActiveMap } from './state/store';
-
-const MAP_TABS: ActiveMap[] = [
-  'baseColor', 'normal', 'height', 'roughness', 'metallic', 'ao', 'wearMask', 'rectId', 'pieceId',
-];
-
-function tabLabel(k: ActiveMap): string {
-  if (k === 'rectId') return es.mapBar.rectId;
-  if (k === 'pieceId') return es.mapBar.pieceId;
-  if (k === 'wearMask') return es.mapBar.wearMask;
-  return es.material.mapKinds[k];
-}
+import { mapLabel } from './viewport/mapLabel';
 
 function PanelTitle({ children }: { children: React.ReactNode }) {
   return (
@@ -90,7 +82,7 @@ export function App() {
             ) : (
               <div className="flex flex-1 items-center justify-center text-zinc-600">{es.atlas.empty}</div>
             )}
-            right={<div className="flex flex-1 items-center justify-center text-zinc-600">{es.viewport.placeholder3d}</div>}
+            right={<View3DPane />}
           />
         </main>
         <aside className="flex min-h-0 flex-col border-l border-zinc-800 bg-zinc-900">
@@ -102,7 +94,7 @@ export function App() {
             <TabsList className="h-full">
               {MAP_TABS.map((k) => (
                 <TabsTrigger key={k} value={k} disabled={!atlas}>
-                  {tabLabel(k)}
+                  {mapLabel(k)}
                 </TabsTrigger>
               ))}
             </TabsList>

@@ -1,6 +1,7 @@
 import { pxPerMetre, type HotspotLayout, type HotspotRect } from '../layout';
 import type { CheckId, CheckStatus } from '../checks';
 import type { WearFamily } from '../wear/params';
+import { engineLayout } from './engineLayout';
 
 export interface HotspotJsonMeta {
   name: string;
@@ -14,7 +15,9 @@ export interface HotspotJsonMeta {
   runoff?: boolean;
 }
 
-export function toHotspotJson(l: HotspotLayout, meta: HotspotJsonMeta): string {
+export function toHotspotJson(layout: HotspotLayout, meta: HotspotJsonMeta): string {
+  // The flags an engine gets, the same the 3D view fits with.
+  const l = engineLayout(layout, { runoff: !!meta.runoff });
   const { widthPx: W, heightPx: H } = l;
   const out = {
     version: 1,
@@ -32,7 +35,7 @@ export function toHotspotJson(l: HotspotLayout, meta: HotspotJsonMeta): string {
       uv: { u0: r.x / W, v0: 1 - (r.y + r.h) / H, u1: (r.x + r.w) / W, v1: 1 - r.y / H },
       allowRotation: r.allowRotation,
       allowMirrorX: r.allowMirrorX,
-      allowMirrorY: r.allowMirrorY && !meta.runoff,
+      allowMirrorY: r.allowMirrorY,
       tileU: r.tileU,
       tileV: r.tileV,
       useOn: r.useOn,

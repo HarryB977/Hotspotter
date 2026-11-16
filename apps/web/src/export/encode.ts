@@ -4,7 +4,7 @@ import {
 import type { CheckResult, ExportPreset, MapPixels } from '@hotspotter/core';
 import { composeAtlas, heightToRgba8, readbackR32, readbackRgba8 } from '@hotspotter/engine';
 import type { AtlasMaps } from '@hotspotter/engine';
-import { composeInputFor, useProject, whenAnalysisIdle } from '../state/store';
+import { composeInputFor, composesRunoff, useProject, whenAnalysisIdle } from '../state/store';
 import { putFile as upload } from '../project/projectIo';
 
 export async function encodePng(p: MapPixels): Promise<Blob> {
@@ -44,7 +44,7 @@ export async function exportProject(opts: ExportOptions): Promise<string[]> {
     const input = composeInputFor({ ...state, doc, gpuMaterial }, inputs, opts.resolutionPx);
     // Downward streaks: a vertical mirror (or a rotation) in the engine would turn them (docs/06). Dirt switched off
     // composes none.
-    const runoff = (input.dirt?.runoff ?? 0) > 0;
+    const runoff = composesRunoff(input);
     maps = await composeAtlas(gpu, input);
     // Not exported: free them before the readbacks, which peak in memory at 8192.
     for (const t of [maps.loss, maps.pieceId, maps.jointDistM, maps.border, maps.macroHeight]) t.destroy();

@@ -25,7 +25,7 @@ Las decisiones de este documento son del constructor (Claude) salvo que se indiq
 
 - **Frontend**: TypeScript, React, Vite, Tailwind y shadcn/ui (Radix). Solo modo oscuro. El editor de nodos usa React Flow (xyflow).
 - **Motor de generación**: compute shaders WGSL sobre WebGPU, en el navegador. La GPU del usuario hace todo el trabajo pesado. WebGPU exige Chrome o Edge recientes; si no está disponible, la app lo dice al arrancar (sin fallback a CPU en v1).
-- **Vista 3D**: three.js. Lee directamente las texturas de GPU que produce el motor.
+- **Vista 3D**: three.js con WebGL. Lee el atlas de preview a la CPU una vez por composición (un mapa tras otro, a la resolución del preview) y lo sube como texturas WebGL; no comparte las texturas de WebGPU (decisión 80).
 - **Servidor local**: Node 22 + TypeScript (Fastify o similar). El navegador no puede escribir en carpetas arbitrarias, así que las exportaciones, los proyectos y las librerías de materiales pasan por el servidor.
 - **Sidecar de IA**: proceso Python independiente que se instala bajo demanda. Ver [07-ai.md](07-ai.md).
 

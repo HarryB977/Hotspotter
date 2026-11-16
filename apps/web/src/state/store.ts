@@ -5,7 +5,7 @@ import {
 } from '@hotspotter/core';
 import type {
   CheckResult, DocNode, GrayImage, HotspotLayout, LayoutIssue, MapKind, MaterialSettings, MaterialType, NodeParams,
-  NodeType, ProjectDoc, ProportionIssue, RectPlacement, StructureResult,
+  NodeType, ProjectDoc, ProportionIssue, RectPlacement, StructureResult, TestShape,
 } from '@hotspotter/core';
 import {
   composeAtlas, hasMapFromFiles, initGpu, readbackDetailSlope, readbackR32, readbackRgba8, uploadMaterial, uploadRgba8, uploadStructure,
@@ -18,6 +18,67 @@ import { hspFileName, packHsp, putFile, unpackHsp } from '../project/projectIo';
 
 export type PreviewRes = 512 | 1024 | 2048;
 export type ActiveMap = MapKind | 'rectId' | 'pieceId' | 'wearMask';
+
+/** The maps of the map bar, in its order; the 3D view offers the same ones. */
+export const MAP_TABS: ActiveMap[] = [
+  'baseColor', 'normal', 'height', 'roughness', 'metallic', 'ao', 'wearMask', 'rectId', 'pieceId',
+];
+
+/** 3D view shading: lit, one map unlit, or lit with each face's rect outlined. */
+export type View3dMode = 'lit' | ActiveMap | 'rects';
+export const VIEW3D_MODES: View3dMode[] = ['lit', ...MAP_TABS, 'rects'];
+export const VIEW3D_SHAPES: TestShape[] = ['cube', 'wallWithOpenings', 'corridor', 'column', 'stairs'];
+
+/** 3D view settings. View state: kept in localStorage (`hs.view3d`), not in the project, not tracked as a change. */
+export interface View3dSettings {
+  shape: TestShape;
+  mode: View3dMode;
+  /** Degrees around the vertical, 0 = from +Z (the front), [0, 360). */
+  lightAzimuthDeg: number;
+  /** Degrees above the horizon, [0, 90]. */
+  lightElevationDeg: number;
+  /** Nearest-texel filtering, to review pixel art. */
+  pointFilter: boolean;
+}
+
+export const DEFAULT_VIEW3D: View3dSettings = {
+  shape: 'cube', mode: 'lit', lightAzimuthDeg: 35, lightElevationDeg: 45, pointFilter: false,
+};
+
+const VIEW3D_KEY = 'hs.view3d';
+
+/** Merges `v`'s valid fields onto `base`; anything missing or invalid keeps the base value. */
+export function sanitizeView3d(v: unknown, base: View3dSettings = DEFAULT_VIEW3D): View3dSettings {
+  if (typeof v !== 'object' || v === null) return base;
+  const o = v as Record<string, unknown>;
+  const num = (x: unknown) => (typeof x === 'number' && Number.isFinite(x) ? x : null);
+  const az = num(o.lightAzimuthDeg);
+  const el = num(o.lightElevationDeg);
+  return {
+    shape: VIEW3D_SHAPES.includes(o.shape as TestShape) ? (o.shape as TestShape) : base.shape,
+    mode: VIEW3D_MODES.includes(o.mode as View3dMode) ? (o.mode as View3dMode) : base.mode,
+    lightAzimuthDeg: az === null ? base.lightAzimuthDeg : ((az % 360) + 360) % 360,
+    lightElevationDeg: el === null ? base.lightElevationDeg : Math.min(90, Math.max(0, el)),
+    pointFilter: typeof o.pointFilter === 'boolean' ? o.pointFilter : base.pointFilter,
+  };
+}
+
+function loadView3d(): View3dSettings {
+  try {
+    const raw = localStorage.getItem(VIEW3D_KEY);
+    return raw ? sanitizeView3d(JSON.parse(raw)) : DEFAULT_VIEW3D;
+  } catch {
+    return DEFAULT_VIEW3D;
+  }
+}
+
+function saveView3d(v: View3dSettings): void {
+  try {
+    localStorage.setItem(VIEW3D_KEY, JSON.stringify(v));
+  } catch {
+    // Storage can be blocked or full; the settings just are not remembered.
+  }
+}
 
 /** Structure analysis of the current material and its GPU maps. */
 export interface StructureState {
@@ -126,6 +187,10 @@ export interface ProjectState {
   opening: boolean;
   /** Last save or open failure, shown in the top bar; cleared by the next success. */
   projectError: string | null;
+  /** 3D view settings (view state, remembered in localStorage). */
+  view3d: View3dSettings;
+  /** Merges valid fields into the 3D view settings and remembers them. */
+  setView3d(patch: Partial<View3dSettings>): void;
   /** Empties the project (no material, document, mask or second set) and forgets its path. */
   newProject(): void;
   /**
@@ -568,6 +633,7 @@ export const useProject = create<ProjectState>()((set, get) => ({
   dirty: false,
   opening: false,
   projectError: null,
+  view3d: loadView3d(),
 
   focusAtlas(u, v) {
     set({ viewFocus: { u, v, seq: ++focusSeq } });
@@ -761,6 +827,12 @@ export const useProject = create<ProjectState>()((set, get) => ({
 
   setActiveMap(m) {
     set({ activeMap: m });
+  },
+
+  setView3d(patch) {
+    const view3d = sanitizeView3d({ ...get().view3d, ...patch }, get().view3d);
+    saveView3d(view3d);
+    set({ view3d });
   },
 
   setSelectedLayer(t) {
@@ -1170,6 +1242,14 @@ export function composeInputFor(
     substrateMaterial: substrate?.gpu,
     grainAxis: structure?.result.grainAxis ?? null,
   };
+}
+
+/**
+ * The composition carries downward runoff streaks, so an engine must not mirror vertically (decision 69). The export
+ * and the 3D view both ask this, with `engineLayout`.
+ */
+export function composesRunoff(input: Pick<ComposeInput, 'dirt'>): boolean {
+  return (input.dirt?.runoff ?? 0) > 0;
 }
 
 async function recompose(): Promise<void> {
