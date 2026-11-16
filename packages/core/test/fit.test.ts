@@ -27,14 +27,20 @@ function expectUv(fit: HotspotFit, expected: [number, number][]) {
   });
 }
 
-function expectFiniteInside(fit: HotspotFit) {
+/** Finite uv, inside [0,1] except along the picked strip's own tiling axis. */
+function expectFiniteInside(fit: HotspotFit, layout: HotspotLayout) {
+  const r = rectOf(layout, fit);
+  const tileU = fit.tiled && r.tileU && r.w === layout.widthPx;
+  const tileV = fit.tiled && !tileU && r.tileV;
   for (const [u, v] of fit.uv) {
     expect(Number.isFinite(u) && Number.isFinite(v)).toBe(true);
-    expect(v).toBeGreaterThanOrEqual(0);
-    expect(v).toBeLessThanOrEqual(1);
-    if (!fit.tiled) {
+    if (!tileU) {
       expect(u).toBeGreaterThanOrEqual(0);
       expect(u).toBeLessThanOrEqual(1);
+    }
+    if (!tileV) {
+      expect(v).toBeGreaterThanOrEqual(0);
+      expect(v).toBeLessThanOrEqual(1);
     }
   }
   expect(Number.isFinite(fit.score)).toBe(true);
@@ -42,8 +48,8 @@ function expectFiniteInside(fit: HotspotFit) {
 
 describe('matchHotspot', () => {
   it('fits a 1 x 2 m wall face onto the closest rect, corners on the rect corners with V flipped', () => {
-    // walls preset at 8 m: the 1.2 x 2.6 m rect at x = 5.2 m, y = 0 scores
-    // |ln(0.5 / 0.4615)| + 0.5 |ln(2 / 3.12)| = 0.302, the lowest of the layout.
+    // walls preset at 8 m: no rect is within ±25 % on both axes and no strip fits, so ProBuilder takes the closest
+    // overall. The 1.2 x 2.6 m rect at x = 5.2 m, y = 0 scores 2 |ln(0.5 / 0.4615)| + 0.5 |ln(2 / 3.12)| = 0.382.
     const fit = matchHotspot(wall(1, 2), walls, NO_ROT);
     const r = rectOf(walls, fit);
     expect([r.x, r.y, r.w, r.h]).toEqual([2662, 0, 615, 1331]);
@@ -53,7 +59,50 @@ describe('matchHotspot', () => {
     const u0 = r.x / 4096, u1 = (r.x + r.w) / 4096;
     const vTop = 1 - r.y / 4096, vBottom = 1 - (r.y + r.h) / 4096;
     expectUv(fit, [[u0, vBottom], [u1, vBottom], [u1, vTop], [u0, vTop]]);
-    expect(fit.score).toBeCloseTo(Math.abs(Math.log(0.5 / (1.2 / 2.6))) + 0.5 * Math.abs(Math.log(2 / 3.12)), 2);
+    expect(fit.score).toBeCloseTo(2 * Math.abs(Math.log(0.5 / (1.2 / 2.6))) + 0.5 * Math.abs(Math.log(2 / 3.12)), 2);
+    // Brute force: no rect of the layout scores lower (none allows rotation).
+    for (const o of walls.rects) {
+      const w = (o.w / 4096) * 8, h = (o.h / 4096) * 8;
+      const score = 2 * Math.abs(Math.log(0.5 / (w / h))) + 0.5 * Math.abs(Math.log(2 / (w * h)));
+      expect(score).toBeGreaterThanOrEqual(fit.score - 1e-12);
+    }
+  });
+
+  it('a rect within the scale tolerance beats an exactly matching strip (ProBuilder order)', () => {
+    // 1 x 0.2 m face: a 1.05 x 0.2 m rect is 5 % off but within ±25 % on both axes, so it wins over the strip,
+    // whose cross size matches exactly. Ranking all candidates by score would have picked the strip.
+    const strip = makeRect({ id: 'strip', x: 0, y: 0, w: 1000, h: 20, tileU: true });
+    const near = makeRect({ id: 'near', x: 0, y: 20, w: 105, h: 20 });
+    const fit = matchHotspot(wall(1, 0.2), custom([strip, near]), NO_ROT);
+    expect(fit.rectId).toBe('near');
+    expect(fit.tiled).toBe(false);
+    expect(fit.score).toBeCloseTo(2.5 * Math.log(1.05), 12);
+    // Without the near rect, the strip takes the face.
+    expect(matchHotspot(wall(1, 0.2), custom([strip]), NO_ROT).rectId).toBe('strip');
+  });
+
+  it('shrinks the uv rect by the inset, except along the tiling axis', () => {
+    const r = makeRect({ id: 'a', x: 100, y: 200, w: 200, h: 100, inset: 4 });
+    const fit = matchHotspot(wall(2, 1), custom([r]), NO_ROT);
+    expectUv(fit, [[0.104, 0.704], [0.296, 0.704], [0.296, 0.796], [0.104, 0.796]]);
+
+    // The inset is capped at a quarter of the rect.
+    const small = makeRect({ id: 'b', x: 100, y: 200, w: 8, h: 8, inset: 4 });
+    const capped = matchHotspot(wall(0.08, 0.08), custom([small]), NO_ROT);
+    expectUv(capped, [[0.102, 0.794], [0.106, 0.794], [0.106, 0.798], [0.102, 0.798]]);
+
+    const strip = makeRect({ id: 's', x: 0, y: 0, w: 1000, h: 20, tileU: true, inset: 4 });
+    const tiled = matchHotspot(wall(5, 0.2), custom([strip]), NO_ROT);
+    expect(tiled.tiled).toBe(true);
+    expectUv(tiled, [[0, 0.984], [0.5, 0.984], [0.5, 0.996], [0, 0.996]]);
+  });
+
+  it('extreme but finite face sizes still return a finite fit', () => {
+    for (const layout of [walls, mixed]) {
+      for (const [w, h] of [[1e300, 1e300], [1e-200, 1e-200], [1e300, 1e-200], [1e-200, 0.2]]) {
+        expectFiniteInside(matchHotspot(wall(w, h), layout, NO_ROT), layout);
+      }
+    }
   });
 
   it('a rotated pick swaps the rect axes in the uv', () => {
@@ -83,7 +132,7 @@ describe('matchHotspot', () => {
     // The cross axis is stretched onto the strip height.
     expect(Math.min(...vs(fit))).toBeCloseTo(1 - (r.y + r.h) / 4096, 12);
     expect(Math.max(...vs(fit))).toBeCloseTo(1 - r.y / 4096, 12);
-    expectFiniteInside(fit);
+    expectFiniteInside(fit, walls);
   });
 
   it('a skirting takes the strip whose height is within 25 % and scores |ln(hFace / hRect)|', () => {
@@ -113,13 +162,13 @@ describe('matchHotspot', () => {
     const fit = matchHotspot(wall(40, 0.8), walls, NO_ROT);
     expect(rectOf(walls, fit).tileU).toBe(true);
     expect(span(us(fit))).toBeCloseTo(5, 12);
-    expectFiniteInside(fit);
+    expectFiniteInside(fit, walls);
   });
 
   it('tiny and huge faces still get finite uv inside [0,1] off the tiled axis', () => {
     for (const layout of [walls, mixed, presetLayout('floors'), presetLayout('generic')]) {
       for (const face of [wall(0.05, 0.05), wall(40, 40), { widthM: 40, heightM: 40, useOn: 'floors' as const }]) {
-        expectFiniteInside(matchHotspot(face, layout, NO_ROT));
+        expectFiniteInside(matchHotspot(face, layout, NO_ROT), layout);
       }
     }
   });
@@ -129,7 +178,7 @@ describe('matchHotspot', () => {
     expect(generic.rects.some((r) => r.tileU || r.tileV)).toBe(false);
     const fit = matchHotspot(wall(6, 0.2), generic, NO_ROT);
     expect(fit.tiled).toBe(false);
-    expectFiniteInside(fit);
+    expectFiniteInside(fit, generic);
   });
 
   it('a floors face never takes a walls-only rect while a floors or any rect exists', () => {
