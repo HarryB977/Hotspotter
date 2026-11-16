@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@hotspotter/core": "*",
     "@fastify/static": "8.3.0",
     "fastify": "5.12.7"
   },

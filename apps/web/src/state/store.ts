@@ -1,21 +1,84 @@
 import { create } from 'zustand';
 import {
-  CONTINUOUS, analyzeStructure, chooseMaps, classifyMapFile, composeInputsFromDoc, createDefaultDoc, downsample,
-  jointMeanRgb, meanRgb, proposeFamily, resolveMaterialName, runChecks, toGray, updateNodeParams, validateLayout,
+  CONTINUOUS, HspError, chooseMaps, classifyMapFile, composeInputsFromDoc, createDefaultDoc, downsample,
+  jointMeanRgb, meanRgb, proposeFamily, resolveMaterialName, toGray, updateNodeParams, validateLayout,
 } from '@hotspotter/core';
 import type {
   CheckResult, DocNode, GrayImage, HotspotLayout, LayoutIssue, MapKind, MaterialSettings, MaterialType, NodeParams,
-  NodeType, ProjectDoc, ProportionIssue, RectPlacement, StructureResult,
+  NodeType, ProjectDoc, ProportionIssue, RectPlacement, StructureResult, TestShape,
 } from '@hotspotter/core';
 import {
-  composeAtlas, hasMapFromFiles, initGpu, readbackR32, readbackRgba16f, readbackRgba8, uploadMaterial, uploadRgba8, uploadStructure,
+  composeAtlas, hasMapFromFiles, initGpu, readbackDetailSlope, readbackR32, readbackRgba8, uploadMaterial, uploadRgba8, uploadStructure,
   WebGpuUnavailableError,
 } from '@hotspotter/engine';
 import type { AtlasMaps, ComposeInput, GpuContext, GpuMaterial, GpuStructure, LoadedMaterial } from '@hotspotter/engine';
 import { es } from '../i18n/es';
+import { WorkerCrashedError, workerCall } from '../workers/client';
+import { hspFileName, packHsp, putFile, unpackHsp } from '../project/projectIo';
 
 export type PreviewRes = 512 | 1024 | 2048;
 export type ActiveMap = MapKind | 'rectId' | 'pieceId' | 'wearMask';
+
+/** The maps of the map bar, in its order; the 3D view offers the same ones. */
+export const MAP_TABS: ActiveMap[] = [
+  'baseColor', 'normal', 'height', 'roughness', 'metallic', 'ao', 'wearMask', 'rectId', 'pieceId',
+];
+
+/** 3D view shading: lit, one map unlit, or lit with each face's rect outlined. */
+export type View3dMode = 'lit' | ActiveMap | 'rects';
+export const VIEW3D_MODES: View3dMode[] = ['lit', ...MAP_TABS, 'rects'];
+export const VIEW3D_SHAPES: TestShape[] = ['cube', 'wallWithOpenings', 'corridor', 'column', 'stairs'];
+
+/** 3D view settings. View state: kept in localStorage (`hs.view3d`), not in the project, not tracked as a change. */
+export interface View3dSettings {
+  shape: TestShape;
+  mode: View3dMode;
+  /** Degrees around the vertical, 0 = from +Z (the front), [0, 360). */
+  lightAzimuthDeg: number;
+  /** Degrees above the horizon, [0, 90]. */
+  lightElevationDeg: number;
+  /** Nearest-texel filtering, to review pixel art. */
+  pointFilter: boolean;
+}
+
+export const DEFAULT_VIEW3D: View3dSettings = {
+  shape: 'cube', mode: 'lit', lightAzimuthDeg: 35, lightElevationDeg: 45, pointFilter: false,
+};
+
+const VIEW3D_KEY = 'hs.view3d';
+
+/** Merges `v`'s valid fields onto `base`; anything missing or invalid keeps the base value. */
+export function sanitizeView3d(v: unknown, base: View3dSettings = DEFAULT_VIEW3D): View3dSettings {
+  if (typeof v !== 'object' || v === null) return base;
+  const o = v as Record<string, unknown>;
+  const num = (x: unknown) => (typeof x === 'number' && Number.isFinite(x) ? x : null);
+  const az = num(o.lightAzimuthDeg);
+  const el = num(o.lightElevationDeg);
+  return {
+    shape: VIEW3D_SHAPES.includes(o.shape as TestShape) ? (o.shape as TestShape) : base.shape,
+    mode: VIEW3D_MODES.includes(o.mode as View3dMode) ? (o.mode as View3dMode) : base.mode,
+    lightAzimuthDeg: az === null ? base.lightAzimuthDeg : ((az % 360) + 360) % 360,
+    lightElevationDeg: el === null ? base.lightElevationDeg : Math.min(90, Math.max(0, el)),
+    pointFilter: typeof o.pointFilter === 'boolean' ? o.pointFilter : base.pointFilter,
+  };
+}
+
+function loadView3d(): View3dSettings {
+  try {
+    const raw = localStorage.getItem(VIEW3D_KEY);
+    return raw ? sanitizeView3d(JSON.parse(raw)) : DEFAULT_VIEW3D;
+  } catch {
+    return DEFAULT_VIEW3D;
+  }
+}
+
+function saveView3d(v: View3dSettings): void {
+  try {
+    localStorage.setItem(VIEW3D_KEY, JSON.stringify(v));
+  } catch {
+    // Storage can be blocked or full; the settings just are not remembered.
+  }
+}
 
 /** Structure analysis of the current material and its GPU maps. */
 export interface StructureState {
@@ -25,22 +88,23 @@ export interface StructureState {
   source: 'height' | 'baseColor';
 }
 
-/**
- * User B/N wear mask (atlas UV). Kept in store state only: the document has no image storage yet, so it is not saved
- * with the project.
- */
+/** User B/N wear mask (atlas UV). Its original file is saved in the project (.hsp), not in the document. */
 export interface MaskState {
   name: string;
   texture: GPUTexture;
+  /** The original image file, saved with the project. */
+  files: File[];
 }
 
 /**
- * Second PBR set revealed in the loss (wear.substrate.source = 'secondSet'). Store state only, like the mask; it has
- * no document of its own.
+ * Second PBR set revealed in the loss (wear.substrate.source = 'secondSet'). It has no document of its own; its files
+ * and tile size are saved in the project (.hsp) beside the document.
  */
 export interface SubstrateState {
   name: string;
   gpu: GpuMaterial;
+  /** The original image files, saved with the project. */
+  files: File[];
 }
 
 /** A composed atlas with the layout and checks it was composed from. */
@@ -90,12 +154,16 @@ export interface ProjectState {
   /** Preview resolution; the export resolution lives in the output node. */
   previewRes: PreviewRes;
   activeMap: ActiveMap;
+  /** Layer whose section the inspector shows. View state: not in the document, not tracked as a change. */
+  selectedLayer: NodeType;
   atlas: AtlasResult | null;
   /** Last preview composition failure, shown in the status bar; cleared by the next success. */
   composeError: string | null;
   structure: StructureState | null;
   /** Last structure analysis failure, shown in the structure section; cleared by the next success. */
   structureError: string | null;
+  /** No structure analysis is queued or running. */
+  analysisIdle: boolean;
   mask: MaskState | null;
   substrate: SubstrateState | null;
   /** Last mask or substrate import failure, shown in the wear section; cleared by the next success. */
@@ -106,6 +174,35 @@ export interface ProjectState {
   /** A recomposition or request is newer than `checks`: they describe an older atlas until the next results land. */
   checksPending: boolean;
   viewFocus: ViewFocus | null;
+  /** Bumped when the atlas view must fit again: a replace import, an open and Nuevo. */
+  viewGen: number;
+  /**
+   * Where the project was last saved or what it was opened from. `dir` is '' for a project opened from a file: the
+   * browser does not expose its folder, so Guardar asks for one.
+   */
+  projectPath: { dir: string; name: string } | null;
+  /** The document, material settings, mask or second set changed since the last save, open or new. */
+  dirty: boolean;
+  /** A project is being read and built (Abrir). */
+  opening: boolean;
+  /** Last save or open failure, shown in the top bar; cleared by the next success. */
+  projectError: string | null;
+  /** 3D view settings (view state, remembered in localStorage). */
+  view3d: View3dSettings;
+  /** Merges valid fields into the 3D view settings and remembers them. */
+  setView3d(patch: Partial<View3dSettings>): void;
+  /** Empties the project (no material, document, mask or second set) and forgets its path. */
+  newProject(): void;
+  /**
+   * Writes the project as one `.hsp` (document, original images, mask and second set) to `target`, or to
+   * `projectPath`; returns the written path. Waits for a running analysis first. Throws with a Spanish message.
+   */
+  saveProject(target?: { dir: string; name: string }): Promise<string>;
+  /**
+   * Opens a `.hsp`: builds everything on the side (images, GPU uploads, structure analysis) and swaps it in at once.
+   * On failure the current project is untouched and `projectError` says why.
+   */
+  openProject(file: File): Promise<void>;
   /** Centres the atlas view on atlas UV (u, v). */
   focusAtlas(u: number, v: number): void;
   /**
@@ -119,6 +216,7 @@ export interface ProjectState {
   runEvaluation(opts?: EvaluationOptions): Promise<CheckResult[] | null>;
   setPreviewRes(r: PreviewRes): void;
   setActiveMap(m: ActiveMap): void;
+  setSelectedLayer(t: NodeType): void;
   /** Shallow-merges params into a node. */
   updateNode<T extends NodeType>(id: string, patch: Partial<NodeParams[T]>): void;
   /** Replaces the layout node params wholesale, so no keys of another mode linger. */
@@ -176,6 +274,9 @@ let materialRev = 0;
 /** Bumped by every analysis request; only the latest may apply its result. */
 let analyzeGen = 0;
 
+/** Analysis requests queued or running (ProjectState.analysisIdle is this being 0). */
+let analysesInFlight = 0;
+
 /** Bumped by mask imports and clears and by material replacement; only the latest mask import may apply. */
 let maskGen = 0;
 
@@ -188,6 +289,18 @@ let substrateGen = 0;
  */
 let maskReplacedGen = -1;
 let substrateReplacedGen = -1;
+
+/** Numbers focus requests for the whole session: never reset, so no request repeats an older number. */
+let focusSeq = 0;
+
+/** Bumped by every open and by newProject; only the latest open may swap its project in. */
+let openGen = 0;
+
+/** Bumped when an open swaps a project in and by newProject: a save that spans it wrote the replaced project. */
+let projectGen = 0;
+
+/** Set while a save, open or new marks the state clean, so the dirty tracker ignores that change. */
+let markingClean = false;
 
 /** Map kinds of the second material that the colour pass reads (Task 10); the rest is never uploaded. */
 const SUBSTRATE_KINDS: MapKind[] = ['baseColor', 'roughness', 'metallic', 'ao'];
@@ -283,7 +396,127 @@ function destroyTextures(m: GpuMaterial | null): void {
   if (m) for (const t of Object.values(m.textures)) t.destroy();
 }
 
+/** The maps of a second set the colour pass reads, chosen from its file names. */
+function substrateMaps(names: string[]): MaterialSettings['files'] {
+  const all = chooseMaps(names).files;
+  const chosen: MaterialSettings['files'] = {};
+  for (const k of SUBSTRATE_KINDS) if (all[k]) chosen[k] = all[k];
+  return chosen;
+}
+
+function substrateSettings(name: string, files: MaterialSettings['files'], tileSizeM: [number, number]): MaterialSettings {
+  const rough = files.roughness;
+  return {
+    name,
+    files,
+    normalConvention: 'gl',
+    roughnessIsGloss: rough ? classifyMapFile(rough)?.isGloss === true : false,
+    tileSizeM,
+    heightScaleM: 0.02,
+    period: { ...CONTINUOUS },
+    allowRotation: false,
+    orientation: { baseRotation: 0, rule: 'fixed' },
+  };
+}
+
+/**
+ * Applies a structure analysis to the document and settings: the detected period (unless the user set one, or always
+ * with `applyPeriod`), the structure type and the proposed wear family.
+ */
+function withAnalysis(
+  doc: ProjectDoc, settings: MaterialSettings, result: StructureResult, applyPeriod: boolean,
+): { doc: ProjectDoc; settings: MaterialSettings } {
+  const start = settings;
+  const p = result.period;
+  const cur = settings.period;
+  const differs = cur.x !== p.x || cur.y !== p.y || cur.phaseX !== p.phaseX || cur.phaseY !== p.phaseY;
+  if (applyPeriod ? differs || settings.periodUserSet : !settings.periodUserSet && differs) {
+    settings = {
+      ...settings,
+      period: { ...cur, x: p.x, y: p.y, phaseX: p.phaseX, phaseY: p.phaseY },
+      periodUserSet: applyPeriod ? false : settings.periodUserSet,
+    };
+  }
+  let next = settings === start ? doc : withMaterialNode(doc, settings);
+  const node = structureNode(next);
+  if (node) next = updateNodeParams(next, node.id, { type: result.type, analyzed: true });
+  return { doc: withProposedFamily(next, result.type, settings.name), settings };
+}
+
+/** Grey input of the analysis and the analysis itself, on the Worker; null without height or albedo. */
+async function runAnalysis(
+  images: LoadedMaterial['images'], tileSizeM: [number, number], threshold: number | null, supersede: boolean,
+): Promise<{ result: StructureResult | null; source: StructureState['source'] } | null> {
+  const input = readGray(images);
+  if (!input) return null;
+  const result = await workerCall(
+    'analyze',
+    { gray: input.gray, tileSizeM, threshold: threshold ?? undefined },
+    [input.gray.data.buffer],
+    { supersede },
+  );
+  return { result, source: input.source };
+}
+
+function analysisError(e: unknown): string {
+  return e instanceof WorkerCrashedError ? e.message : es.structure.failed(e instanceof Error ? e.message : String(e));
+}
+
 type StoreSet = (partial: Partial<ProjectState>) => void;
+
+/** A save failure, with its Spanish message. */
+export class SaveError extends Error {}
+
+/** An open dropped for a newer open, a new project or a lost device; it reports nothing. */
+class OpenSuperseded extends Error {}
+
+/** Commits `partial` as the clean state of a save, open or new: `dirty` false, and the dirty tracker skips it. */
+function setClean(set: StoreSet, partial: Partial<ProjectState>): void {
+  markingClean = true;
+  try {
+    set({ ...partial, dirty: false });
+  } finally {
+    markingClean = false;
+  }
+}
+
+/** Destroys the GPU resources and bitmaps of a replaced project (the same way a replace import does). */
+function destroyProject(
+  old: Pick<ProjectState, 'gpuMaterial' | 'structure' | 'mask' | 'substrate'>, oldBitmaps: Map<string, ImageBitmap>,
+): void {
+  // A compose in flight bound these before its first await; destroy() waits for that submitted work.
+  destroyTextures(old.gpuMaterial);
+  old.structure?.gpu.destroy();
+  old.mask?.texture.destroy();
+  if (old.substrate) destroyTextures(old.substrate.gpu);
+  closeAll(oldBitmaps);
+}
+
+/**
+ * Discards every request in flight for the current project: imports, re-uploads, mask and second set imports,
+ * compositions and evaluations. `replaced` marks mask and second set imports as dropped by a project change (they say
+ * so, like a replace import).
+ */
+function invalidateInFlight(replaced: boolean): void {
+  importGen++;
+  generation++;
+  materialRev++;
+  maskGen++;
+  substrateGen++;
+  if (replaced) {
+    maskReplacedGen = maskGen;
+    substrateReplacedGen = substrateGen;
+  }
+  composeGen++;
+  evalGen++;
+  clearTimeout(evalTimer);
+}
+
+/** The Spanish message of a save or open failure. */
+function projectFailure(e: unknown, wrap: (msg: string) => string): string {
+  if (e instanceof HspError) return e.message;
+  return wrap(e instanceof Error ? e.message : String(e));
+}
 
 /** Add mode of importFiles: re-uploads only the map kinds the new files provide and keeps the document. */
 async function addFiles(
@@ -382,10 +615,12 @@ export const useProject = create<ProjectState>()((set, get) => ({
   sources: [],
   previewRes: 1024,
   activeMap: 'baseColor',
+  selectedLayer: 'wear',
   atlas: null,
   composeError: null,
   structure: null,
   structureError: null,
+  analysisIdle: true,
   mask: null,
   substrate: null,
   wearError: null,
@@ -393,14 +628,196 @@ export const useProject = create<ProjectState>()((set, get) => ({
   checksError: null,
   checksPending: false,
   viewFocus: null,
+  viewGen: 0,
+  projectPath: null,
+  dirty: false,
+  opening: false,
+  projectError: null,
+  view3d: loadView3d(),
 
   focusAtlas(u, v) {
-    set({ viewFocus: { u, v, seq: (get().viewFocus?.seq ?? 0) + 1 } });
+    set({ viewFocus: { u, v, seq: ++focusSeq } });
   },
 
-  runEvaluation(opts) {
-    // A forced evaluation (the export's) covers the debounced one; it would only evaluate the same state again.
-    if (opts?.force) clearTimeout(evalTimer);
+  newProject() {
+    // An open still building is dropped too.
+    openGen++;
+    projectGen++;
+    invalidateInFlight(false);
+    clearTimeout(composeTimer);
+    const old = get();
+    const oldBitmaps = bitmaps;
+    bitmaps = new Map();
+    setClean(set, {
+      doc: null, material: null, gpuMaterial: null, sources: [], importing: false, importError: null,
+      structure: null, structureError: null, mask: null, substrate: null, wearError: null,
+      atlas: null, composeError: null, checks: null, checksError: null, checksPending: false, viewFocus: null,
+      viewGen: get().viewGen + 1, projectPath: null, projectError: null, opening: false, selectedLayer: 'wear',
+    });
+    destroyProject(old, oldBitmaps);
+    // Evaluation reads of the preview atlas were submitted before their first await.
+    if (old.atlas) destroyMaps(old.atlas.maps);
+  },
+
+  async saveProject(target) {
+    // An open or a new project during the save replaces the project this file belongs to.
+    const startProjectGen = projectGen;
+    try {
+      const path = get().projectPath;
+      const to = target ?? (path && path.dir !== '' ? path : null);
+      if (!to || to.dir.trim() === '' || to.name.trim() === '') throw new SaveError(es.project.noTarget);
+      // The saved document carries the structure of the current maps and settings (R43).
+      await whenAnalysisIdle();
+      const { doc, material, sources, mask, substrate } = get();
+      if (!doc || !material) throw new SaveError(es.project.noProject);
+      const name = hspFileName(to.name);
+      const bytes = await packHsp({
+        doc,
+        settings: material.settings,
+        materialFiles: sources,
+        mask: mask ? { name: mask.name, file: mask.files[0] } : null,
+        substrate: substrate
+          ? { name: substrate.name, tileSizeM: substrate.gpu.settings.tileSizeM, files: substrate.files }
+          : null,
+      });
+      const written = await putFile(to.dir, name, bytes);
+      // The file was written, but the project in the store is now another one: leave its path and dirty flag alone.
+      if (projectGen !== startProjectGen) return written;
+      const now = get();
+      const next = { projectPath: { dir: to.dir, name }, projectError: null };
+      // A change made while the file was being written is not in it: the project stays dirty.
+      if (
+        now.doc === doc && now.material?.settings === material.settings && now.mask === mask &&
+        now.substrate === substrate
+      ) {
+        setClean(set, next);
+      } else {
+        set(next);
+      }
+      return written;
+    } catch (e) {
+      if (e instanceof SaveError) throw e;
+      throw new SaveError(projectFailure(e, es.project.saveFailed));
+    }
+  },
+
+  async openProject(file) {
+    const mine = ++openGen;
+    set({ opening: true, projectError: null });
+    await get().initGpu();
+    const { gpu } = get();
+    if (!gpu) {
+      if (mine === openGen) set({ opening: false });
+      return;
+    }
+    // Everything is built on the side; the current project is touched only by the swap below.
+    let fresh = new Map<string, ImageBitmap>();
+    let gpuMaterial: GpuMaterial | null = null;
+    let maskTexture: GPUTexture | null = null;
+    let substrateGpu: GpuMaterial | null = null;
+    let structureGpu: GpuStructure | null = null;
+    try {
+      const c = await unpackHsp(file);
+      const images = await buildImages(c.settings.files, c.materialFiles, new Map(), fresh);
+      gpuMaterial = uploadMaterial(gpu, { settings: c.settings, images });
+
+      let mask: MaskState | null = null;
+      if (c.mask) {
+        let bmp: ImageBitmap;
+        try {
+          bmp = await decode(c.mask.file);
+        } catch {
+          throw new Error(es.material.decodeFailed(c.mask.file.name));
+        }
+        try {
+          maskTexture = uploadRgba8(gpu, bmp, { srgb: false });
+        } finally {
+          bmp.close();
+        }
+        mask = { name: c.mask.name, texture: maskTexture, files: [c.mask.file] };
+      }
+
+      let substrate: SubstrateState | null = null;
+      if (c.substrate) {
+        const chosen = substrateMaps(c.substrate.files.map((f) => f.name));
+        if (Object.keys(chosen).length === 0) throw new HspError(es.project.substrateNoMaps);
+        const subFresh = new Map<string, ImageBitmap>();
+        try {
+          const subImages = await buildImages(chosen, c.substrate.files, new Map(), subFresh);
+          const settings = substrateSettings(c.substrate.name, chosen, c.substrate.tileSizeM);
+          substrateGpu = uploadMaterial(gpu, { settings, images: subImages });
+        } finally {
+          // Copied into textures at upload; the second set never re-reads them.
+          closeAll(subFresh);
+        }
+        substrate = { name: c.substrate.name, gpu: substrateGpu, files: c.substrate.files };
+      }
+
+      // The analysis re-runs; its threshold and period come from the saved document and settings.
+      let doc = c.doc;
+      let settings = c.settings;
+      let structure: StructureState | null = null;
+      let structureError: string | null = null;
+      try {
+        const analysis = await runAnalysis(
+          images, settings.tileSizeM, structureNode(doc)?.params.threshold ?? null, false,
+        );
+        if (analysis?.result) {
+          ({ doc, settings } = withAnalysis(doc, settings, analysis.result, false));
+          structureGpu = uploadStructure(gpu, analysis.result);
+          structure = { result: analysis.result, gpu: structureGpu, source: analysis.source };
+        } else if (!analysis) {
+          doc = withProposedFamily(doc, 'continuous', settings.name);
+        }
+      } catch (e) {
+        console.error('structure analysis failed', e);
+        structureError = analysisError(e);
+      }
+
+      // A newer open or a new project came meanwhile, or the device was lost: drop what was built.
+      if (mine !== openGen || get().gpu !== gpu || gpuLostError) throw new OpenSuperseded();
+
+      const old = get();
+      const oldBitmaps = bitmaps;
+      bitmaps = fresh;
+      invalidateInFlight(true);
+      projectGen++;
+      setClean(set, {
+        doc, material: { settings, images }, gpuMaterial: { ...gpuMaterial, settings }, sources: c.materialFiles,
+        importing: false, importError: null, structure, structureError, mask, substrate, wearError: null,
+        composeError: null, checks: null, checksError: null, checksPending: false, viewFocus: null,
+        viewGen: get().viewGen + 1, projectPath: { dir: '', name: file.name }, projectError: null, opening: false, selectedLayer: 'wear',
+      });
+      // Live now: the cleanup below must never free them.
+      gpuMaterial = null;
+      maskTexture = null;
+      substrateGpu = null;
+      structureGpu = null;
+      fresh = new Map();
+      destroyProject(old, oldBitmaps);
+    } catch (e) {
+      destroyTextures(gpuMaterial);
+      maskTexture?.destroy();
+      destroyTextures(substrateGpu);
+      structureGpu?.destroy();
+      closeAll(fresh);
+      if (mine !== openGen) return;
+      if (e instanceof OpenSuperseded) {
+        set({ opening: false });
+        return;
+      }
+      console.error('open project failed', e);
+      set({ opening: false, projectError: projectFailure(e, es.project.openFailed) });
+    }
+  },
+
+  async runEvaluation(opts) {
+    if (opts?.force) {
+      // The export's evaluation must see the structure of the current maps and settings (R43).
+      await whenAnalysisIdle();
+      // A forced evaluation covers the debounced one; it would only evaluate the same state again.
+      clearTimeout(evalTimer);
+    }
     return requestEvaluation(opts);
   },
 
@@ -410,6 +827,16 @@ export const useProject = create<ProjectState>()((set, get) => ({
 
   setActiveMap(m) {
     set({ activeMap: m });
+  },
+
+  setView3d(patch) {
+    const view3d = sanitizeView3d({ ...get().view3d, ...patch }, get().view3d);
+    saveView3d(view3d);
+    set({ view3d });
+  },
+
+  setSelectedLayer(t) {
+    set({ selectedLayer: t });
   },
 
   updateNode(id, patch) {
@@ -493,7 +920,8 @@ export const useProject = create<ProjectState>()((set, get) => ({
       substrateReplacedGen = ++substrateGen;
       set({
         sources: images, material, gpuMaterial, doc: createDefaultDoc(settings), importing: false,
-        structure: null, structureError: null, mask: null, substrate: null, wearError: null,
+        structure: null, structureError: null, mask: null, substrate: null, wearError: null, selectedLayer: 'wear',
+        viewGen: get().viewGen + 1,
       });
       oldStructure?.gpu.destroy();
       oldMask?.texture.destroy();
@@ -589,64 +1017,59 @@ export const useProject = create<ProjectState>()((set, get) => ({
   },
 
   async analyze(opts) {
-    const mine = ++analyzeGen;
-    const startImages = get().material?.images;
-    // Let the UI paint before the CPU work; anything committed meanwhile is caught below.
-    await new Promise((r) => setTimeout(r, 0));
-    const { material, gpu, doc } = get();
-    if (mine !== analyzeGen || !material || !gpu || !doc) return;
-    // The maps changed while this request waited; that change requests its own analysis.
-    if (material.images !== startImages) return;
-    const node = structureNode(doc);
-    let result: StructureResult;
-    let source: StructureState['source'];
+    if (analysesInFlight++ === 0) set({ analysisIdle: false });
     try {
-      const input = readGray(material.images);
-      if (!input) {
-        // Neither height nor albedo left: drop the structure of the removed maps (continuous).
-        const old = get().structure;
-        let nextDoc = old && node ? updateNodeParams(doc, node.id, { analyzed: false }) : doc;
-        nextDoc = withProposedFamily(nextDoc, 'continuous', material.settings.name);
-        if (old || nextDoc !== doc) set({ structure: null, doc: nextDoc });
-        old?.gpu.destroy();
+      const mine = ++analyzeGen;
+      const startImages = get().material?.images;
+      // Let the UI paint before reading the maps; anything committed meanwhile is caught below.
+      await new Promise((r) => setTimeout(r, 0));
+      let { material, gpu, doc } = get();
+      if (mine !== analyzeGen || !material || !gpu || !doc) return;
+      // The maps changed while this request waited; that change requests its own analysis.
+      if (material.images !== startImages) return;
+      const node = structureNode(doc);
+      let analysis: Awaited<ReturnType<typeof runAnalysis>>;
+      try {
+        analysis = await runAnalysis(material.images, material.settings.tileSizeM, node?.params.threshold ?? null, true);
+        if (!analysis) {
+          // Neither height nor albedo left: drop the structure of the removed maps (continuous).
+          const old = get().structure;
+          let nextDoc = old && node ? updateNodeParams(doc, node.id, { analyzed: false }) : doc;
+          nextDoc = withProposedFamily(nextDoc, 'continuous', material.settings.name);
+          if (old || nextDoc !== doc) set({ structure: null, doc: nextDoc });
+          old?.gpu.destroy();
+          return;
+        }
+        // Superseded by a newer analysis before the Worker started it.
+        if (!analysis.result) return;
+      } catch (e) {
+        if (mine !== analyzeGen) return;
+        console.error('structure analysis failed', e);
+        set({ structureError: analysisError(e) });
         return;
       }
-      source = input.source;
-      const threshold = node?.params.threshold ?? null;
-      result = analyzeStructure(input.gray, material.settings.tileSizeM, threshold === null ? undefined : { threshold });
-    } catch (e) {
-      console.error('structure analysis failed', e);
-      set({ structureError: es.structure.failed(e instanceof Error ? e.message : String(e)) });
-      return;
-    }
-    const gpuStructure = uploadStructure(gpu, result);
-    let settings = material.settings;
-    const p = result.period;
-    const cur = settings.period;
-    const differs = cur.x !== p.x || cur.y !== p.y || cur.phaseX !== p.phaseX || cur.phaseY !== p.phaseY;
-    if (opts?.applyPeriod ? differs || settings.periodUserSet : !settings.periodUserSet && differs) {
-      settings = {
-        ...settings,
-        period: { ...cur, x: p.x, y: p.y, phaseX: p.phaseX, phaseY: p.phaseY },
-        periodUserSet: opts?.applyPeriod ? false : settings.periodUserSet,
+      const { result, source } = analysis;
+      // Commit on the state after the Worker returned; a newer request or new maps make this result stale.
+      ({ material, gpu, doc } = get());
+      if (mine !== analyzeGen || !material || !gpu || !doc || material.images !== startImages) return;
+      const gpuStructure = uploadStructure(gpu, result);
+      const { doc: nextDoc, settings } = withAnalysis(doc, material.settings, result, opts?.applyPeriod === true);
+      const prev = get().structure;
+      const next: Partial<ProjectState> = {
+        structure: { result, gpu: gpuStructure, source },
+        structureError: null,
+        doc: nextDoc,
       };
+      if (settings !== material.settings) {
+        next.material = { ...material, settings };
+        const gm = get().gpuMaterial;
+        next.gpuMaterial = gm ? { ...gm, settings } : gm;
+      }
+      set(next);
+      prev?.gpu.destroy();
+    } finally {
+      if (--analysesInFlight === 0) set({ analysisIdle: true });
     }
-    let nextDoc = settings === material.settings ? doc : withMaterialNode(doc, settings);
-    if (node) nextDoc = updateNodeParams(nextDoc, node.id, { type: result.type, analyzed: true });
-    nextDoc = withProposedFamily(nextDoc, result.type, settings.name);
-    const prev = get().structure;
-    const next: Partial<ProjectState> = {
-      structure: { result, gpu: gpuStructure, source },
-      structureError: null,
-      doc: nextDoc,
-    };
-    if (settings !== material.settings) {
-      next.material = { ...material, settings };
-      const gm = get().gpuMaterial;
-      next.gpuMaterial = gm ? { ...gm, settings } : gm;
-    }
-    set(next);
-    prev?.gpu.destroy();
   },
 
   async setStructureThreshold(t) {
@@ -681,7 +1104,7 @@ export const useProject = create<ProjectState>()((set, get) => ({
     const node = wearNode(doc);
     const prev = get().mask;
     set({
-      mask: { name: file.name, texture },
+      mask: { name: file.name, texture, files: [file] },
       wearError: null,
       doc: node ? updateNodeParams<'wear'>(doc, node.id, { mask: { ...node.params.mask, enabled: true } }) : doc,
     });
@@ -706,9 +1129,7 @@ export const useProject = create<ProjectState>()((set, get) => ({
     if (!gpu || !get().doc) return;
     const images = files.filter((f) => IMAGE_EXT.test(f.name));
     const names = images.map((f) => f.name);
-    const all = chooseMaps(names).files;
-    const chosen: MaterialSettings['files'] = {};
-    for (const k of SUBSTRATE_KINDS) if (all[k]) chosen[k] = all[k];
+    const chosen = substrateMaps(names);
     // Without colour maps there is nothing to reveal; an import in flight is kept.
     if (Object.keys(chosen).length === 0) {
       set({ wearError: es.material.noMaps });
@@ -722,24 +1143,13 @@ export const useProject = create<ProjectState>()((set, get) => ({
         if (substrateGen === substrateReplacedGen) set({ wearError: es.wear.substrateDiscarded });
         return;
       }
-      const rough = chosen.roughness;
       const name = resolveMaterialName(names, folderOf(files));
       // Re-importing the same set keeps the size the user gave it (R34); a different set starts at 1 m.
       const current = get().substrate;
-      const settings: MaterialSettings = {
-        name,
-        files: chosen,
-        normalConvention: 'gl',
-        roughnessIsGloss: rough ? classifyMapFile(rough)?.isGloss === true : false,
-        tileSizeM: current?.name === name ? current.gpu.settings.tileSizeM : [1, 1],
-        heightScaleM: 0.02,
-        period: { ...CONTINUOUS },
-        allowRotation: false,
-        orientation: { baseRotation: 0, rule: 'fixed' },
-      };
+      const settings = substrateSettings(name, chosen, current?.name === name ? current.gpu.settings.tileSizeM : [1, 1]);
       const gpuMaterial = uploadMaterial(gpu, { settings, images: loaded });
       const prev = get().substrate;
-      set({ substrate: { name: settings.name, gpu: gpuMaterial }, wearError: null });
+      set({ substrate: { name: settings.name, gpu: gpuMaterial, files: images }, wearError: null });
       if (prev) destroyTextures(prev.gpu);
     } catch (e) {
       if (mine === substrateGen) set({ wearError: e instanceof Error ? e.message : String(e) });
@@ -773,6 +1183,18 @@ function destroyMaps(m: AtlasMaps): void {
   ]) {
     t.destroy();
   }
+}
+
+/** Resolves once no structure analysis is queued or running (R43: the export waits for it). */
+export function whenAnalysisIdle(): Promise<void> {
+  if (useProject.getState().analysisIdle) return Promise.resolve();
+  return new Promise((resolve) => {
+    const unsubscribe = useProject.subscribe((s) => {
+      if (!s.analysisIdle) return;
+      unsubscribe();
+      resolve();
+    });
+  });
 }
 
 const RECOMPOSE_DEBOUNCE_MS = 150;
@@ -820,6 +1242,20 @@ export function composeInputFor(
     substrateMaterial: substrate?.gpu,
     grainAxis: structure?.result.grainAxis ?? null,
   };
+}
+
+/**
+ * The composition carries downward runoff streaks, so an engine must not mirror vertically (decision 69). The export
+ * and the 3D view both ask this, with `engineLayout`.
+ */
+export function composesRunoff(input: Pick<ComposeInput, 'dirt'>): boolean {
+  return (input.dirt?.runoff ?? 0) > 0;
+}
+
+/** `composesRunoff` for a document: its dirt section is on and has runoff, as `composeInputFor` reads it. */
+export function runoffOf(doc: ProjectDoc): boolean {
+  const dirt = dirtNode(doc)?.params;
+  return composesRunoff({ dirt: dirt?.enabled ? dirt : undefined });
 }
 
 async function recompose(): Promise<void> {
@@ -884,8 +1320,11 @@ let evalGen = 0;
 /** Evaluations run one after another on this chain, never concurrently. */
 let evalChain: Promise<unknown> = Promise.resolve();
 
-/** Debug counters (exposed by the test harness): evaluation composes, and evaluations running now / at most. */
-export const evalStats = { composes: 0, running: 0, peak: 0 };
+/**
+ * Debug counters (exposed by the test harness): evaluation composes, evaluations running now / at most, and the
+ * staging bytes of the last detail-normal slope read.
+ */
+export const evalStats = { composes: 0, running: 0, peak: 0, detailBytes: 0 };
 
 /** Mean base colour of each second set, read back once. */
 const substrateMeans = new WeakMap<GpuMaterial, Promise<[number, number, number]>>();
@@ -980,7 +1419,7 @@ async function evaluate(mine: number, opts?: EvaluationOptions): Promise<CheckRe
         readbackR32(gpu, maps.macroHeight),
         readbackR32(gpu, maps.height),
         maps.matNormal
-          ? readbackRgba16f(gpu, maps.matNormal)
+          ? readbackDetailSlope(gpu, maps.matNormal)
           : Promise.reject(new Error('evaluation maps lack matNormal')),
         readbackRgba8(gpu, maps.normal),
         readbackRgba8(gpu, maps.wearMask),
@@ -989,24 +1428,33 @@ async function evaluate(mine: number, opts?: EvaluationOptions): Promise<CheckRe
     } finally {
       if (!current) destroyMaps(maps);
     }
-    const [rectId, macro, total, matNormal, normal, wearRgba, subMean] = await reads;
+    const [rectId, macro, total, detail, normal, wearRgba, subMean] = await reads;
+    // One f32 per pixel, unpadded: the data is exactly the staging buffer.
+    evalStats.detailBytes = detail.data.byteLength;
     const { width, height } = rectId;
     // The grey wearMask's red channel; a 1 × 1 placeholder (wear off) stays 1 byte long.
     const wearMask = new Uint8Array(wearRgba.data.length / 4);
     for (let i = 0; i < wearMask.length; i++) wearMask[i] = wearRgba.data[i * 4];
     const maps8 = {
       width, height, rectId: rectId.data as Uint32Array, wearMask, macroHeight: macro.data as Float32Array,
-      heightM: total.data as Float32Array, matNormal: matNormal.data,
+      heightM: total.data as Float32Array, detailSlope: detail.data,
       normal: normal.data,
     };
     const output = doc.nodes.find((n): n is DocNode<'output'> => n.type === 'output');
-    const results = runChecks({
+    // Every map moves to the Worker; none is read here afterwards.
+    const transfer = new Set<ArrayBuffer>();
+    for (const a of [maps8.rectId, maps8.wearMask, maps8.macroHeight, maps8.heightM, maps8.detailSlope, maps8.normal]) {
+      transfer.add(a.buffer as ArrayBuffer);
+    }
+    const results = await workerCall('checks', {
       layout: inputs.layout, rotations: inputs.rotations, material: inputs.material, wear: inputs.wear,
       exportResolutionPx: opts?.exportResolutionPx ?? output?.params.resolutionPx ?? EVAL_RES,
       maps: maps8,
       substrateMeanRgb: joints && subMean ? subMean : undefined,
       jointMeanRgb: joints && subMean ? joints : undefined,
-    });
+    }, [...transfer], { supersede: !opts?.force });
+    // Skipped for a newer preview evaluation (never a forced one): that one stores its results.
+    if (!results) return null;
     if (mine === evalGen) {
       useProject.setState({ checks: { results, width, height }, checksError: null, checksPending: false });
     }
@@ -1015,7 +1463,10 @@ async function evaluate(mine: number, opts?: EvaluationOptions): Promise<CheckRe
     console.error('evaluation failed', e);
     if (mine === evalGen) {
       useProject.setState({
-        checksError: es.checks.failed(e instanceof Error ? e.message : String(e)), checksPending: false,
+        checksError: e instanceof WorkerCrashedError
+          ? e.message
+          : es.checks.failed(e instanceof Error ? e.message : String(e)),
+        checksPending: false,
       });
     }
     return null;
@@ -1023,6 +1474,17 @@ async function evaluate(mine: number, opts?: EvaluationOptions): Promise<CheckRe
     evalStats.running--;
   }
 }
+
+// Any change to what a project file holds makes the project dirty, except the commits of save, open and new.
+useProject.subscribe((s, prev) => {
+  if (markingClean || s.dirty) return;
+  if (
+    s.doc !== prev.doc || s.material?.settings !== prev.material?.settings || s.sources !== prev.sources ||
+    s.mask !== prev.mask || s.substrate !== prev.substrate
+  ) {
+    useProject.setState({ dirty: true });
+  }
+});
 
 useProject.subscribe((s, prev) => {
   if (s.atlas === prev.atlas || !s.atlas) return;

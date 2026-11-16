@@ -22,9 +22,10 @@
 // The groove (rect id 0) and the groove floor inside a rect (lossR < 0, R31) get neither substrate, edge tone nor
 // runoff; height AO and cavity dirt apply everywhere.
 //
-// One invocation walks a chunk of CHUNK_ROWS rows of one column, top to bottom, so it knows the latest loss above it
-// in the same rect (runoff from losses). It first walks LOOKBACK_ROWS rows above the chunk (runoffLengthM in output
-// px, 0 when losses cannot tint) reading only rectId and loss.
+// One invocation walks a chunk of bandOffset.y rows of one column, top to bottom, so it knows the latest loss above
+// it in the same rect (runoff from losses). It first walks bandOffset.z rows above the chunk (runoffLengthM in output
+// px, 0 when losses cannot tint) reading only rectId and loss. Both are uniforms, not overrides, so a new runoff
+// length builds no pipeline.
 
 @group(0) @binding(0) var<uniform> P: Params;
 @group(0) @binding(1) var<storage, read> rects: array<Rect>;
@@ -51,13 +52,11 @@
 @group(0) @binding(20) var outAo: texture_storage_2d<rgba8unorm, write>;
 // Final macro height (r32float): groove, bevel and wear without the intact material relief.
 @group(0) @binding(21) var macroTex: texture_2d<f32>;
-// x: first chunk of this dispatch (row bands, wear.ts BAND_ROWS).
+// x: first chunk of this dispatch (row bands, wear.ts BAND_ROWS); y: rows per chunk; z: lookback rows above a chunk.
 @group(0) @binding(22) var<uniform> bandOffset: vec4<u32>;
 
-// bandM floor (MIN_BAND_M in wear.ts), and the column walk (see the header).
+// bandM floor (MIN_BAND_M in wear.ts).
 override MIN_BAND_M: f32;
-override CHUNK_ROWS: u32;
-override LOOKBACK_ROWS: u32;
 // Height AO on macroTex instead of heightTex: the material ships a real AO map (R33).
 override AO_ON_MACRO: bool;
 
@@ -241,13 +240,14 @@ fn shade(c: vec2<i32>, id: u32, lossR: f32, lastLoss: i32) {
   textureStore(outAo, c, vec4<f32>(ao, ao, ao, 1.0));
 }
 
-// gid.x: column, gid.y + bandOffset.x: chunk of CHUNK_ROWS rows.
+// gid.x: column, gid.y + bandOffset.x: chunk of bandOffset.y rows.
 @compute @workgroup_size(64, 1, 1)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let rows = u32(P.outSize.y);
-  let start = (gid.y + bandOffset.x) * CHUNK_ROWS;
+  let chunkRows = bandOffset.y;
+  let start = (gid.y + bandOffset.x) * chunkRows;
   if (f32(gid.x) >= P.outSize.x || start >= rows) { return; }
-  let end = min(start + CHUNK_ROWS, rows);
+  let end = min(start + chunkRows, rows);
   let x = i32(gid.x);
   // Losses tint only with wear, a family that loses material, and runoff.
   let lossOrigins = W.enabled != 0u && W.loses != 0u && W.runoff > 0.0 && W.runoffLengthM > 0.0;
@@ -255,7 +255,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   // Row of the latest lost pixel above, in the current rect; -1: none.
   var lastLoss = -1;
   var y = start;
-  if (lossOrigins) { y = start - min(start, LOOKBACK_ROWS); }
+  if (lossOrigins) { y = start - min(start, bandOffset.z); }
   for (; y < end; y++) {
     let c = vec2<i32>(x, i32(y));
     let id = textureLoad(rectIdTex, c, 0).r;

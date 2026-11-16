@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { deflateSync, inflateSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
+import { selectLayer } from './helpers';
 
 const SAMPLE_DIR = resolve(fileURLToPath(new URL('.', import.meta.url)), '../../../samples/pbr/bricks wall 13');
 
@@ -127,6 +128,7 @@ test.describe('layout, inspector and atlas view', () => {
   test('auto mode with period Y 0.075 reports no proportion issues, and the seed changes the layout', async ({ page }) => {
     await page.getByLabel('Periodo (m, vacío = continuo) Y').fill('0.075');
     await page.getByLabel('Periodo (m, vacío = continuo) Y').blur();
+    await selectLayer(page, 'layout');
     await page.getByTestId('layout-mode').click();
     await page.getByRole('option', { name: 'Automático' }).click();
     await expect(page.getByTestId('layout-seed')).toBeVisible();
@@ -141,6 +143,74 @@ test.describe('layout, inspector and atlas view', () => {
     await page.getByTestId('layout-seed').blur();
     await expect.poll(signature).not.toBe(before);
     await expect(page.getByTestId('proportion-issues')).toHaveText('0');
+  });
+
+  test('the Pila lists the 7 layers and the selected one drives the inspector', async ({ page }) => {
+    await page.waitForFunction(() => !!window.__hs?.store.getState().doc);
+    const rows = page.getByTestId('stack-row');
+    await expect(rows).toHaveCount(7);
+    await expect(rows).toHaveText(['Material', 'Estructura', 'Layout', 'Colocación', 'Desgaste', 'Suciedad', 'Salida']);
+    // Wear is selected after an import.
+    await expect(page.getByTestId('wear-section')).toBeVisible();
+    await expect(page.getByTestId('dirt-section')).toHaveCount(0);
+    await page.getByTestId('stack-row').filter({ hasText: 'Suciedad' }).click({ position: { x: 6, y: 6 } });
+    await expect(page.getByTestId('dirt-section')).toBeVisible();
+    await expect(page.getByLabel('Escorrentía', { exact: true })).toBeVisible();
+    await expect(page.getByTestId('wear-section')).toHaveCount(0);
+    await expect(page.getByLabel('Intensidad', { exact: true })).toHaveCount(0);
+  });
+
+  test('ArrowDown in the Pila moves the selection from Desgaste to Suciedad', async ({ page }) => {
+    await selectLayer(page, 'wear');
+    await page.keyboard.press('ArrowDown');
+    const dirt = page.locator('[data-testid="stack-row"][data-layer="dirt"]');
+    await expect(dirt).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByTestId('stack')).toHaveAttribute('aria-activedescendant', (await dirt.getAttribute('id'))!);
+    await expect(page.getByTestId('dirt-section')).toBeVisible();
+    await page.keyboard.press('ArrowUp');
+    await expect(page.getByTestId('wear-section')).toBeVisible();
+  });
+
+  test('the switch in the Desgaste row turns the wear off', async ({ page }) => {
+    await page.waitForFunction(() => !!window.__hs?.store.getState().doc);
+    const enabled = () => page.evaluate(() =>
+      (window.__hs!.store.getState().doc!.nodes.find((n) => n.id === 'wear')!.params as { enabled: boolean }).enabled);
+    expect(await enabled()).toBe(true);
+    const sw = page.getByTestId('stack-wear-enabled');
+    // The switch sits outside the option: toggling it keeps the selection.
+    await selectLayer(page, 'dirt');
+    await sw.click();
+    await expect.poll(enabled).toBe(false);
+    await expect(page.locator('[data-testid="stack-row"][data-layer="dirt"]')).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByRole('listbox', { name: 'Pila' }).getByRole('switch')).toHaveCount(0);
+    await selectLayer(page, 'wear');
+    await expect(sw).toHaveAttribute('aria-checked', 'false');
+    await expect(page.getByTestId('wear-enabled')).toHaveAttribute('aria-checked', 'false');
+  });
+
+  test('a value typed in Intensidad without Enter is kept when another layer is selected', async ({ page }) => {
+    await page.waitForFunction(() => !!window.__hs?.store.getState().doc);
+    const f = page.getByLabel('Intensidad', { exact: true });
+    await f.click();
+    await f.fill('0.37');
+    await page.getByTestId('stack-row').filter({ hasText: 'Suciedad' }).click({ position: { x: 6, y: 6 } });
+    await expect(page.getByTestId('dirt-section')).toBeVisible();
+    await expect.poll(() => page.evaluate(() =>
+      (window.__hs!.store.getState().doc!.nodes.find((n) => n.id === 'wear')!.params as { intensity: number }).intensity))
+      .toBe(0.37);
+  });
+
+  test('a branched graph shows the single disabled row Grafo personalizado', async ({ page }) => {
+    await page.waitForFunction(() => !!window.__hs?.store.getState().doc);
+    await page.evaluate(() => {
+      const s = window.__hs!.store.getState();
+      const d = s.doc!;
+      s.setDoc({ ...d, edges: [...d.edges, { from: 'material', to: 'output', port: 'extra' }] });
+    });
+    const rows = page.getByTestId('stack-row');
+    await expect(rows).toHaveCount(1);
+    await expect(rows).toHaveText('Grafo personalizado');
+    await expect(rows).toHaveAttribute('aria-disabled', 'true');
   });
 
   test('map tabs switch the active map', async ({ page }) => {
@@ -332,6 +402,7 @@ test.describe('loose files and orientation (wood planks 12)', () => {
     await expect(page.getByTestId('map-row')).toHaveCount(2);
 
     await page.waitForFunction(() => !!window.__hs?.store.getState().doc);
+    await selectLayer(page, 'layout');
     await page.getByTestId('layout-preset').click();
     await page.getByRole('option', { name: 'Marcos' }).click();
     await page.evaluate(() => window.__hs!.store.getState().updateNode<'placement'>('placement', { variation: 0.8 }));
@@ -370,6 +441,7 @@ test.describe('loose files and orientation (wood planks 12)', () => {
     await page.goto('/');
     await page.getByTestId('folder-input').setInputFiles(WOOD_DIR);
     await expect(page.getByTestId('material-name')).toHaveValue('wood_planks_12');
+    await selectLayer(page, 'layout');
     await page.getByTestId('layout-preset').click();
     await page.getByRole('option', { name: 'Marcos' }).click();
     await page.getByTestId('orientation-rule').click();
@@ -530,7 +602,9 @@ test.describe('wear and dirt controls (bricks wall 13)', () => {
     await page.goto('/');
     await page.getByTestId('folder-input').setInputFiles(SAMPLE_DIR);
     await expect(page.getByTestId('material-name')).toHaveValue('bricks_wall_13');
+    await selectLayer(page, 'structure');
     await expect(page.getByTestId('structure-type')).toHaveText('Piezas');
+    await selectLayer(page, 'wear');
     await settled(page);
   });
 
@@ -544,8 +618,10 @@ test.describe('wear and dirt controls (bricks wall 13)', () => {
     // Picked in the UI: kept by the next analysis.
     await page.getByTestId('wear-family').click();
     await page.getByRole('option', { name: 'Erosión' }).click();
+    await selectLayer(page, 'structure');
     await page.getByTestId('structure-detect').click();
     await settled(page);
+    await selectLayer(page, 'wear');
     await expect(page.getByTestId('wear-family')).toHaveText('Erosión');
     expect(await page.evaluate(() => {
       const w = window.__hs!.store.getState().doc!.nodes.find((n) => n.id === 'wear')!.params as { userSetFamily?: boolean };
@@ -568,8 +644,10 @@ test.describe('wear and dirt controls (bricks wall 13)', () => {
   });
 
   test('a black mask leaves only the minimum rim', async ({ page }, testInfo) => {
+    await selectLayer(page, 'output');
     await page.getByTestId('preview-res').click();
     await page.getByRole('option', { name: '2048' }).click();
+    await selectLayer(page, 'wear');
     await setField(page, 'Intensidad', '1');
     /** Deepest wearMask pixel, in metres from its rect's outer edge. */
     const maxDepthM = () =>
@@ -705,6 +783,7 @@ test.describe('wear and dirt controls (bricks wall 13)', () => {
         return out;
       });
     const mean = (v: number[]) => v.reduce((p, q) => p + q, 0) / v.length;
+    await selectLayer(page, 'dirt');
     await setField(page, 'Escorrentía', '1');
     const dirty = await strips();
     await setField(page, 'Escorrentía', '0');
@@ -795,6 +874,7 @@ test.describe('wear and dirt controls (bricks wall 13)', () => {
     };
 
     // Runoff: the exported top strips darken.
+    await selectLayer(page, 'dirt');
     await setField(page, 'Escorrentía', '1');
     const runoff = await exported();
     await expectParity(runoff);
@@ -803,6 +883,7 @@ test.describe('wear and dirt controls (bricks wall 13)', () => {
     expect(topStrip(clean)).toBeGreaterThan(topStrip(runoff) + 2);
 
     // Black mask: nothing is lost beyond the rim in the exported wear mask.
+    await selectLayer(page, 'wear');
     await setField(page, 'Intensidad', '1');
     const unmasked = await exported();
     mkdirSync(testInfo.outputPath(), { recursive: true });
@@ -931,6 +1012,7 @@ test.describe('wear and dirt controls (bricks wall 13)', () => {
 
   test('dirt off drops cavity dirt and runoff, and mirroring follows the layout again', async ({ page }, testInfo) => {
     test.setTimeout(120_000);
+    await selectLayer(page, 'dirt');
     await setField(page, 'Escorrentía', '1');
     const dirty = await atlasHashes(page);
     await page.getByTestId('export-open').click();
@@ -968,6 +1050,8 @@ test.describe('wear and dirt controls (bricks wall 13)', () => {
   test('the Desgaste tab shows the wear mask', async ({ page }) => {
     // Big enough that the atlas is drawn at least 1:1, so every map texel has its own screen pixels.
     await page.setViewportSize({ width: 1920, height: 1400 });
+    // The 2D | 3D split halves the atlas pane; maximize it so the canvas keeps its full width.
+    await page.getByRole('button', { name: 'Maximizar atlas 2D' }).click();
     await setField(page, 'Intensidad', '1');
     await page.getByTestId('atlas-overlay').evaluate((el) => { (el as unknown as HTMLElement).style.visibility = 'hidden'; });
     /** Screenshot of the canvas, split by the wearMask value at the texel each screen pixel shows (red channel). */

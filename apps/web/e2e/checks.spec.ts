@@ -3,6 +3,7 @@ import type { Page } from '@playwright/test';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { selectLayer } from './helpers';
 
 const BRICKS = resolve(fileURLToPath(new URL('.', import.meta.url)), '../../../samples/pbr/bricks wall 13');
 
@@ -16,6 +17,7 @@ async function importBricks(page: Page): Promise<void> {
   await page.goto('/');
   await page.getByTestId('folder-input').setInputFiles(BRICKS);
   await expect(page.getByTestId('material-name')).toHaveValue('bricks_wall_13');
+  await selectLayer(page, 'structure');
   await expect(page.getByTestId('structure-type')).toHaveText('Piezas');
   await expect(page.getByTestId('check-row')).toHaveCount(6, { timeout: 30_000 });
 }
@@ -57,31 +59,39 @@ test('readbackR32 reads r32float and r32uint row by row and rejects other format
   expect(r).toEqual({ sizes: [70, 3, 70, 3], kinds: [true, true], f: true, u: true, rejected: true });
 });
 
-test('readbackRgba16f decodes rgba16float row by row and rejects other formats', async ({ page }) => {
+test('readbackDetailSlope reads |n.xy| / max(n.z, 1e-3) per pixel, row by row, and rejects other formats', async ({ page }) => {
   await page.goto('/');
   await page.waitForFunction(() => !!window.__hs);
   const r = await page.evaluate(async () => {
     const hs = window.__hs!;
     await hs.store.getState().initGpu();
     const gpu = hs.store.getState().gpu!;
-    // 40 px × 8 B = 320 B per row: padded to 512 in the copy.
+    // 40 px × 8 B = 320 B per row: not a multiple of 256.
     const w = 40, h = 3;
-    // Halves exactly representable: 0, ±1, 0.5, 1.5, -2, 0.25 … and one subnormal (2^-24).
-    const values = [0, 1, -1, 0.5, 1.5, -2, 0.25, 2 ** -24];
-    const toHalf: Record<number, number> = { 0: 0, 1: 0x3c00, '-1': 0xbc00, 0.5: 0x3800, 1.5: 0x3e00, '-2': 0xc000, 0.25: 0x3400 };
-    toHalf[2 ** -24] = 1;
-    const src = new Float32Array(w * h * 4).map((_, i) => values[i % values.length]);
-    const half = new Uint16Array(src.length).map((_, i) => toHalf[src[i]]);
-    const t = gpu.device.createTexture({ size: [w, h], format: 'rgba16float', usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC });
+    // Unnormalised xyz (exact halves) and the slope each gives: flat, 1, 0.5, z clamped to 1e-3, zero vector.
+    const H = { 0: 0, 0.5: 0x3800, 1: 0x3c00, '-1': 0xbc00, 3: 0x4200, 4: 0x4400, 5: 0x4500 } as Record<string, number>;
+    const cases: [number[], number][] = [[[0, 0, 1], 0], [[3, 4, 5], 1], [[0.5, 0, 1], 0.5], [[1, 0, -1], 1000], [[0, 0, 0], 0]];
+    const half = new Uint16Array(w * h * 4);
+    for (let i = 0; i < w * h; i++) half.set([...cases[i % cases.length][0].map((v) => H[v]), 0], i * 4);
+    const t = gpu.device.createTexture({ size: [w, h], format: 'rgba16float', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
     gpu.device.queue.writeTexture({ texture: t }, half, { bytesPerRow: w * 8 }, [w, h]);
-    const out = await hs.engine.readbackRgba16f(gpu, t);
+    const p = hs.engine.readbackDetailSlope(gpu, t);
+    // The work is submitted already: destroying now must not lose it.
     t.destroy();
-    const rgba = gpu.device.createTexture({ size: [1, 1], format: 'rgba8unorm', usage: GPUTextureUsage.COPY_SRC });
-    const rejected = await hs.engine.readbackRgba16f(gpu, rgba).then(() => false, () => true);
+    const out = await p;
+    const rgba = gpu.device.createTexture({ size: [1, 1], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING });
+    const rejected = await hs.engine.readbackDetailSlope(gpu, rgba).then(() => false, () => true);
     rgba.destroy();
-    return { size: [out.width, out.height], same: Array.from(out.data).every((v, i) => v === src[i]), rejected };
+    const worst = Math.max(...Array.from(out.data, (v, i) => {
+      const e = cases[i % cases.length][1];
+      return Math.abs(v - e) / Math.max(1, e);
+    }));
+    return { size: [out.width, out.height], length: out.data.length, worst, rejected };
   });
-  expect(r).toEqual({ size: [40, 3], same: true, rejected: true });
+  expect(r.size).toEqual([40, 3]);
+  expect(r.length).toBe(120);
+  expect(r.worst).toBeLessThan(1e-5);
+  expect(r.rejected).toBe(true);
 });
 
 test.describe('with bricks wall 13', () => {
@@ -138,6 +148,35 @@ test.describe('with bricks wall 13', () => {
     const r = await page.evaluate(() => {
       const s = window.__hs!.store.getState();
       const c = s.checks!;
+      const p = c.results.find((x) => x.id === 'proportions')!.points![0];
+      const st = document.querySelector('[data-testid="atlas-stage"]')!.getBoundingClientRect();
+      const host = document.querySelector('[data-testid="atlas-view"]')!.getBoundingClientRect();
+      return {
+        x: st.left + (p[0] / c.width) * st.width, y: st.top + (p[1] / c.height) * st.height,
+        cx: host.left + host.width / 2, cy: host.top + host.height / 2,
+      };
+    });
+    expect(Math.abs(r.x - r.cx)).toBeLessThan(2);
+    expect(Math.abs(r.y - r.cy)).toBeLessThan(2);
+  });
+
+  test('clicking a row while 3D is maximized brings the atlas back, zoomed on the point', async ({ page }) => {
+    await importBricks(page);
+    await page.evaluate(() => {
+      const s = window.__hs!.store.getState();
+      const p = s.material!.settings.period;
+      return s.updateSettings({ period: { ...p, x: 0.37, cutAllowedX: false }, periodUserSet: true });
+    });
+    await expect(row(page, 'proportions')).toHaveAttribute('data-status', 'warn', { timeout: 20_000 });
+    await expect(page.getByTestId('checks')).not.toHaveAttribute('data-pending', 'true', { timeout: 20_000 });
+    await page.getByRole('button', { name: 'Maximizar vista 3D' }).click();
+    await expect(page.getByTestId('viewport-2d')).toBeHidden();
+    await row(page, 'proportions').click();
+    await expect(page.getByTestId('viewport-2d')).toBeVisible();
+    await expect.poll(() => page.getByTestId('atlas-stage').evaluate((el) =>
+      Number(/scale\(([\d.e+-]+)\)/.exec((el as HTMLElement).style.transform)![1]))).toBeGreaterThanOrEqual(4);
+    const r = await page.evaluate(() => {
+      const c = window.__hs!.store.getState().checks!;
       const p = c.results.find((x) => x.id === 'proportions')!.points![0];
       const st = document.querySelector('[data-testid="atlas-stage"]')!.getBoundingClientRect();
       const host = document.querySelector('[data-testid="atlas-view"]')!.getBoundingClientRect();
@@ -222,6 +261,16 @@ test.describe('with bricks wall 13', () => {
     }
   });
 
+  test('the evaluation reads the detail normal back as one f32 slope per pixel', async ({ page }) => {
+    await importBricks(page);
+    const r = await page.evaluate(async () => {
+      const res = await window.__hs!.store.getState().runEvaluation();
+      return { n: res?.length, bytes: window.__hs!.evalStats.detailBytes };
+    });
+    expect(r.n).toBe(6);
+    expect(r.bytes).toBe(2048 * 2048 * 4);
+  });
+
   test('evaluations never overlap, and reusing a 2048 px preview gives the same results as composing', async ({ page }) => {
     await importBricks(page);
     const r = await page.evaluate(async () => {
@@ -245,5 +294,85 @@ test.describe('with bricks wall 13', () => {
     // The current 2048 px preview was read directly: no composition of its own.
     expect(await page.evaluate(() => window.__hs!.evalStats.composes)).toBe(before);
     expect(await page.evaluate(() => window.__hs!.evalStats.peak)).toBe(1);
+  });
+
+  test('a forced evaluation does not block the main thread', async ({ page }) => {
+    await importBricks(page);
+    await expect(page.getByTestId('checks')).not.toHaveAttribute('data-pending', 'true', { timeout: 20_000 });
+    const r = await page.evaluate(async () => {
+      const store = window.__hs!.store;
+      // Wall-clock time between frame callbacks (a frame's own timestamp can predate a long task).
+      let last = 0;
+      let max = 0;
+      let running = true;
+      const tick = () => {
+        const now = performance.now();
+        max = Math.max(max, now - last);
+        last = now;
+        if (running) requestAnimationFrame(tick);
+      };
+      await new Promise<void>((r) => requestAnimationFrame(() => { last = performance.now(); r(); }));
+      requestAnimationFrame(tick);
+      const res = await store.getState().runEvaluation({ force: true });
+      // One more frame, so a long task right before the evaluation settled is measured too.
+      await new Promise<void>((r) => requestAnimationFrame(() => r()));
+      running = false;
+      return { maxGap: max, n: res?.length };
+    });
+    expect(r.n).toBe(6);
+    expect(r.maxGap).toBeLessThan(120);
+    expect(await page.evaluate(() => window.__hs!.evalStats.peak)).toBe(1);
+  });
+
+  test('a forced evaluation is never skipped by a preview evaluation queued after it', async ({ page }) => {
+    await importBricks(page);
+    const r = await page.evaluate(async () => {
+      const store = window.__hs!.store;
+      const forced = store.getState().runEvaluation({ force: true });
+      // Queued while the forced one waits or runs: it supersedes the store's results, not the export's own.
+      await new Promise((ok) => setTimeout(ok, 0));
+      const preview = store.getState().runEvaluation();
+      const [a, b] = await Promise.all([forced, preview]);
+      return { a: a?.length ?? null, b: b?.length ?? null };
+    });
+    expect(r).toEqual({ a: 6, b: 6 });
+    expect(await page.evaluate(() => window.__hs!.evalStats.peak)).toBe(1);
+  });
+
+  test('a worker crash during the checks shows the Spanish error and the next evaluation works', async ({ page }) => {
+    await importBricks(page);
+    await expect(page.getByTestId('checks')).not.toHaveAttribute('data-pending', 'true', { timeout: 20_000 });
+    const crashed = 'El análisis en segundo plano falló; vuelve a intentarlo.';
+    // Every call pending when the Worker dies fails with the crash.
+    const direct = await page.evaluate(async () => {
+      const hs = window.__hs!;
+      hs.failNextWorkerCall('checks');
+      const settled = await Promise.allSettled([
+        hs.workerCall('checks', {} as never, [], { supersede: true }),
+        hs.workerCall('checks', {} as never, [], { supersede: true }),
+      ]);
+      return settled.map((s) => (s.status === 'rejected' ? (s.reason as Error).message : 'fulfilled'));
+    });
+    expect(direct).toEqual([crashed, crashed]);
+
+    const r = await page.evaluate(async () => {
+      const hs = window.__hs!;
+      hs.failNextWorkerCall('checks');
+      const res = await hs.store.getState().runEvaluation({ force: true });
+      const s = hs.store.getState();
+      return { res, pending: s.checksPending, error: s.checksError };
+    });
+    expect(r).toEqual({ res: null, pending: false, error: crashed });
+    await expect(page.getByTestId('checks-error')).toHaveText(crashed);
+    await expect(page.getByTestId('checks-pending')).toHaveCount(0);
+
+    const after = await page.evaluate(async () => {
+      const store = window.__hs!.store;
+      const res = await store.getState().runEvaluation();
+      const s = store.getState();
+      return { n: res?.length, pending: s.checksPending, error: s.checksError };
+    });
+    expect(after).toEqual({ n: 6, pending: false, error: null });
+    await expect(page.getByTestId('checks-error')).toHaveCount(0);
   });
 });

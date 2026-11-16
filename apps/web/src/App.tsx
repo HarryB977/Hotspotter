@@ -1,26 +1,22 @@
-import { useEffect } from 'react';
+import { Suspense, lazy, useEffect } from 'react';
 import { es } from './i18n/es';
 import { useProject } from './state/store';
 import { MaterialPanel } from './panels/MaterialPanel';
 import { ChecksPanel } from './panels/ChecksPanel';
 import { TooltipProvider } from './components/ui/tooltip';
 import { Tabs, TabsList, TabsTrigger } from './components/ui/tabs';
-import { LayoutPanel } from './panels/LayoutPanel';
+import { StackPanel } from './panels/StackPanel';
 import { Inspector } from './panels/Inspector';
 import { AtlasView } from './viewport/AtlasView';
+import { ViewportSplit } from './viewport/ViewportSplit';
 import { ExportDialog } from './export/ExportDialog';
+import { FileMenu, ProjectName } from './project/FileMenu';
+import { MAP_TABS } from './state/store';
 import type { ActiveMap } from './state/store';
+import { mapLabel } from './viewport/mapLabel';
 
-const MAP_TABS: ActiveMap[] = [
-  'baseColor', 'normal', 'height', 'roughness', 'metallic', 'ao', 'wearMask', 'rectId', 'pieceId',
-];
-
-function tabLabel(k: ActiveMap): string {
-  if (k === 'rectId') return es.mapBar.rectId;
-  if (k === 'pieceId') return es.mapBar.pieceId;
-  if (k === 'wearMask') return es.mapBar.wearMask;
-  return es.material.mapKinds[k];
-}
+// three.js is half the bundle: the 3D view loads in its own chunk.
+const View3DPane = lazy(() => import('./viewport/View3D'));
 
 function PanelTitle({ children }: { children: React.ReactNode }) {
   return (
@@ -61,23 +57,39 @@ export function App() {
   return (
     <TooltipProvider delayDuration={400}>
       <div className="grid h-full grid-cols-[240px_minmax(0,1fr)_280px] grid-rows-[30px_minmax(0,1fr)_28px] overflow-hidden">
-        <header className="col-span-3 flex items-center gap-3 border-b border-zinc-800 bg-zinc-900 px-2">
+        <header className="col-span-3 flex min-w-0 items-center gap-3 border-b border-zinc-800 bg-zinc-900 px-2">
           <span className="font-semibold text-zinc-100">{es.appName}</span>
-          <span className="text-zinc-500">{es.topBar.project}</span>
+          <FileMenu />
+          <ProjectName />
           <span className="ml-auto"><ExportDialog /></span>
         </header>
-        <aside className="min-h-0 overflow-y-auto border-r border-zinc-800 bg-zinc-900" data-testid="left-column">
-          <MaterialPanel />
-          <ChecksPanel />
-          <LayoutPanel />
+        {/* R45: the Material panel scrolls in its own area so the Pila and the checks always stay on screen; the
+            column's own scroll is a fallback for very short windows. */}
+        <aside
+          className="flex min-h-0 flex-col overflow-y-auto border-r border-zinc-800 bg-zinc-900"
+          data-testid="left-column"
+        >
+          <div className="min-h-[120px] flex-1 overflow-y-auto" data-testid="material-scroll">
+            <MaterialPanel />
+          </div>
+          <div className="shrink-0">
+            <StackPanel />
+            <ChecksPanel />
+          </div>
         </aside>
         <main className="flex min-h-0 min-w-0 flex-col bg-zinc-950">
-          <PanelTitle>{es.atlas.title}</PanelTitle>
-          {atlas ? (
-            <AtlasView maps={atlas.maps} layout={atlas.layout} activeMap={activeMap} issues={atlas.issues} />
-          ) : (
-            <div className="flex flex-1 items-center justify-center text-zinc-600">{es.atlas.empty}</div>
-          )}
+          <ViewportSplit
+            left={atlas ? (
+              <AtlasView maps={atlas.maps} layout={atlas.layout} activeMap={activeMap} issues={atlas.issues} />
+            ) : (
+              <div className="flex flex-1 items-center justify-center text-zinc-600">{es.atlas.empty}</div>
+            )}
+            right={(
+              <Suspense fallback={<div className="flex-1" data-testid="view3d-loading" />}>
+                <View3DPane />
+              </Suspense>
+            )}
+          />
         </main>
         <aside className="flex min-h-0 flex-col border-l border-zinc-800 bg-zinc-900">
           <PanelTitle>{es.inspector.title}</PanelTitle>
@@ -88,7 +100,7 @@ export function App() {
             <TabsList className="h-full">
               {MAP_TABS.map((k) => (
                 <TabsTrigger key={k} value={k} disabled={!atlas}>
-                  {tabLabel(k)}
+                  {mapLabel(k)}
                 </TabsTrigger>
               ))}
             </TabsList>

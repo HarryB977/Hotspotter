@@ -1345,6 +1345,24 @@ test('8192 robustness: row bands and split submits leave every map byte-identica
   for (const v of Object.values(r)) expect(v.banded).toEqual(v.whole);
 });
 
+test('the runoff length is a uniform: a second length at the same resolution builds no colour pipeline', async ({ page }) => {
+  const r = await page.evaluate(async () => {
+    const hs = window.__hs!;
+    // A fresh device: its cache holds only what these composes build.
+    const ctx = await hs.engine.initGpu();
+    const count = () => hs.pipelineCacheSize(ctx.device, 'colorComposite:');
+    const wear = { intensity: 1, widthM: 0.2, pieceBias: 0 };
+    await window.__t8!.compose({ ctx, material: 'flat', wear, dirt: { runoff: 1, runoffLengthM: 0.2 } });
+    const first = count();
+    await window.__t8!.compose({ ctx, material: 'flat', wear, dirt: { runoff: 1, runoffLengthM: 0.4 } });
+    const second = count();
+    ctx.device.destroy();
+    return { first, grew: second - first };
+  });
+  expect(r.first).toBeGreaterThan(0);
+  expect(r.grew).toBe(0);
+});
+
 test('a broken pipeline fails the compose that uses it, never a concurrent one (R39)', async ({ page }) => {
   const r = await page.evaluate(async () => {
     const { engine } = window.__hs!;
@@ -1354,8 +1372,8 @@ test('a broken pipeline fails the compose that uses it, never a concurrent one (
     const bad = () => device.createComputePipeline({
       layout: 'auto', compute: { module: device.createShaderModule({ code: 'fn main( {' }), entryPoint: 'main' },
     });
-    // The colour composite of a material with an AO map and no runoff (CHUNK 8, LOOKBACK 0, AO_ON_MACRO 1).
-    const key = 'colorComposite:8:0:1';
+    // The colour composite of a material with an AO map (AO_ON_MACRO 1).
+    const key = 'colorComposite:1';
     let release!: () => void;
     const held = new Promise<void>((res) => { release = res; });
     const settle = (p: Promise<unknown>) => p.then(

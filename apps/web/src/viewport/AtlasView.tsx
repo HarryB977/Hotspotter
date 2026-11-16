@@ -78,6 +78,12 @@ function createBlitter(device: GPUDevice): Blitter {
 
 interface View { k: number; tx: number; ty: number }
 
+/** Centres a focus point (atlas UV), zooming in to at least FOCUS_ZOOM. */
+function focusView(v: View, f: { u: number; v: number }, box: { w: number; h: number }, stageW: number, stageH: number): View {
+  const k = Math.min(MAX_ZOOM, Math.max(v.k, FOCUS_ZOOM));
+  return { k, tx: box.w / 2 - f.u * stageW * k, ty: box.h / 2 - f.v * stageH * k };
+}
+
 const MIN_ZOOM = 0.2;
 const MAX_ZOOM = 40;
 /** Zoom a check focus brings the view to, at least. */
@@ -109,11 +115,34 @@ export function AtlasView({ maps, layout, activeMap, issues }: AtlasViewProps) {
   const stageW = Math.max(0, fit);
   const stageH = stageW * aspect;
 
+  // A focus request waits here until the host has a size (it is 0x0 while its pane is hidden).
+  const focus = useProject((s) => s.viewFocus);
+  const handledFocus = useRef(focus?.seq ?? 0);
+  const viewGen = useProject((s) => s.viewGen);
+  const prev = useRef<{ gen: number; w: number; h: number; stageW: number; stageH: number; lw: number; lh: number } | null>(null);
+
+  // Fit on a new material; on a resize keep the zoom and the atlas point at the centre. A hidden host (0x0) leaves the
+  // view alone, and the first real size afterwards is treated as a resize from the last real one.
   useEffect(() => {
-    setView({ k: 1, tx: (box.w - stageW) / 2, ty: (box.h - stageH) / 2 });
-    // Re-centre only when the fitted size changes, not on every zoom.
+    if (box.w === 0 || box.h === 0) return;
+    const p = prev.current;
+    prev.current = { gen: viewGen, w: box.w, h: box.h, stageW, stageH, lw: layout.widthPx, lh: layout.heightPx };
+    const pending = focus && focus.seq > handledFocus.current ? focus : null;
+    if (pending) handledFocus.current = pending.seq;
+    if (!p || p.gen !== viewGen || p.stageW <= 0 || p.stageH <= 0 || p.lw !== layout.widthPx || p.lh !== layout.heightPx) {
+      setView(pending ? focusView({ k: 1, tx: 0, ty: 0 }, pending, box, stageW, stageH) : { k: 1, tx: (box.w - stageW) / 2, ty: (box.h - stageH) / 2 });
+      return;
+    }
+    setView((v) => {
+      const kept = {
+        k: v.k,
+        tx: box.w / 2 - ((p.w / 2 - v.tx) / p.stageW) * stageW,
+        ty: box.h / 2 - ((p.h / 2 - v.ty) / p.stageH) * stageH,
+      };
+      return pending ? focusView(kept, pending, box, stageW, stageH) : kept;
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [box.w, box.h, layout.widthPx, layout.heightPx]);
+  }, [box.w, box.h, layout.widthPx, layout.heightPx, focus?.seq, viewGen]);
 
   useEffect(() => {
     const el = host.current;
@@ -131,18 +160,6 @@ export function AtlasView({ maps, layout, activeMap, issues }: AtlasViewProps) {
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
   }, []);
-
-  // Centre a requested point (atlas UV), zooming in to at least FOCUS_ZOOM.
-  const focus = useProject((s) => s.viewFocus);
-  useEffect(() => {
-    if (!focus) return;
-    setView((v) => {
-      const k = Math.min(MAX_ZOOM, Math.max(v.k, FOCUS_ZOOM));
-      return { k, tx: box.w / 2 - focus.u * stageW * k, ty: box.h / 2 - focus.v * stageH * k };
-    });
-    // Only a new request moves the view; resizes keep it.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focus?.seq]);
 
   const drag = useRef<{ x: number; y: number } | null>(null);
 

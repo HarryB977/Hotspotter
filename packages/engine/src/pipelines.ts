@@ -66,6 +66,13 @@ export function cachedEntry<T>(device: GPUDevice, key: string, create: () => T):
   return entry as { value: T; ready: PipelineReady };
 }
 
+/** Number of entries cached on `device` whose key starts with `prefix` (all of them by default). */
+export function pipelineCacheSize(device: GPUDevice, prefix = ''): number {
+  let n = 0;
+  for (const key of cacheOf(device).keys()) if (key.startsWith(prefix)) n++;
+  return n;
+}
+
 /** cachedEntry's value; its validation is awaited by whoever tracks this use (trackPipelines). */
 export function cached<T>(device: GPUDevice, key: string, create: () => T): T {
   return cachedEntry(device, key, create).value;

@@ -1,8 +1,9 @@
 import { test, expect } from '@playwright/test';
 import type { Page } from '@playwright/test';
-import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, readFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { selectLayer } from './helpers';
 
 const PBR = resolve(fileURLToPath(new URL('.', import.meta.url)), '../../../samples/pbr');
 const BRICKS = resolve(PBR, 'bricks wall 13');
@@ -18,10 +19,14 @@ async function importBricks(page: Page): Promise<void> {
   await page.goto('/');
   await page.getByTestId('folder-input').setInputFiles(BRICKS);
   await expect(page.getByTestId('material-name')).toHaveValue('bricks_wall_13');
+  await selectLayer(page, 'structure');
   await expect(page.getByTestId('structure-type')).toHaveText('Piezas');
+  // The analysis runs in a Worker, so the first atlas may be composed before the structure lands: wait for the
+  // atlas composed from the current structure.
   await page.waitForFunction(() => {
     const s = window.__hs?.store.getState();
-    return !!s?.atlas && !!s.structure && s.atlas.maps.pieceId.width === s.atlas.resolutionPx;
+    return !!s?.atlas && !!s.structure && s.atlas.structure === s.structure &&
+      s.atlas.maps.pieceId.width === s.atlas.resolutionPx;
   });
 }
 
@@ -164,6 +169,7 @@ test('with the material rotated 90°, pieceId follows the same UV mapping as the
 test('concrete wall 01 is continuous', async ({ page }) => {
   await page.goto('/');
   await page.getByTestId('folder-input').setInputFiles(CONCRETE);
+  await selectLayer(page, 'structure');
   await expect(page.getByTestId('structure-type')).toHaveText('Continuo');
 });
 
@@ -237,6 +243,7 @@ test('automatic re-analyses keep a user-set period; Detectar resets it to the de
 test('focusing and leaving the threshold and period fields commits nothing', async ({ page }) => {
   await page.goto('/');
   await page.getByTestId('folder-input').setInputFiles(CONCRETE);
+  await selectLayer(page, 'structure');
   await expect(page.getByTestId('structure-type')).toHaveText('Continuo');
   await page.waitForFunction(() => !!window.__hs?.store.getState().structure);
   // No joints found: the automatic threshold field is empty.
@@ -246,7 +253,7 @@ test('focusing and leaving the threshold and period fields commits nothing', asy
     await field.focus();
     await field.blur();
   }
-  await page.waitForTimeout(200);
+  await page.waitForFunction(() => window.__hs!.store.getState().analysisIdle);
   const r = await page.evaluate((before) => {
     const s = window.__hs!.store.getState();
     const node = s.doc!.nodes.find((n) => n.type === 'structure')!.params as { threshold: number | null };
@@ -258,11 +265,14 @@ test('focusing and leaving the threshold and period fields commits nothing', asy
   // Same on bricks, whose field shows the suggested threshold: a blur must not pin it.
   await page.getByTestId('folder-input').setInputFiles(BRICKS);
   await page.getByTestId('import-replace').click();
+  // The replace import selects Desgaste again: select Estructura once it has landed.
+  await expect(page.getByTestId('material-name')).toHaveValue('bricks_wall_13');
+  await selectLayer(page, 'structure');
   await expect(page.getByTestId('structure-type')).toHaveText('Piezas');
   await expect.poll(async () => (await page.getByTestId('structure-threshold').inputValue()) !== '').toBe(true);
   await page.getByTestId('structure-threshold').focus();
   await page.getByTestId('structure-threshold').blur();
-  await page.waitForTimeout(200);
+  await page.waitForFunction(() => window.__hs!.store.getState().analysisIdle);
   expect(await page.evaluate(() =>
     (window.__hs!.store.getState().doc!.nodes.find((n) => n.type === 'structure')!.params as { threshold: number | null }).threshold,
   )).toBeNull();
@@ -282,4 +292,140 @@ test('an analysis is discarded when the material maps change while it runs', asy
   });
   // Without the staleness guard the pending analysis would commit a new structure.
   expect(r).toBe(true);
+});
+
+test('analysis does not block the main thread', async ({ page }) => {
+  await importBricks(page);
+  await page.waitForFunction(() => window.__hs!.store.getState().analysisIdle);
+  const r = await page.evaluate(async () => {
+    const store = window.__hs!.store;
+    const prev = store.getState().structure;
+    // Wall-clock time between frame callbacks (a frame's own timestamp can predate a long task).
+    let last = 0;
+    let max = 0;
+    let running = true;
+    const tick = () => {
+      const now = performance.now();
+      max = Math.max(max, now - last);
+      last = now;
+      if (running) requestAnimationFrame(tick);
+    };
+    await new Promise<void>((r) => requestAnimationFrame(() => { last = performance.now(); r(); }));
+    requestAnimationFrame(tick);
+    void store.getState().analyze({ applyPeriod: true });
+    await new Promise<void>((r) => {
+      const check = () => (store.getState().analysisIdle ? r() : setTimeout(check, 10));
+      check();
+    });
+    running = false;
+    return { maxGap: max, analysed: store.getState().structure !== prev };
+  });
+  expect(r.analysed).toBe(true);
+  expect(r.maxGap).toBeLessThan(120);
+});
+
+test('a worker crash during analysis shows the Spanish error once and the next analysis works', async ({ page }) => {
+  await importBricks(page);
+  const failures: string[] = [];
+  page.on('console', (m) => {
+    if (m.type() === 'error' && m.text().startsWith('structure analysis failed')) failures.push(m.text());
+  });
+  const crashed = 'El análisis en segundo plano falló; vuelve a intentarlo.';
+  // Every call pending when the Worker dies fails with the crash.
+  const direct = await page.evaluate(async () => {
+    const hs = window.__hs!;
+    const gray = () => ({ width: 64, height: 64, data: new Float32Array(64 * 64) });
+    hs.failNextWorkerCall('analyze');
+    const settled = await Promise.allSettled([
+      hs.workerCall('analyze', { gray: gray(), tileSizeM: [1, 1] }, [], { supersede: true }),
+      hs.workerCall('analyze', { gray: gray(), tileSizeM: [1, 1] }, [], { supersede: true }),
+    ]);
+    return settled.map((s) => (s.status === 'rejected' ? (s.reason as Error).message : 'fulfilled'));
+  });
+  expect(direct).toEqual([crashed, crashed]);
+  const before = await page.evaluate(async () => {
+    const hs = window.__hs!;
+    const prev = hs.store.getState().structure;
+    hs.failNextWorkerCall('analyze');
+    const settled = await Promise.allSettled([hs.store.getState().analyze(), hs.store.getState().analyze()]);
+    const s = hs.store.getState();
+    return { settled: settled.map((r) => r.status), kept: s.structure === prev, idle: s.analysisIdle };
+  });
+  expect(before).toEqual({ settled: ['fulfilled', 'fulfilled'], kept: true, idle: true });
+  await expect(page.getByTestId('structure-error')).toHaveText(crashed);
+  expect(failures).toHaveLength(1);
+  const after = await page.evaluate(async () => {
+    const store = window.__hs!.store;
+    const prev = store.getState().structure;
+    await store.getState().analyze();
+    const s = store.getState();
+    return { replaced: s.structure !== null && s.structure !== prev, error: s.structureError, idle: s.analysisIdle };
+  });
+  expect(after).toEqual({ replaced: true, error: null, idle: true });
+  await expect(page.getByTestId('structure-error')).toHaveCount(0);
+});
+
+test('the Worker skips a queued opted-in analysis that a newer one superseded, never one that did not opt in', async ({ page }) => {
+  await page.goto('/');
+  await page.waitForFunction(() => !!window.__hs);
+  const r = await page.evaluate(async () => {
+    const hs = window.__hs!;
+    const gray = () => {
+      const data = new Float32Array(512 * 512);
+      for (let i = 0; i < data.length; i++) data[i] = ((i * 2654435761) >>> 0) / 2 ** 32;
+      return { width: 512, height: 512, data };
+    };
+    const calls = [true, true, false, true].map((supersede) => {
+      const g = gray();
+      return hs.workerCall('analyze', { gray: g, tileSizeM: [1, 1] }, [g.data.buffer], { supersede });
+    });
+    const out = await Promise.all(calls);
+    return out.map((o) => (o === null ? null : o.width));
+  });
+  // The first may already be running; the second is always queued behind the last's arrival. The third did not opt
+  // in, so nothing skips it.
+  expect(r.slice(1)).toEqual([null, 512, 512]);
+});
+
+test('the export waits for an analysis in flight and uses its structure (R43)', async ({ page }, testInfo) => {
+  test.setTimeout(120_000);
+  await importBricks(page);
+  await page.waitForFunction(() => window.__hs!.store.getState().analysisIdle);
+  const files = (dir: string) =>
+    ['WearMask', 'BaseColor'].map((k) => readFileSync(join(dir, `bricks_wall_13_${k}.png`)).toString('base64'));
+  const exportNow = (dir: string) =>
+    page.evaluate((d) => window.__hs!.exportProject({ dir: d, preset: 'unity-urp', resolutionPx: 1024 }), dir);
+
+  const old = testInfo.outputPath('old');
+  await exportNow(old);
+
+  // The dialog blocks Exportar while the analysis runs.
+  await page.getByTestId('export-open').click();
+  await page.getByTestId('export-dir').fill(testInfo.outputPath('unused'));
+  await expect(page.getByTestId('export-run')).toBeEnabled();
+  await page.evaluate(() => void window.__hs!.store.getState().analyze());
+  await expect(page.getByTestId('export-run')).toBeDisabled();
+  await expect(page.getByTestId('export-analyzing')).toHaveText('Analizando la estructura…');
+  await page.waitForFunction(() => window.__hs!.store.getState().analysisIdle);
+  await expect(page.getByTestId('export-run')).toBeEnabled();
+  await expect(page.getByTestId('export-analyzing')).toHaveCount(0);
+  await page.keyboard.press('Escape');
+
+  // An export started right after a threshold change waits for the re-analysis.
+  const during = testInfo.outputPath('during');
+  const startedBusy = await page.evaluate(async (d) => {
+    const hs = window.__hs!;
+    const analysis = hs.store.getState().setStructureThreshold(0.9);
+    const busy = !hs.store.getState().analysisIdle;
+    await hs.exportProject({ dir: d, preset: 'unity-urp', resolutionPx: 1024 });
+    await analysis;
+    return busy;
+  }, during);
+  expect(startedBusy).toBe(true);
+  const after = testInfo.outputPath('after');
+  await exportNow(after);
+
+  expect(files(during)).toEqual(files(after));
+  // The threshold changes the structure, so an export with the old one would differ.
+  expect(files(old)).not.toEqual(files(after));
 });

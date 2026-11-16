@@ -20,19 +20,38 @@ Lo encontró el usuario al probar la v0.1-A y entró en el plan v0.1-B:
 
 Hecho en la v0.1-A y la v0.1-B: importación (carpeta, archivos sueltos, añadir o reemplazar), análisis de estructura, orientación, layouts preset y automático, bisel propio, desgaste realista sobre un único campo de altura (seis familias), sustrato interior y segundo set, máscara B/N, suciedad de cavidad y escorrentía, las seis comprobaciones de la v0.1, export Unity URP/HDRP con `_WearMask`, `_RectID`, `.hotspot.json` y tabla Anvil, y el banco de pruebas (`npm run bench`, ver [11](11-test-bench.md)).
 
-Falta para cerrar la v0.1 (planes v0.1-C/D):
+## Estado tras la v0.1-C (2026-11-16)
 
-- **Vista 3D** de la vista principal (three.js).
-- **`.exe` portable** y **aviso de actualizaciones** (ver [08](08-distribution.md)).
-- Pasar el **análisis de estructura** (≈1.3 s) y **`runChecks`** (≈0.5–0.7 s) a un **Web Worker**: hoy bloquean el hilo principal.
-- Aplazado de la revisión final de la v0.1-B (2026-11-13):
-  - La pasada de color compila una pipeline nueva por cada longitud de escorrentía y resolución (la clave incluye `lookback`). Pasar `LOOKBACK_ROWS` y `CHUNK_ROWS` por uniform para que arrastrar "Longitud" no dé tirones.
-  - Quitar las esperas fijas de 200 ms de `structure.spec.ts` (comprobaciones negativas) y esperar a una señal de análisis terminado.
-  - `readbackRgba16f` a 2048 usa 32 MiB de staging y una copia Float32 de 64 MiB. Devolver la pendiente por píxel en lugar de los cuatro canales.
-- Guardar y abrir proyectos con la máscara B/N y el segundo material (hoy viven solo en el estado de la app, decisión 48).
+Hecho en la v0.1-C:
+
+- [x] **Vista 3D** de la vista principal (three.js): formas de prueba, encaje de hotspot con el criterio de ProBuilder, vistas iluminada, por mapa y de rectángulos (decisiones 79 y 80).
+- [x] **Pila de capas** e **inspector** que sigue a la pila; reparto Atlas 2D | Vista 3D con divisor y maximizar (decisiones 76–78).
+- [x] **Guardar y abrir proyectos** `.hsp` con la máscara B/N y el segundo material (decisiones 73–75 y 82).
+- [x] Análisis de estructura (≈1.3 s) y `runChecks` (≈0.5–0.7 s) en un **Web Worker** (decisión 83): ya no bloquean el hilo principal.
+- [x] Aplazado de la revisión final de la v0.1-B (2026-11-13), hecho (decisión 72):
+  - [x] La pasada de color compila una pipeline nueva por cada longitud de escorrentía y resolución (la clave incluía `lookback`). `LOOKBACK_ROWS` y `CHUNK_ROWS` van ahora por uniform.
+  - [x] Quitadas las esperas fijas de 200 ms de `structure.spec.ts` (comprobaciones negativas); se espera a una señal de análisis terminado.
+  - [x] `readbackRgba16f` a 2048 devuelve la pendiente por píxel en lugar de los cuatro canales.
+
+Falta para cerrar la v0.1 (plan v0.1-D):
+
+- **`.exe` portable** y **aviso de actualizaciones** (ver [08](08-distribution.md)). El servidor importa todo `packages/core`: el empaquetado del `.exe` debe incluirlo (o importar solo el subpath que usa).
 - Islas: marcar también las motas sueltas dentro de la franja `wEff` (decisión 51).
 - Comprobar en Anvil si `Can mirror` es un solo flag para los dos ejes (decisión 54).
+- **Preset de paredes: franja de altura de planta** (decidido con el usuario, 2026-11-16). Añadir al preset de paredes una franja horizontal repetible de altura de planta, para que paredes grandes como las del Pasillo (6 × 3 m) no estiren un rectángulo (hoy unas 3.75 veces, lo mismo que haría ProBuilder con el preset actual). El `RepeatWrapping` de la decisión 80 queda confirmado por el usuario.
+- Vista 3D, menores: los zócalos del Pasillo tienen sus remates estirados porque no se permite girar (decisión 79); el interruptor "Píxeles" vuelve a subir las seis texturas de golpe; la vista 3D no avisa si el contexto WebGL nunca se recupera.
+- `inset`: no es un fallo. Se escribe en px de la textura exportada, porque la exportación resuelve el layout a la resolución de exportación (`encode.ts` → `document.ts`), y hoy vale siempre 0.
 - Que el usuario valide los sets del banco frente a `samples/examples/` (criterio de [11](11-test-bench.md)).
+
+Pendiente tras la revisión final de la v0.1-C:
+
+- Si el Worker se cae durante Abrir, el proyecto se abre sin estructura y nada bloquea la exportación hasta que el usuario vuelve a analizar.
+- Las ediciones hechas mientras se abre un proyecto se pierden sin avisar.
+- Un Worker que no responde nunca dejaría colgada la exportación.
+- Accesibilidad del divisor (Home/End, `aria-controls`) y `focus-visible` en los botones de maximizar.
+- Cosmética del interruptor de la pila de capas (franja muerta, hover).
+- Faltan tests: `localStorage` que lanza, `pointercancel`, los límites 20/80, el tope total de 1 GiB y las dimensiones completas de la columna y las escaleras.
+- Validar en el pipeline la pasada de pendiente, y las esperas por inactividad de `structure.spec.ts`.
 
 ## Para la v0.2 (pedido por el usuario, 2026-11-12)
 

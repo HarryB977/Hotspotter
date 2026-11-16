@@ -1,8 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { FastifyInstance } from 'fastify';
-
-export const MAX_EXPORT_BYTES = 512 * 1024 * 1024;
+import { MAX_PROJECT_UPLOAD_BYTES } from '@hotspotter/core';
 
 const RESERVED_NAMES = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i;
 
@@ -26,13 +25,13 @@ function validate(dir: unknown, name: unknown): string | null {
 export function registerExportRoute(app: FastifyInstance): void {
   app.addContentTypeParser(
     'application/octet-stream',
-    { parseAs: 'buffer', bodyLimit: MAX_EXPORT_BYTES },
+    { parseAs: 'buffer', bodyLimit: MAX_PROJECT_UPLOAD_BYTES },
     (_req, body, done) => done(null, body),
   );
 
   app.put<{ Querystring: { dir?: string; name?: string } }>(
     '/api/export/file',
-    { bodyLimit: MAX_EXPORT_BYTES },
+    { bodyLimit: MAX_PROJECT_UPLOAD_BYTES },
     async (req, reply) => {
       // A custom header forces a CORS preflight, so a plain cross-site form or fetch cannot write files.
       if (req.headers['x-hotspotter'] !== '1') return reply.code(403).send({ error: 'Falta la cabecera X-Hotspotter' });

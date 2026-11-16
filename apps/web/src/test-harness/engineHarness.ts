@@ -3,6 +3,10 @@ import * as engine from '@hotspotter/engine';
 import type { AtlasMaps } from '@hotspotter/engine';
 import { evalStats, materialJointMean, useProject } from '../state/store';
 import { exportProject } from '../export/encode';
+import { failNextWorkerCall, workerCall } from '../workers/client';
+import { view3dDebug } from '../viewport/three/scene';
+import type { FaceOnScreen, View3DScene } from '../viewport/three/scene';
+import { atlasTextureStats } from '../viewport/three/atlasTextures';
 
 export interface SampleFile {
   name: string;
@@ -43,6 +47,31 @@ export interface HsHarness {
   jointMean(): [number, number, number] | null;
   /** The export the dialog runs, without the dialog (no checks recorded unless passed). */
   exportProject: typeof exportProject;
+  /** Pipelines cached on `device` (default: the store's) whose key starts with `prefix`. */
+  pipelineCacheSize(device?: GPUDevice, prefix?: string): number;
+  /** The next Worker call of `op` crashes the Worker (uncaught throw inside it). */
+  failNextWorkerCall: typeof failNextWorkerCall;
+  /** The shared Worker's client, for calls outside the store. */
+  workerCall: typeof workerCall;
+  /** Frames the 3D view has drawn. */
+  readonly view3dFrames: number;
+  /** Generation of the 3D view's newest atlas texture set (0: none built yet). */
+  readonly view3dTextureGen: number;
+  view3d: {
+    /** Atlas textures alive, renderers alive and maps read back so far. */
+    readonly liveTextures: number;
+    readonly renderers: number;
+    readonly reads: number;
+    /** Textures the mounted renderer holds (renderer.info.memory.textures), or null when none is mounted. */
+    gpuTextures(): number | null;
+    /** Geometries the mounted renderer holds (renderer.info.memory.geometries), or null when none is mounted. */
+    gpuGeometries(): number | null;
+    faces(): FaceOnScreen[];
+    probe(): ReturnType<View3DScene['probe']> | null;
+    remount(): void;
+    /** The 3D view shows textures read from the store's current atlas. */
+    shownCurrent(): boolean;
+  };
 }
 
 declare global {
@@ -99,9 +128,32 @@ export function installHarness(): void {
     store: useProject,
     evalStats,
     exportProject,
+    failNextWorkerCall,
+    workerCall,
+    pipelineCacheSize(device, prefix) {
+      const d = device ?? useProject.getState().gpu?.device;
+      return d ? engine.pipelineCacheSize(d, prefix) : 0;
+    },
     jointMean() {
       const { gpuMaterial, structure, material } = useProject.getState();
       return gpuMaterial && structure ? materialJointMean(gpuMaterial, structure, material?.images.baseColor) : null;
+    },
+    get view3dFrames() {
+      return view3dDebug.frames;
+    },
+    get view3dTextureGen() {
+      return atlasTextureStats.gen;
+    },
+    view3d: {
+      get liveTextures() { return atlasTextureStats.live; },
+      get renderers() { return view3dDebug.renderers; },
+      get reads() { return atlasTextureStats.reads; },
+      gpuTextures: () => view3dDebug.scene?.gpuTextures ?? null,
+      gpuGeometries: () => view3dDebug.scene?.renderer.info.memory.geometries ?? null,
+      faces: () => view3dDebug.scene?.facesOnScreen() ?? [],
+      probe: () => view3dDebug.scene?.probe() ?? null,
+      remount: () => view3dDebug.remount?.(),
+      shownCurrent: () => view3dDebug.shownAtlas !== null && view3dDebug.shownAtlas === useProject.getState().atlas,
     },
     get lastAtlas() {
       return useProject.getState().atlas?.maps ?? null;

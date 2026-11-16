@@ -4,14 +4,13 @@ import type { CheckResult, DocNode, ExportPreflight, ExportPreset, ProjectDoc } 
 import { es } from '../i18n/es';
 import { useProject } from '../state/store';
 import { Button } from '../components/ui/button';
-import { Input } from '../components/ui/input';
+import { FolderField, loadDir, saveDir } from '../components/FolderField';
 import { Dialog, DialogContent, DialogTitle, DialogTrigger } from '../components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { CheckRow } from '../panels/ChecksPanel';
 import { ExportUploadError, exportProject } from './encode';
 
-const DIR_KEY = 'hotspotter.exportDir';
-const RESOLUTIONS = [1024, 2048, 4096, 8192];
+export const RESOLUTIONS = [1024, 2048, 4096, 8192];
 
 function outputNode(doc: ProjectDoc | null): DocNode<'output'> | undefined {
   return doc?.nodes.find((n): n is DocNode<'output'> => n.type === 'output');
@@ -27,22 +26,6 @@ function tooBigMessage(res: number, p: Extract<ExportPreflight, { ok: false }>):
     : es.export.tooBigBuffer(res, Math.ceil(p.bufferBytes / 2 ** 20), Math.floor(p.limit / 2 ** 20));
 }
 
-function loadDir(): string {
-  try {
-    return localStorage.getItem(DIR_KEY) ?? '';
-  } catch {
-    return '';
-  }
-}
-
-function saveDir(dir: string): void {
-  try {
-    localStorage.setItem(DIR_KEY, dir);
-  } catch {
-    // Storage unavailable: the folder is simply not remembered.
-  }
-}
-
 export function ExportDialog() {
   const hasProject = useProject((s) => s.doc !== null && s.gpuMaterial !== null);
   const [open, setOpen] = useState(false);
@@ -54,6 +37,8 @@ export function ExportDialog() {
     const dirt = dirtNode(s.doc)?.params;
     return !!dirt?.enabled && dirt.runoff > 0;
   });
+  // R43: no export while a structure analysis is queued or running.
+  const analyzing = useProject((s) => !s.analysisIdle);
   const setRes = (r: number) => useProject.getState().updateNode<'output'>('output', { resolutionPx: r });
   const [busy, setBusy] = useState(false);
   const [checking, setChecking] = useState(false);
@@ -134,15 +119,7 @@ export function ExportDialog() {
       <DialogContent aria-describedby={undefined}>
         <DialogTitle className="mb-2 text-sm font-semibold">{es.export.title}</DialogTitle>
         <div className="flex flex-col gap-2">
-          <label className="flex flex-col gap-1 text-xs text-zinc-400">
-            {es.export.folder}
-            <Input
-              data-testid="export-dir"
-              value={dir}
-              placeholder={es.export.folderPlaceholder}
-              onChange={(e) => setDir(e.target.value)}
-            />
-          </label>
+          <FolderField label={es.export.folder} value={dir} onChange={setDir} testId="export-dir" />
           <div className="flex gap-2">
             <div className="flex flex-1 flex-col gap-1 text-xs text-zinc-400">
               {es.export.preset}
@@ -173,6 +150,9 @@ export function ExportDialog() {
           {runoff && (
             <div className="text-xs text-amber-400" data-testid="export-runoff-warning">{es.export.runoffWarning}</div>
           )}
+          {analyzing && (
+            <div className="text-xs text-zinc-400" data-testid="export-analyzing">{es.export.analyzing}</div>
+          )}
           {checking && <div className="text-xs text-zinc-400" data-testid="export-checking">{es.export.checking}</div>}
           {(checks || checksFailed) && (
             <div className="flex flex-col text-xs" data-testid="export-checks">
@@ -197,7 +177,7 @@ export function ExportDialog() {
               </ul>
             </div>
           )}
-          <Button variant="default" disabled={busy || dir.trim() === '' || tooBig !== null} onClick={() => void run()} data-testid="export-run">
+          <Button variant="default" disabled={busy || analyzing || dir.trim() === '' || tooBig !== null} onClick={() => void run()} data-testid="export-run">
             {busy ? es.export.exporting : es.export.run}
           </Button>
         </div>

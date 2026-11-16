@@ -44,6 +44,8 @@ Para cada carpeta de `samples/pbr/`, en el mismo orden que la app:
 
 La salida va a `samples/_bench/<AAAAMMDD-HHmm>/<set>/`: los PNG, `.hotspot.json`, la tabla Anvil, miniaturas de 256 px en `thumbs/` y `bench.json` con el resumen. `index.html` muestra, por set, las miniaturas de BaseColor, Normal, Height y WearMask (cada una enlaza al mapa completo) y la tabla de comprobaciones. Es un archivo local, con rutas relativas y sin recursos externos.
 
+El banco no cambió en la v0.1-C. El análisis y las comprobaciones corren ahora en el Worker y la exportación espera a que acabe el análisis (decisiones 81 y 83), pero el resultado es el mismo. Los e2e de la v0.1-C (`view3d`, `project`, además de los de `ui`, `structure` y `checks`) están en el `npm run e2e` normal.
+
 El banco pasa si todos los sets exportan sin errores y ninguna comprobación sale en `error`. Los avisos se listan pero no lo hacen fallar. Si falta `samples/pbr`, `npm run bench` lo dice y termina con código 0 sin lanzar Playwright.
 
 ## Criterio de aceptación por versión

@@ -38,10 +38,10 @@ export interface EvalMaps {
   /** Metres: the final height (macro plus the material relief); heightM − macroHeight is the material's own relief. */
   heightM: Float32Array;
   /**
-   * RGBA f32 per pixel: the material detail normal sampled into atlas space (the compose's matNormal: xyz decoded,
-   * GL, rotation applied; flat (0, 0, 1) without a normal map). Unnormalised; only |xy| / z is read.
+   * One f32 per pixel: the slope |n.xy| / max(n.z, 1e-3) of the material detail normal sampled into atlas space (the
+   * compose's matNormal: xyz decoded, GL, rotation applied, unnormalised), before the wear fade. Omitted: flat (0).
    */
-  matNormal: Float32Array;
+  detailSlope?: Float32Array;
   /** RGBA8, GL convention. */
   normal: Uint8Array;
 }

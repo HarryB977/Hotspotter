@@ -4,7 +4,8 @@ import {
 import type { CheckResult, ExportPreset, MapPixels } from '@hotspotter/core';
 import { composeAtlas, heightToRgba8, readbackR32, readbackRgba8 } from '@hotspotter/engine';
 import type { AtlasMaps } from '@hotspotter/engine';
-import { composeInputFor, useProject } from '../state/store';
+import { composeInputFor, composesRunoff, useProject, whenAnalysisIdle } from '../state/store';
+import { putFile as upload } from '../project/projectIo';
 
 export async function encodePng(p: MapPixels): Promise<Blob> {
   return new Blob([await encodePngRgba8(p)], { type: 'image/png' });
@@ -21,19 +22,7 @@ export interface ExportOptions {
 }
 
 /** Thrown with the server's message when an upload is rejected. */
-export class ExportUploadError extends Error {}
-
-async function upload(dir: string, name: string, body: Blob | string): Promise<string> {
-  const q = new URLSearchParams({ dir, name });
-  const res = await fetch(`/api/export/file?${q}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/octet-stream', 'X-Hotspotter': '1' },
-    body: typeof body === 'string' ? new TextEncoder().encode(body) : body,
-  });
-  const json = (await res.json().catch(() => ({}))) as { path?: string; error?: string };
-  if (!res.ok || !json.path) throw new ExportUploadError(json.error ?? `HTTP ${res.status}`);
-  return json.path;
-}
+export { UploadError as ExportUploadError } from '../project/projectIo';
 
 /**
  * Composes a fresh atlas at `resolutionPx` from the same inputs as the preview (composeInputFor: wear, dirt, mask,
@@ -41,6 +30,8 @@ async function upload(dir: string, name: string, body: Blob | string): Promise<s
  * written paths.
  */
 export async function exportProject(opts: ExportOptions): Promise<string[]> {
+  // Never export an atlas without the structure of the current maps and settings (R43).
+  await whenAnalysisIdle();
   const state = useProject.getState();
   const { doc, gpuMaterial, gpu } = state;
   if (!doc || !gpuMaterial || !gpu) throw new Error('No project');
@@ -53,7 +44,7 @@ export async function exportProject(opts: ExportOptions): Promise<string[]> {
     const input = composeInputFor({ ...state, doc, gpuMaterial }, inputs, opts.resolutionPx);
     // Downward streaks: a vertical mirror (or a rotation) in the engine would turn them (docs/06). Dirt switched off
     // composes none.
-    const runoff = (input.dirt?.runoff ?? 0) > 0;
+    const runoff = composesRunoff(input);
     maps = await composeAtlas(gpu, input);
     // Not exported: free them before the readbacks, which peak in memory at 8192.
     for (const t of [maps.loss, maps.pieceId, maps.jointDistM, maps.border, maps.macroHeight]) t.destroy();

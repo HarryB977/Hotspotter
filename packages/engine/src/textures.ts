@@ -1,4 +1,5 @@
 import type { GpuContext } from './gpu';
+import { cached } from './pipelines';
 
 const USAGE =
   GPUTextureUsage.TEXTURE_BINDING |
@@ -80,28 +81,58 @@ export function readbackR32(
   });
 }
 
-/** IEEE half (as u16 bits) to number. */
-function halfToFloat(b: number): number {
-  const e = (b >> 10) & 0x1f, f = b & 0x3ff, sign = b & 0x8000 ? -1 : 1;
-  if (e === 0) return sign * f * 2 ** -24;
-  if (e === 31) return f ? NaN : sign * Infinity;
-  return sign * (1 + f / 1024) * 2 ** (e - 15);
+const DETAIL_SLOPE_WGSL = /* wgsl */ `
+@group(0) @binding(0) var src: texture_2d<f32>;
+@group(0) @binding(1) var<storage, read_write> out: array<f32>;
+
+@compute @workgroup_size(8, 8)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let size = textureDimensions(src);
+  if (gid.x >= size.x || gid.y >= size.y) { return; }
+  let n = textureLoad(src, vec2<i32>(gid.xy), 0).xyz;
+  out[gid.y * size.x + gid.x] = length(n.xy) / max(n.z, 1e-3);
 }
+`;
 
 /**
- * Reads back an rgba16float texture as a Float32Array (4 floats per texel, row-major). Like readbackRgba8, the copy is
- * submitted before the first await.
+ * Reads back the slope |n.xy| / max(n.z, 1e-3) of an rgba16float normal (unnormalised xyz), one f32 per pixel,
+ * row-major: 4 bytes per pixel of staging instead of 8 for the RGBA, and no RGBA copy on the CPU. Like readbackRgba8,
+ * the work is submitted before the first await.
  */
-export function readbackRgba16f(
+export function readbackDetailSlope(
   ctx: GpuContext,
   tex: GPUTexture,
 ): Promise<{ width: number; height: number; data: Float32Array }> {
+  const { device } = ctx;
   const { width, height, format } = tex;
-  if (format !== 'rgba16float') return Promise.reject(new Error(`readbackRgba16f: unsupported format ${format}`));
-  return readback4(ctx, tex, 8).then((b) => {
-    const half = new Uint16Array(b.buffer, b.byteOffset, width * height * 4);
-    const data = new Float32Array(half.length);
-    for (let i = 0; i < half.length; i++) data[i] = halfToFloat(half[i]);
-    return { width, height, data };
-  });
+  if (format !== 'rgba16float') return Promise.reject(new Error(`readbackDetailSlope: unsupported format ${format}`));
+  const pipeline = cached(device, 'detailSlope', () => device.createComputePipeline({
+    layout: 'auto',
+    compute: { module: device.createShaderModule({ code: DETAIL_SLOPE_WGSL }), entryPoint: 'main' },
+  }));
+  const bytes = width * height * 4;
+  const storage = device.createBuffer({ size: bytes, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+  const staging = device.createBuffer({ size: bytes, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+  const encoder = device.createCommandEncoder();
+  const pass = encoder.beginComputePass();
+  pass.setPipeline(pipeline);
+  pass.setBindGroup(0, device.createBindGroup({
+    layout: pipeline.getBindGroupLayout(0),
+    entries: [{ binding: 0, resource: tex.createView() }, { binding: 1, resource: { buffer: storage } }],
+  }));
+  pass.dispatchWorkgroups(Math.ceil(width / 8), Math.ceil(height / 8));
+  pass.end();
+  encoder.copyBufferToBuffer(storage, 0, staging, 0, bytes);
+  device.queue.submit([encoder.finish()]);
+  storage.destroy();
+  return (async () => {
+    try {
+      await staging.mapAsync(GPUMapMode.READ);
+      const data = new Float32Array(staging.getMappedRange().slice(0));
+      staging.unmap();
+      return { width, height, data };
+    } finally {
+      staging.destroy();
+    }
+  })();
 }
