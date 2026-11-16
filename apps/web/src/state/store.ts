@@ -405,9 +405,13 @@ export const useProject = create<ProjectState>()((set, get) => ({
     set({ viewFocus: { u, v, seq: (get().viewFocus?.seq ?? 0) + 1 } });
   },
 
-  runEvaluation(opts) {
-    // A forced evaluation (the export's) covers the debounced one; it would only evaluate the same state again.
-    if (opts?.force) clearTimeout(evalTimer);
+  async runEvaluation(opts) {
+    if (opts?.force) {
+      // The export's evaluation must see the structure of the current maps and settings (R43).
+      await whenAnalysisIdle();
+      // A forced evaluation covers the debounced one; it would only evaluate the same state again.
+      clearTimeout(evalTimer);
+    }
     return requestEvaluation(opts);
   },
 
@@ -607,7 +611,7 @@ export const useProject = create<ProjectState>()((set, get) => ({
       // The maps changed while this request waited; that change requests its own analysis.
       if (material.images !== startImages) return;
       const node = structureNode(doc);
-      let result: StructureResult;
+      let result: StructureResult | null;
       let source: StructureState['source'];
       try {
         const input = readGray(material.images);
@@ -627,6 +631,8 @@ export const useProject = create<ProjectState>()((set, get) => ({
           { gray: input.gray, tileSizeM: material.settings.tileSizeM, threshold: threshold ?? undefined },
           [input.gray.data.buffer],
         );
+        // Superseded by a newer analysis before the Worker started it.
+        if (!result) return;
       } catch (e) {
         if (mine !== analyzeGen) return;
         console.error('structure analysis failed', e);
@@ -797,6 +803,18 @@ function destroyMaps(m: AtlasMaps): void {
   ]) {
     t.destroy();
   }
+}
+
+/** Resolves once no structure analysis is queued or running (R43: the export waits for it). */
+export function whenAnalysisIdle(): Promise<void> {
+  if (useProject.getState().analysisIdle) return Promise.resolve();
+  return new Promise((resolve) => {
+    const unsubscribe = useProject.subscribe((s) => {
+      if (!s.analysisIdle) return;
+      unsubscribe();
+      resolve();
+    });
+  });
 }
 
 const RECOMPOSE_DEBOUNCE_MS = 150;

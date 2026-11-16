@@ -4,7 +4,7 @@ import {
 import type { CheckResult, ExportPreset, MapPixels } from '@hotspotter/core';
 import { composeAtlas, heightToRgba8, readbackR32, readbackRgba8 } from '@hotspotter/engine';
 import type { AtlasMaps } from '@hotspotter/engine';
-import { composeInputFor, useProject } from '../state/store';
+import { composeInputFor, useProject, whenAnalysisIdle } from '../state/store';
 
 export async function encodePng(p: MapPixels): Promise<Blob> {
   return new Blob([await encodePngRgba8(p)], { type: 'image/png' });
@@ -41,6 +41,8 @@ async function upload(dir: string, name: string, body: Blob | string): Promise<s
  * written paths.
  */
 export async function exportProject(opts: ExportOptions): Promise<string[]> {
+  // Never export an atlas without the structure of the current maps and settings (R43).
+  await whenAnalysisIdle();
   const state = useProject.getState();
   const { doc, gpuMaterial, gpu } = state;
   if (!doc || !gpuMaterial || !gpu) throw new Error('No project');

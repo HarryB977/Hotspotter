@@ -9,6 +9,7 @@ Se exporta un PNG por mapa (8 o 16 bits; height también en EXR de 32 bits) con 
 - `_RectID` pinta cada rectángulo con el mismo color hash que la vista "IDs rect" (`rectIdRgb` en `packages/core`, `ID_FS` en la vista: 64 + (byte · 166 >> 8) por canal). La ranura vacía es gris oscuro (13).
 - La resolución del diálogo de exportar es `resolutionPx` del nodo de salida: el panel de comprobaciones y el export leen el mismo valor.
 - La escorrentía empieza en 0 y la suciedad apagada no tiene; solo con escorrentía activa, el aviso de giro (ver abajo) sale en cuanto se abre el diálogo. Al reabrirlo no queda el resumen ni el resultado de la exportación anterior.
+- Mientras se analiza la estructura (en segundo plano), Exportar está desactivado con "Analizando la estructura…", y la exportación y sus comprobaciones esperan a que el análisis acabe: nunca sale un atlas sin la estructura de los mapas y ajustes actuales (R43).
 - Antes de exportar, el diálogo pasa las seis comprobaciones de [04](04-wear.md) (composición de evaluación a 2048 px; el sangrado se calcula a la resolución de exportación) y muestra el resumen. Los avisos (o un fallo de las comprobaciones) no bloquean la exportación.
 
 ### Presets por destino

@@ -54,6 +54,8 @@ export function ExportDialog() {
     const dirt = dirtNode(s.doc)?.params;
     return !!dirt?.enabled && dirt.runoff > 0;
   });
+  // R43: no export while a structure analysis is queued or running.
+  const analyzing = useProject((s) => !s.analysisIdle);
   const setRes = (r: number) => useProject.getState().updateNode<'output'>('output', { resolutionPx: r });
   const [busy, setBusy] = useState(false);
   const [checking, setChecking] = useState(false);
@@ -173,6 +175,9 @@ export function ExportDialog() {
           {runoff && (
             <div className="text-xs text-amber-400" data-testid="export-runoff-warning">{es.export.runoffWarning}</div>
           )}
+          {analyzing && (
+            <div className="text-xs text-zinc-400" data-testid="export-analyzing">{es.export.analyzing}</div>
+          )}
           {checking && <div className="text-xs text-zinc-400" data-testid="export-checking">{es.export.checking}</div>}
           {(checks || checksFailed) && (
             <div className="flex flex-col text-xs" data-testid="export-checks">
@@ -197,7 +202,7 @@ export function ExportDialog() {
               </ul>
             </div>
           )}
-          <Button variant="default" disabled={busy || dir.trim() === '' || tooBig !== null} onClick={() => void run()} data-testid="export-run">
+          <Button variant="default" disabled={busy || analyzing || dir.trim() === '' || tooBig !== null} onClick={() => void run()} data-testid="export-run">
             {busy ? es.export.exporting : es.export.run}
           </Button>
         </div>

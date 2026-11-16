@@ -70,6 +70,7 @@ export const es = {
     serverError: (msg: string) => `El servidor rechazó la exportación: ${msg}`,
     failed: (msg: string) => `La exportación falló: ${msg}`,
     checking: 'Comprobando el resultado…',
+    analyzing: 'Analizando la estructura…',
     checksTitle: 'Comprobaciones a esta resolución',
     checksFailed: 'No se pudieron hacer las comprobaciones; se exporta igualmente.',
     checksNote: 'Los avisos no impiden exportar.',

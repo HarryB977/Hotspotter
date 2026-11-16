@@ -3,7 +3,7 @@ import * as engine from '@hotspotter/engine';
 import type { AtlasMaps } from '@hotspotter/engine';
 import { evalStats, materialJointMean, useProject } from '../state/store';
 import { exportProject } from '../export/encode';
-import { failNextWorkerCall } from '../workers/client';
+import { failNextWorkerCall, workerCall } from '../workers/client';
 
 export interface SampleFile {
   name: string;
@@ -48,6 +48,8 @@ export interface HsHarness {
   pipelineCacheSize(device?: GPUDevice, prefix?: string): number;
   /** The next Worker call of `op` crashes the Worker (uncaught throw inside it). */
   failNextWorkerCall: typeof failNextWorkerCall;
+  /** The shared Worker's client, for calls outside the store. */
+  workerCall: typeof workerCall;
 }
 
 declare global {
@@ -105,6 +107,7 @@ export function installHarness(): void {
     evalStats,
     exportProject,
     failNextWorkerCall,
+    workerCall,
     pipelineCacheSize(device, prefix) {
       const d = device ?? useProject.getState().gpu?.device;
       return d ? engine.pipelineCacheSize(d, prefix) : 0;

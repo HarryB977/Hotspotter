@@ -13,17 +13,20 @@ export type WorkerOp = keyof WorkerApi;
 
 export type WorkerRequest = {
   [K in WorkerOp]: {
+    /** Increases with every call, so it is also the request's generation: a higher id of the same op is newer. */
     id: number;
     op: K;
     input: WorkerApi[K]['in'];
-    /** Test hook (dev only): the Worker throws uncaught instead of running the op, as if it had crashed. */
+    /** Test hook (dev only): the Worker throws uncaught on receipt, as if it had crashed. */
     crash?: boolean;
   };
 }[WorkerOp];
 
 export type WorkerReply =
   | { id: number; ok: true; out: WorkerApi[WorkerOp]['out'] }
-  | { id: number; ok: false; message: string };
+  | { id: number; ok: false; message: string }
+  /** Skipped: a newer request of the same op was queued behind it. */
+  | { id: number; ok: false; stale: true };
 
 /** The Worker died or could not read a message; every pending call fails with this and the next call starts a new one. */
 export class WorkerCrashedError extends Error {
@@ -56,11 +59,13 @@ function getWorker(): Worker {
   if (worker) return worker;
   const w = new Worker(new URL('./analysis.worker.ts', import.meta.url), { type: 'module' });
   w.onmessage = (e: MessageEvent<WorkerReply>) => {
-    const p = pending.get(e.data.id);
+    const r = e.data;
+    const p = pending.get(r.id);
     if (!p) return;
-    pending.delete(e.data.id);
-    if (e.data.ok) p.resolve(e.data.out as never);
-    else p.reject(new Error(e.data.message));
+    pending.delete(r.id);
+    if (r.ok) p.resolve(r.out as never);
+    else if ('stale' in r) p.resolve(null as never);
+    else p.reject(new Error(r.message));
   };
   w.onerror = (e) => {
     // Reported once here instead of as an uncaught page error.
@@ -78,15 +83,16 @@ function getWorker(): Worker {
 
 /**
  * Runs `op` on the shared Worker (created on first use). `transfer` lists buffers of `input` the caller no
- * longer needs; they move instead of being copied.
+ * longer needs; they move instead of being copied. Resolves null when a newer call of the same op superseded this
+ * one before the Worker started it.
  */
 export function workerCall<K extends WorkerOp>(
   op: K, input: WorkerApi[K]['in'], transfer: Transferable[] = [],
-): Promise<WorkerApi[K]['out']> {
-  const w = getWorker();
-  const id = ++nextId;
-  const crashNow = crashNext.delete(op);
-  return new Promise<WorkerApi[K]['out']>((resolve, reject) => {
+): Promise<WorkerApi[K]['out'] | null> {
+  return new Promise<WorkerApi[K]['out'] | null>((resolve, reject) => {
+    const w = getWorker();
+    const id = ++nextId;
+    const crashNow = import.meta.env.DEV && crashNext.delete(op);
     pending.set(id, { resolve: resolve as (out: never) => void, reject });
     const req = { id, op, input, crash: crashNow || undefined } as WorkerRequest;
     try {
@@ -98,7 +104,7 @@ export function workerCall<K extends WorkerOp>(
   });
 }
 
-/** Test hook: the next `op` call crashes the Worker. */
+/** Test hook (dev only): the next `op` call crashes the Worker. */
 export function failNextWorkerCall(op: WorkerOp): void {
-  crashNext.add(op);
+  if (import.meta.env.DEV) crashNext.add(op);
 }
