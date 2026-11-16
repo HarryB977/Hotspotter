@@ -64,6 +64,50 @@ Formatos adicionales opcionales:
 - Los pipelines se crean una vez por dispositivo dentro de un `pushErrorScope('validation')`, y cada entrada de la caché guarda su resultado. Cada compose espera solo el de los pipelines que usó: un error de WGSL sale como error de ese compose, no como mapas en blanco ni como error de otro compose que corra a la vez. El mensaje empieza por "Error interno de un shader (…)" y sigue con el detalle de WebGPU, en inglés.
 - Prueba manual: `HS_PROBE_8K=1 npx playwright test e2e/probe8k.spec.ts` (en `apps/web`) exporta bricks wall 13 a 8192 y dice cómo acaba.
 
+## Proyecto `.hsp`
+
+Decisiones 73–75 y 82. Un proyecto se guarda desde el menú Archivo (Nuevo, Abrir…, Guardar, Guardar como…) como un único archivo `.hsp`: un zip estándar (PKZIP, entradas almacenadas o deflate-raw, CRC-32, nombres UTF-8; sin zip64 ni cifrado) con un códec propio en `packages/core/src/project/` que usa `CompressionStream` y `DecompressionStream`.
+
+**Contenido**
+
+| Ruta | Qué lleva |
+|---|---|
+| `project.json` | El manifiesto (abajo) |
+| `material/<archivo>` | Los archivos originales del material, tal como se importaron (también los que no son mapas) |
+| `mask/<archivo>` | La máscara B/N, si hay |
+| `substrate/<archivo>` | Los archivos del segundo material, si hay |
+
+Las imágenes entran sin recomprimir y bajo un nombre único (si dos archivos tienen el mismo nombre, queda el primero). Cualquier otra ruta se rechaza.
+
+**Manifiesto** (`project.json`, versión 1)
+
+| Campo | Contenido |
+|---|---|
+| `format`, `version` | `"hotspotter-project"` y `1` |
+| `savedAt`, `app` | Fecha ISO y `"Hotspotter"` |
+| `doc` | El documento de proyecto (grafo de nodos) |
+| `material` | `{ name, settings, files }`, con `files` como rutas `material/…`; `null` si no hay |
+| `mask` | `{ name, file }` con `file` en `mask/…`, o `null` |
+| `substrate` | `{ name, tileSizeM, files }` con `files` en `substrate/…`, o `null` |
+
+**Migración.** `version` es la del formato del archivo: uno con un número mayor que el que conoce la app se rechaza. Los cambios del documento se migran al abrir: `doc` pasa por `parseDoc`, que añade los nodos y campos que faltan (decisiones 62, 63 y 69), así que un proyecto de una versión anterior, sin desgaste, suciedad o estructura, se abre completo. El `settings` del material sale del nodo del documento ya migrado; el del manifiesto es solo el respaldo. Si cambia el formato del zip, subirá `version`.
+
+**Límites**
+
+- Leer: hasta 1 GiB descomprimido en total (`MAX_UNPACKED_TOTAL`), con tope de ratio de compresión y de entradas, para no descomprimir una bomba.
+- Guardar: máximo 512 MiB (`MAX_PROJECT_UPLOAD_BYTES`, el límite de subida del servidor; una constante en `packages/core` que usan cliente y servidor). El cliente lo comprueba antes de leer las imágenes y otra vez con el archivo ya empaquetado; un 413 del servidor da el mismo mensaje (R44).
+
+**Errores** (siempre un único mensaje en español, y el proyecto actual queda intacto, nunca a medio cargar):
+
+- "Este archivo no es un proyecto de Hotspotter".
+- "Este proyecto es de una versión más nueva de Hotspotter".
+- "El proyecto está dañado: …" con el motivo: falta `project.json`, no se puede leer, está incompleto, el diseño guardado no es válido, una ruta no permitida o insegura, un archivo repetido, cortado o corrupto, una compresión no admitida, un tamaño descomprimido excesivo, o "no tiene material" / "el segundo material no tiene mapas".
+- "Falta el archivo `<ruta>` dentro del proyecto".
+- "Este proyecto está cifrado y no se puede abrir" y "usa un formato de archivo no admitido (zip64)".
+- "El proyecto ocupa más de 512 MB y no se puede guardar. Usa imágenes más pequeñas para el material." Además, al abrir: "No se pudo abrir el proyecto: …"; al guardar: "No se pudo guardar el proyecto: …".
+
+**Comportamiento.** El primer Guardar tras Abrir va a Guardar como (decisión 74). Con cambios sin guardar, Nuevo, Abrir y cerrar la pestaña preguntan antes (Guardar, Descartar, Cancelar; decisión 75). Abrir con una composición, un análisis o una evaluación en marcha descarta todo resultado viejo. La selección de capa y los ajustes de la vista (reparto 2D/3D, vista 3D) no se guardan en el proyecto.
+
 ## Carpeta de salida
 
 La elige el usuario y se recuerda por proyecto. Al volver a exportar se sobrescriben los mismos nombres de archivo, para que los motores mantengan las referencias. También se puede exportar todo en un `.zip`.

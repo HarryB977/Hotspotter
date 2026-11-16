@@ -16,6 +16,10 @@ npm run dev
 
 `npm run dev` arranca el servidor local (puerto 7420) y la web (http://localhost:5173).
 
+## Proyectos
+
+El menú Archivo guarda y abre proyectos `.hsp` (un zip con el diseño, el material, la máscara y el segundo material; ver [docs/06-export.md](docs/06-export.md#proyecto-hsp)). La vista 3D prueba el atlas sobre formas simples.
+
 ## Tests
 
 ```

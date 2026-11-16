@@ -53,6 +53,11 @@ export default defineConfig({
   plugins: [react(), samplesPlugin()],
   // Module workers (`type: 'module'`), matching how workers/client.ts creates them.
   worker: { format: 'es' },
+  build: {
+    // three's core is about 500 kB on its own, in the lazy View3D chunk. 600 kB keeps the warning tight enough
+    // to still flag the main chunk (about 486 kB) if it grows.
+    chunkSizeWarningLimit: 600,
+  },
   server: {
     port: 5173,
     strictPort: true,
