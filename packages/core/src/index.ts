@@ -49,3 +49,5 @@ export { writeZip, readZip, crc32, MAX_UNPACKED_TOTAL, MAX_PROJECT_UPLOAD_BYTES 
 export { packProject, unpackProject, HspError } from './project/hsp';
 export type { ProjectFile } from './project/zip';
 export type { HspManifest } from './project/hsp';
+export { matchHotspot } from './fit/match';
+export type { FaceQuad, FaceUv, HotspotFit } from './fit/match';
