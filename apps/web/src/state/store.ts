@@ -94,7 +94,7 @@ export interface ProjectState {
   previewRes: PreviewRes;
   activeMap: ActiveMap;
   /** Layer whose section the inspector shows. View state: not in the document, not tracked as a change. */
-  selectedLayer: NodeType | null;
+  selectedLayer: NodeType;
   atlas: AtlasResult | null;
   /** Last preview composition failure, shown in the status bar; cleared by the next success. */
   composeError: string | null;
@@ -149,7 +149,7 @@ export interface ProjectState {
   runEvaluation(opts?: EvaluationOptions): Promise<CheckResult[] | null>;
   setPreviewRes(r: PreviewRes): void;
   setActiveMap(m: ActiveMap): void;
-  setSelectedLayer(t: NodeType | null): void;
+  setSelectedLayer(t: NodeType): void;
   /** Shallow-merges params into a node. */
   updateNode<T extends NodeType>(id: string, patch: Partial<NodeParams[T]>): void;
   /** Replaces the layout node params wholesale, so no keys of another mode linger. */

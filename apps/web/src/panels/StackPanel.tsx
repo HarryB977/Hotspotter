@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useId, useMemo, useRef } from 'react';
 import { toStack } from '@hotspotter/core';
 import type { DirtParams, NodeType, WearParams } from '@hotspotter/core';
 import {
@@ -22,6 +22,8 @@ const ICONS: Record<NodeType, LucideIcon> = {
 };
 
 const ROW = 'flex h-6 items-center gap-1.5 border-l-2 px-1.5';
+/** Height of a row (h-6), to place each switch beside its row. */
+const ROW_REM = 1.5;
 
 /** The document as a layer stack; the selected layer drives the inspector. ↑/↓ move the selection. */
 export function StackPanel() {
@@ -31,6 +33,7 @@ export function StackPanel() {
   const updateNode = useProject((s) => s.updateNode);
   const stack = useMemo(() => (doc ? toStack(doc) : null), [doc]);
   const listRef = useRef<HTMLDivElement>(null);
+  const baseId = useId();
 
   useEffect(() => {
     listRef.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
@@ -62,52 +65,66 @@ export function StackPanel() {
     select(stack[next].type);
   };
 
+  const optionId = (nodeId: string) => `${baseId}-${nodeId}`;
+  const current = stack.find((s) => s.type === selected);
+
+  // The listbox holds only options; the on/off switches sit in a column laid over the rows' right edge, outside the
+  // options, so toggling a layer never selects it.
   return (
     <Section title={es.stack.title}>
-      <div
-        ref={listRef}
-        role="listbox"
-        tabIndex={0}
-        aria-label={es.stack.title}
-        className="flex flex-col focus-visible:outline focus-visible:outline-1 focus-visible:outline-zinc-500"
-        data-testid="stack"
-        onKeyDown={onKeyDown}
-      >
-        {stack.map((entry) => {
-          const Icon = ICONS[entry.type];
-          const on = selected === entry.type;
-          const node = doc.nodes.find((n) => n.id === entry.nodeId);
-          const toggle = entry.type === 'wear' || entry.type === 'dirt'
-            ? (node?.params as WearParams | DirtParams | undefined)
-            : undefined;
+      <div className="relative">
+        <div
+          ref={listRef}
+          role="listbox"
+          tabIndex={0}
+          aria-label={es.stack.title}
+          aria-activedescendant={current ? optionId(current.nodeId) : undefined}
+          className="flex flex-col focus-visible:outline focus-visible:outline-1 focus-visible:outline-zinc-500"
+          data-testid="stack"
+          onKeyDown={onKeyDown}
+        >
+          {stack.map((entry) => {
+            const Icon = ICONS[entry.type];
+            const on = selected === entry.type;
+            return (
+              <div
+                key={entry.nodeId}
+                id={optionId(entry.nodeId)}
+                role="option"
+                aria-selected={on}
+                data-testid="stack-row"
+                data-layer={entry.type}
+                className={cn(
+                  ROW,
+                  'cursor-default pr-9',
+                  on ? 'border-accent bg-accent/10 text-zinc-100' : 'border-transparent text-zinc-300 hover:bg-zinc-800',
+                )}
+                onClick={() => select(entry.type)}
+              >
+                <Icon className={cn('size-3.5 shrink-0', on ? 'text-accent' : 'text-zinc-500')} />
+                <span className="truncate">{entry.label}</span>
+              </div>
+            );
+          })}
+        </div>
+        {stack.map((entry, i) => {
+          if (entry.type !== 'wear' && entry.type !== 'dirt') return null;
+          const params = doc.nodes.find((n) => n.id === entry.nodeId)?.params as WearParams | DirtParams | undefined;
+          if (!params) return null;
           return (
-            <div
+            <span
               key={entry.nodeId}
-              role="option"
-              aria-selected={on}
-              data-testid="stack-row"
-              data-layer={entry.type}
-              className={cn(
-                ROW,
-                'cursor-default',
-                on ? 'border-accent bg-accent/10 text-zinc-100' : 'border-transparent text-zinc-300 hover:bg-zinc-800',
-              )}
-              onClick={() => select(entry.type)}
+              className="absolute right-1.5 flex h-6 items-center"
+              style={{ top: `${i * ROW_REM}rem` }}
             >
-              <Icon className={cn('size-3.5 shrink-0', on ? 'text-accent' : 'text-zinc-500')} />
-              <span className="truncate">{entry.label}</span>
-              {toggle && (
-                // Toggling a layer does not change which layer the inspector shows.
-                <span className="ml-auto flex" onClick={(e) => e.stopPropagation()}>
-                  <Switch
-                    checked={toggle.enabled}
-                    onCheckedChange={(enabled) => updateNode<'wear' | 'dirt'>(entry.nodeId, { enabled })}
-                    aria-label={`${es.wear.enabled} ${entry.label.toLowerCase()}`}
-                    title={entry.type === 'wear' ? es.wear.enabledHint : es.dirt.enabledHint}
-                  />
-                </span>
-              )}
-            </div>
+              <Switch
+                checked={params.enabled}
+                onCheckedChange={(enabled) => updateNode<'wear' | 'dirt'>(entry.nodeId, { enabled })}
+                aria-label={`${es.wear.enabled} ${entry.label.toLowerCase()}`}
+                title={entry.type === 'wear' ? es.wear.enabledHint : es.dirt.enabledHint}
+                data-testid={`stack-${entry.type}-enabled`}
+              />
+            </span>
           );
         })}
       </div>

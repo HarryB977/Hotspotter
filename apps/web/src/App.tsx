@@ -68,10 +68,19 @@ export function App() {
           <ProjectName />
           <span className="ml-auto"><ExportDialog /></span>
         </header>
-        <aside className="min-h-0 overflow-y-auto border-r border-zinc-800 bg-zinc-900" data-testid="left-column">
-          <MaterialPanel />
-          <StackPanel />
-          <ChecksPanel />
+        {/* R45: the Material panel scrolls in its own area so the Pila and the checks always stay on screen; the
+            column's own scroll is a fallback for very short windows. */}
+        <aside
+          className="flex min-h-0 flex-col overflow-y-auto border-r border-zinc-800 bg-zinc-900"
+          data-testid="left-column"
+        >
+          <div className="min-h-[120px] flex-1 overflow-y-auto" data-testid="material-scroll">
+            <MaterialPanel />
+          </div>
+          <div className="shrink-0">
+            <StackPanel />
+            <ChecksPanel />
+          </div>
         </aside>
         <main className="flex min-h-0 min-w-0 flex-col bg-zinc-950">
           <PanelTitle>{es.atlas.title}</PanelTitle>

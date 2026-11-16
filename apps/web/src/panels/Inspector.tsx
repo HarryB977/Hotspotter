@@ -24,6 +24,8 @@ export function Inspector() {
   let content: React.ReactNode;
   if (!doc || !stack) content = <div className="p-2 text-zinc-600">{es.inspector.empty}</div>;
   else if (!Array.isArray(stack)) content = <div className="p-2 text-zinc-500">{es.inspector.customGraph}</div>;
+  // A layer the stack does not hold shows nothing to edit.
+  else if (!stack.some((e) => e.type === selected)) content = <div className="p-2 text-zinc-600">{es.inspector.empty}</div>;
   else {
     switch (selected) {
       case 'material':

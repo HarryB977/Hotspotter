@@ -31,10 +31,11 @@ test.describe('app shell at a laptop-sized window', () => {
     const overflow = (id: string) => page.getByTestId(id).evaluate((el) => ({
       y: getComputedStyle(el).overflowY, sh: el.scrollHeight, ch: el.clientHeight,
     }));
-    // The left column (Material, Pila, Comprobaciones) is taller than the window.
-    const left = await overflow('left-column');
-    expect(left.y).toBe('auto');
-    expect(left.sh).toBeGreaterThan(left.ch);
+    // The left column keeps a scroll as a fallback; at 700 px only the Material area, taller than its share, scrolls.
+    expect((await overflow('left-column')).y).toBe('auto');
+    const material = await overflow('material-scroll');
+    expect(material.y).toBe('auto');
+    expect(material.sh).toBeGreaterThan(material.ch);
     // The inspector shows one layer; Desgaste, selected after an import, fits at 700 px. Lower, it scrolls inside its
     // column and the page still does not.
     await expect(page.getByTestId('wear-section')).toBeVisible();
@@ -45,6 +46,27 @@ test.describe('app shell at a laptop-sized window', () => {
       return r.sh > r.ch;
     }).toBe(true);
     expect(await pageFits()).toBe(true);
+    const bar = await footer.boundingBox();
+    const innerH = await page.evaluate(() => window.innerHeight);
+    expect(bar!.y + bar!.height).toBeLessThanOrEqual(innerH);
+  });
+
+  test('the whole Pila is on screen without scrolling the left column', async ({ page }) => {
+    // Undo any scroll the layer clicks of beforeEach caused.
+    await page.evaluate(() => {
+      for (const id of ['left-column', 'material-scroll']) {
+        const el = document.querySelector(`[data-testid="${id}"]`);
+        if (el) el.scrollTop = 0;
+      }
+    });
+    const left = (await page.getByTestId('left-column').boundingBox())!;
+    const rows = page.getByTestId('stack-row');
+    await expect(rows).toHaveCount(7);
+    for (const row of [rows.first(), rows.last()]) {
+      const b = (await row.boundingBox())!;
+      expect(b.y).toBeGreaterThanOrEqual(Math.max(0, left.y));
+      expect(b.y + b.height).toBeLessThanOrEqual(Math.min(700, left.y + left.height));
+    }
   });
 
   test('labels are not selectable, fields are', async ({ page }) => {

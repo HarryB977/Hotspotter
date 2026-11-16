@@ -165,6 +165,7 @@ test.describe('layout, inspector and atlas view', () => {
     await page.keyboard.press('ArrowDown');
     const dirt = page.locator('[data-testid="stack-row"][data-layer="dirt"]');
     await expect(dirt).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByTestId('stack')).toHaveAttribute('aria-activedescendant', (await dirt.getAttribute('id'))!);
     await expect(page.getByTestId('dirt-section')).toBeVisible();
     await page.keyboard.press('ArrowUp');
     await expect(page.getByTestId('wear-section')).toBeVisible();
@@ -175,11 +176,28 @@ test.describe('layout, inspector and atlas view', () => {
     const enabled = () => page.evaluate(() =>
       (window.__hs!.store.getState().doc!.nodes.find((n) => n.id === 'wear')!.params as { enabled: boolean }).enabled);
     expect(await enabled()).toBe(true);
-    const sw = page.locator('[data-testid="stack-row"][data-layer="wear"]').getByRole('switch');
+    const sw = page.getByTestId('stack-wear-enabled');
+    // The switch sits outside the option: toggling it keeps the selection.
+    await selectLayer(page, 'dirt');
     await sw.click();
     await expect.poll(enabled).toBe(false);
+    await expect(page.locator('[data-testid="stack-row"][data-layer="dirt"]')).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByRole('listbox', { name: 'Pila' }).getByRole('switch')).toHaveCount(0);
+    await selectLayer(page, 'wear');
     await expect(sw).toHaveAttribute('aria-checked', 'false');
     await expect(page.getByTestId('wear-enabled')).toHaveAttribute('aria-checked', 'false');
+  });
+
+  test('a value typed in Intensidad without Enter is kept when another layer is selected', async ({ page }) => {
+    await page.waitForFunction(() => !!window.__hs?.store.getState().doc);
+    const f = page.getByLabel('Intensidad', { exact: true });
+    await f.click();
+    await f.fill('0.37');
+    await page.getByTestId('stack-row').filter({ hasText: 'Suciedad' }).click({ position: { x: 6, y: 6 } });
+    await expect(page.getByTestId('dirt-section')).toBeVisible();
+    await expect.poll(() => page.evaluate(() =>
+      (window.__hs!.store.getState().doc!.nodes.find((n) => n.id === 'wear')!.params as { intensity: number }).intensity))
+      .toBe(0.37);
   });
 
   test('a branched graph shows the single disabled row Grafo personalizado', async ({ page }) => {
