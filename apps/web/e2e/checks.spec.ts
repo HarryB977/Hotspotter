@@ -57,31 +57,39 @@ test('readbackR32 reads r32float and r32uint row by row and rejects other format
   expect(r).toEqual({ sizes: [70, 3, 70, 3], kinds: [true, true], f: true, u: true, rejected: true });
 });
 
-test('readbackRgba16f decodes rgba16float row by row and rejects other formats', async ({ page }) => {
+test('readbackDetailSlope reads |n.xy| / max(n.z, 1e-3) per pixel, row by row, and rejects other formats', async ({ page }) => {
   await page.goto('/');
   await page.waitForFunction(() => !!window.__hs);
   const r = await page.evaluate(async () => {
     const hs = window.__hs!;
     await hs.store.getState().initGpu();
     const gpu = hs.store.getState().gpu!;
-    // 40 px × 8 B = 320 B per row: padded to 512 in the copy.
+    // 40 px × 8 B = 320 B per row: not a multiple of 256.
     const w = 40, h = 3;
-    // Halves exactly representable: 0, ±1, 0.5, 1.5, -2, 0.25 … and one subnormal (2^-24).
-    const values = [0, 1, -1, 0.5, 1.5, -2, 0.25, 2 ** -24];
-    const toHalf: Record<number, number> = { 0: 0, 1: 0x3c00, '-1': 0xbc00, 0.5: 0x3800, 1.5: 0x3e00, '-2': 0xc000, 0.25: 0x3400 };
-    toHalf[2 ** -24] = 1;
-    const src = new Float32Array(w * h * 4).map((_, i) => values[i % values.length]);
-    const half = new Uint16Array(src.length).map((_, i) => toHalf[src[i]]);
-    const t = gpu.device.createTexture({ size: [w, h], format: 'rgba16float', usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC });
+    // Unnormalised xyz (exact halves) and the slope each gives: flat, 1, 0.5, z clamped to 1e-3, zero vector.
+    const H = { 0: 0, 0.5: 0x3800, 1: 0x3c00, '-1': 0xbc00, 3: 0x4200, 4: 0x4400, 5: 0x4500 } as Record<string, number>;
+    const cases: [number[], number][] = [[[0, 0, 1], 0], [[3, 4, 5], 1], [[0.5, 0, 1], 0.5], [[1, 0, -1], 1000], [[0, 0, 0], 0]];
+    const half = new Uint16Array(w * h * 4);
+    for (let i = 0; i < w * h; i++) half.set([...cases[i % cases.length][0].map((v) => H[v]), 0], i * 4);
+    const t = gpu.device.createTexture({ size: [w, h], format: 'rgba16float', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
     gpu.device.queue.writeTexture({ texture: t }, half, { bytesPerRow: w * 8 }, [w, h]);
-    const out = await hs.engine.readbackRgba16f(gpu, t);
+    const p = hs.engine.readbackDetailSlope(gpu, t);
+    // The work is submitted already: destroying now must not lose it.
     t.destroy();
-    const rgba = gpu.device.createTexture({ size: [1, 1], format: 'rgba8unorm', usage: GPUTextureUsage.COPY_SRC });
-    const rejected = await hs.engine.readbackRgba16f(gpu, rgba).then(() => false, () => true);
+    const out = await p;
+    const rgba = gpu.device.createTexture({ size: [1, 1], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING });
+    const rejected = await hs.engine.readbackDetailSlope(gpu, rgba).then(() => false, () => true);
     rgba.destroy();
-    return { size: [out.width, out.height], same: Array.from(out.data).every((v, i) => v === src[i]), rejected };
+    const worst = Math.max(...Array.from(out.data, (v, i) => {
+      const e = cases[i % cases.length][1];
+      return Math.abs(v - e) / Math.max(1, e);
+    }));
+    return { size: [out.width, out.height], length: out.data.length, worst, rejected };
   });
-  expect(r).toEqual({ size: [40, 3], same: true, rejected: true });
+  expect(r.size).toEqual([40, 3]);
+  expect(r.length).toBe(120);
+  expect(r.worst).toBeLessThan(1e-5);
+  expect(r.rejected).toBe(true);
 });
 
 test.describe('with bricks wall 13', () => {
@@ -220,6 +228,17 @@ test.describe('with bricks wall 13', () => {
       }, p);
       expect(r, JSON.stringify(p)).toEqual({ status: 'ok', n: 0 });
     }
+  });
+
+  test('the evaluation reads the detail normal back as one f32 slope per pixel', async ({ page }) => {
+    await importBricks(page);
+    const r = await page.evaluate(async () => {
+      const res = await window.__hs!.store.getState().runEvaluation();
+      return { n: res?.length, bytes: window.__hs!.evalStats.detailBytes };
+    });
+    expect(r.n).toBe(6);
+    expect(r.bytes).toBeGreaterThan(0);
+    expect(r.bytes).toBeLessThanOrEqual(2048 * 2048 * 4);
   });
 
   test('evaluations never overlap, and reusing a 2048 px preview gives the same results as composing', async ({ page }) => {

@@ -246,7 +246,7 @@ test('focusing and leaving the threshold and period fields commits nothing', asy
     await field.focus();
     await field.blur();
   }
-  await page.waitForTimeout(200);
+  await page.waitForFunction(() => window.__hs!.store.getState().analysisIdle);
   const r = await page.evaluate((before) => {
     const s = window.__hs!.store.getState();
     const node = s.doc!.nodes.find((n) => n.type === 'structure')!.params as { threshold: number | null };
@@ -262,7 +262,7 @@ test('focusing and leaving the threshold and period fields commits nothing', asy
   await expect.poll(async () => (await page.getByTestId('structure-threshold').inputValue()) !== '').toBe(true);
   await page.getByTestId('structure-threshold').focus();
   await page.getByTestId('structure-threshold').blur();
-  await page.waitForTimeout(200);
+  await page.waitForFunction(() => window.__hs!.store.getState().analysisIdle);
   expect(await page.evaluate(() =>
     (window.__hs!.store.getState().doc!.nodes.find((n) => n.type === 'structure')!.params as { threshold: number | null }).threshold,
   )).toBeNull();

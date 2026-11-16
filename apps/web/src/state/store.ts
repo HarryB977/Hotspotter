@@ -8,7 +8,7 @@ import type {
   NodeType, ProjectDoc, ProportionIssue, RectPlacement, StructureResult,
 } from '@hotspotter/core';
 import {
-  composeAtlas, hasMapFromFiles, initGpu, readbackR32, readbackRgba16f, readbackRgba8, uploadMaterial, uploadRgba8, uploadStructure,
+  composeAtlas, hasMapFromFiles, initGpu, readbackDetailSlope, readbackR32, readbackRgba8, uploadMaterial, uploadRgba8, uploadStructure,
   WebGpuUnavailableError,
 } from '@hotspotter/engine';
 import type { AtlasMaps, ComposeInput, GpuContext, GpuMaterial, GpuStructure, LoadedMaterial } from '@hotspotter/engine';
@@ -96,6 +96,8 @@ export interface ProjectState {
   structure: StructureState | null;
   /** Last structure analysis failure, shown in the structure section; cleared by the next success. */
   structureError: string | null;
+  /** No structure analysis is queued or running. */
+  analysisIdle: boolean;
   mask: MaskState | null;
   substrate: SubstrateState | null;
   /** Last mask or substrate import failure, shown in the wear section; cleared by the next success. */
@@ -175,6 +177,9 @@ let materialRev = 0;
 
 /** Bumped by every analysis request; only the latest may apply its result. */
 let analyzeGen = 0;
+
+/** Analysis requests queued or running (ProjectState.analysisIdle is this being 0). */
+let analysesInFlight = 0;
 
 /** Bumped by mask imports and clears and by material replacement; only the latest mask import may apply. */
 let maskGen = 0;
@@ -386,6 +391,7 @@ export const useProject = create<ProjectState>()((set, get) => ({
   composeError: null,
   structure: null,
   structureError: null,
+  analysisIdle: true,
   mask: null,
   substrate: null,
   wearError: null,
@@ -589,64 +595,69 @@ export const useProject = create<ProjectState>()((set, get) => ({
   },
 
   async analyze(opts) {
-    const mine = ++analyzeGen;
-    const startImages = get().material?.images;
-    // Let the UI paint before the CPU work; anything committed meanwhile is caught below.
-    await new Promise((r) => setTimeout(r, 0));
-    const { material, gpu, doc } = get();
-    if (mine !== analyzeGen || !material || !gpu || !doc) return;
-    // The maps changed while this request waited; that change requests its own analysis.
-    if (material.images !== startImages) return;
-    const node = structureNode(doc);
-    let result: StructureResult;
-    let source: StructureState['source'];
+    if (analysesInFlight++ === 0) set({ analysisIdle: false });
     try {
-      const input = readGray(material.images);
-      if (!input) {
-        // Neither height nor albedo left: drop the structure of the removed maps (continuous).
-        const old = get().structure;
-        let nextDoc = old && node ? updateNodeParams(doc, node.id, { analyzed: false }) : doc;
-        nextDoc = withProposedFamily(nextDoc, 'continuous', material.settings.name);
-        if (old || nextDoc !== doc) set({ structure: null, doc: nextDoc });
-        old?.gpu.destroy();
+      const mine = ++analyzeGen;
+      const startImages = get().material?.images;
+      // Let the UI paint before the CPU work; anything committed meanwhile is caught below.
+      await new Promise((r) => setTimeout(r, 0));
+      const { material, gpu, doc } = get();
+      if (mine !== analyzeGen || !material || !gpu || !doc) return;
+      // The maps changed while this request waited; that change requests its own analysis.
+      if (material.images !== startImages) return;
+      const node = structureNode(doc);
+      let result: StructureResult;
+      let source: StructureState['source'];
+      try {
+        const input = readGray(material.images);
+        if (!input) {
+          // Neither height nor albedo left: drop the structure of the removed maps (continuous).
+          const old = get().structure;
+          let nextDoc = old && node ? updateNodeParams(doc, node.id, { analyzed: false }) : doc;
+          nextDoc = withProposedFamily(nextDoc, 'continuous', material.settings.name);
+          if (old || nextDoc !== doc) set({ structure: null, doc: nextDoc });
+          old?.gpu.destroy();
+          return;
+        }
+        source = input.source;
+        const threshold = node?.params.threshold ?? null;
+        result = analyzeStructure(input.gray, material.settings.tileSizeM, threshold === null ? undefined : { threshold });
+      } catch (e) {
+        console.error('structure analysis failed', e);
+        set({ structureError: es.structure.failed(e instanceof Error ? e.message : String(e)) });
         return;
       }
-      source = input.source;
-      const threshold = node?.params.threshold ?? null;
-      result = analyzeStructure(input.gray, material.settings.tileSizeM, threshold === null ? undefined : { threshold });
-    } catch (e) {
-      console.error('structure analysis failed', e);
-      set({ structureError: es.structure.failed(e instanceof Error ? e.message : String(e)) });
-      return;
-    }
-    const gpuStructure = uploadStructure(gpu, result);
-    let settings = material.settings;
-    const p = result.period;
-    const cur = settings.period;
-    const differs = cur.x !== p.x || cur.y !== p.y || cur.phaseX !== p.phaseX || cur.phaseY !== p.phaseY;
-    if (opts?.applyPeriod ? differs || settings.periodUserSet : !settings.periodUserSet && differs) {
-      settings = {
-        ...settings,
-        period: { ...cur, x: p.x, y: p.y, phaseX: p.phaseX, phaseY: p.phaseY },
-        periodUserSet: opts?.applyPeriod ? false : settings.periodUserSet,
+      const gpuStructure = uploadStructure(gpu, result);
+      let settings = material.settings;
+      const p = result.period;
+      const cur = settings.period;
+      const differs = cur.x !== p.x || cur.y !== p.y || cur.phaseX !== p.phaseX || cur.phaseY !== p.phaseY;
+      if (opts?.applyPeriod ? differs || settings.periodUserSet : !settings.periodUserSet && differs) {
+        settings = {
+          ...settings,
+          period: { ...cur, x: p.x, y: p.y, phaseX: p.phaseX, phaseY: p.phaseY },
+          periodUserSet: opts?.applyPeriod ? false : settings.periodUserSet,
+        };
+      }
+      let nextDoc = settings === material.settings ? doc : withMaterialNode(doc, settings);
+      if (node) nextDoc = updateNodeParams(nextDoc, node.id, { type: result.type, analyzed: true });
+      nextDoc = withProposedFamily(nextDoc, result.type, settings.name);
+      const prev = get().structure;
+      const next: Partial<ProjectState> = {
+        structure: { result, gpu: gpuStructure, source },
+        structureError: null,
+        doc: nextDoc,
       };
+      if (settings !== material.settings) {
+        next.material = { ...material, settings };
+        const gm = get().gpuMaterial;
+        next.gpuMaterial = gm ? { ...gm, settings } : gm;
+      }
+      set(next);
+      prev?.gpu.destroy();
+    } finally {
+      if (--analysesInFlight === 0) set({ analysisIdle: true });
     }
-    let nextDoc = settings === material.settings ? doc : withMaterialNode(doc, settings);
-    if (node) nextDoc = updateNodeParams(nextDoc, node.id, { type: result.type, analyzed: true });
-    nextDoc = withProposedFamily(nextDoc, result.type, settings.name);
-    const prev = get().structure;
-    const next: Partial<ProjectState> = {
-      structure: { result, gpu: gpuStructure, source },
-      structureError: null,
-      doc: nextDoc,
-    };
-    if (settings !== material.settings) {
-      next.material = { ...material, settings };
-      const gm = get().gpuMaterial;
-      next.gpuMaterial = gm ? { ...gm, settings } : gm;
-    }
-    set(next);
-    prev?.gpu.destroy();
   },
 
   async setStructureThreshold(t) {
@@ -884,8 +895,11 @@ let evalGen = 0;
 /** Evaluations run one after another on this chain, never concurrently. */
 let evalChain: Promise<unknown> = Promise.resolve();
 
-/** Debug counters (exposed by the test harness): evaluation composes, and evaluations running now / at most. */
-export const evalStats = { composes: 0, running: 0, peak: 0 };
+/**
+ * Debug counters (exposed by the test harness): evaluation composes, evaluations running now / at most, and the
+ * staging bytes of the last detail-normal slope read.
+ */
+export const evalStats = { composes: 0, running: 0, peak: 0, detailBytes: 0 };
 
 /** Mean base colour of each second set, read back once. */
 const substrateMeans = new WeakMap<GpuMaterial, Promise<[number, number, number]>>();
@@ -980,7 +994,7 @@ async function evaluate(mine: number, opts?: EvaluationOptions): Promise<CheckRe
         readbackR32(gpu, maps.macroHeight),
         readbackR32(gpu, maps.height),
         maps.matNormal
-          ? readbackRgba16f(gpu, maps.matNormal)
+          ? readbackDetailSlope(gpu, maps.matNormal)
           : Promise.reject(new Error('evaluation maps lack matNormal')),
         readbackRgba8(gpu, maps.normal),
         readbackRgba8(gpu, maps.wearMask),
@@ -989,14 +1003,16 @@ async function evaluate(mine: number, opts?: EvaluationOptions): Promise<CheckRe
     } finally {
       if (!current) destroyMaps(maps);
     }
-    const [rectId, macro, total, matNormal, normal, wearRgba, subMean] = await reads;
+    const [rectId, macro, total, detail, normal, wearRgba, subMean] = await reads;
+    // One f32 per pixel, unpadded: the data is exactly the staging buffer.
+    evalStats.detailBytes = detail.data.byteLength;
     const { width, height } = rectId;
     // The grey wearMask's red channel; a 1 × 1 placeholder (wear off) stays 1 byte long.
     const wearMask = new Uint8Array(wearRgba.data.length / 4);
     for (let i = 0; i < wearMask.length; i++) wearMask[i] = wearRgba.data[i * 4];
     const maps8 = {
       width, height, rectId: rectId.data as Uint32Array, wearMask, macroHeight: macro.data as Float32Array,
-      heightM: total.data as Float32Array, matNormal: matNormal.data,
+      heightM: total.data as Float32Array, detailSlope: detail.data,
       normal: normal.data,
     };
     const output = doc.nodes.find((n): n is DocNode<'output'> => n.type === 'output');

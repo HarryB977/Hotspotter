@@ -312,22 +312,23 @@ export function encodeColorComposite(
   // Half the reach, kept to 32..128 rows: short chunks re-walk too much, long ones leave the GPU idle (R33).
   const chunk = lookback > 0 ? Math.min(128, Math.max(32, Math.ceil(lookback / 2))) : 8;
   const ao = input.aoOnMacro ? 1 : 0;
-  const pipeline = cached(device, `colorComposite:${chunk}:${lookback}:${ao}`, () => device.createComputePipeline({
+  // Chunk and lookback are uniforms (bandOffset.yz), so the key names only the overrides.
+  const pipeline = cached(device, `colorComposite:${ao}`, () => device.createComputePipeline({
     layout: 'auto',
     compute: {
       module: cached(device, 'colorComposite.module', () =>
         device.createShaderModule({ code: withCommon(colorCompositeWgsl) })),
       entryPoint: 'main',
-      constants: { MIN_BAND_M, CHUNK_ROWS: chunk, LOOKBACK_ROWS: lookback, AO_ON_MACRO: ao },
+      constants: { MIN_BAND_M, AO_ON_MACRO: ao },
     },
   }));
   const chunks = Math.ceil(h / chunk);
   const perBand = Math.max(1, Math.floor((input.bandRows ?? BAND_ROWS) / chunk));
   const bands = Math.ceil(chunks / perBand);
-  // One uniform slot per band: its first chunk (bandOffset.x in colorComposite.wgsl).
+  // One uniform slot per band: its first chunk, the chunk rows and the lookback rows (bandOffset.xyz).
   const offsets = device.createBuffer({ size: bands * BAND_SLOT, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
   const offsetData = new Uint32Array((bands * BAND_SLOT) / 4);
-  for (let b = 0; b < bands; b++) offsetData[(b * BAND_SLOT) / 4] = b * perBand;
+  for (let b = 0; b < bands; b++) offsetData.set([b * perBand, chunk, lookback], (b * BAND_SLOT) / 4);
   device.queue.writeBuffer(offsets, 0, offsetData);
   const sub = input.substrate ?? input.material;
   const maps = (base: number, m: ColorMaps) => [m.baseColor, m.roughness, m.metallic, m.ao].map((t, i) => ({

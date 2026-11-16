@@ -43,6 +43,8 @@ export interface HsHarness {
   jointMean(): [number, number, number] | null;
   /** The export the dialog runs, without the dialog (no checks recorded unless passed). */
   exportProject: typeof exportProject;
+  /** Pipelines cached on `device` (default: the store's) whose key starts with `prefix`. */
+  pipelineCacheSize(device?: GPUDevice, prefix?: string): number;
 }
 
 declare global {
@@ -99,6 +101,10 @@ export function installHarness(): void {
     store: useProject,
     evalStats,
     exportProject,
+    pipelineCacheSize(device, prefix) {
+      const d = device ?? useProject.getState().gpu?.device;
+      return d ? engine.pipelineCacheSize(d, prefix) : 0;
+    },
     jointMean() {
       const { gpuMaterial, structure, material } = useProject.getState();
       return gpuMaterial && structure ? materialJointMean(gpuMaterial, structure, material?.images.baseColor) : null;

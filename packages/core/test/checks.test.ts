@@ -30,7 +30,7 @@ function flatMaps(n: number): EvalMaps {
   return {
     width: n, height: n, rectId: new Uint32Array(n * n).fill(1), wearMask: new Uint8Array(n * n),
     macroHeight: new Float32Array(n * n), heightM: new Float32Array(n * n), normal,
-    matNormal: new Float32Array(n * n * 4).map((_, i) => (i % 4 === 2 ? 1 : 0)),
+    detailSlope: new Float32Array(n * n),
   };
 }
 
@@ -206,8 +206,7 @@ describe('runChecks', () => {
         const x = i % n;
         m.macroHeight[i] = 0.5 * x * mpp;
         m.heightM[i] = m.macroHeight[i];
-        // Unnormalised on purpose: the check uses |n.xy| / n.z.
-        m.matNormal.set([matSlope, 0, 1, 0], i * 4);
+        m.detailSlope![i] = matSlope;
         m.normal[i * 4] = Math.round(((nxSign * 0.5) / len * 0.5 + 0.5) * 255);
         m.normal[i * 4 + 2] = Math.round(((1 / len) * 0.5 + 0.5) * 255);
       }
@@ -231,7 +230,7 @@ describe('runChecks', () => {
         const x = i % n;
         m.macroHeight[i] = 0.5 * x * mpp;
         m.heightM[i] = m.macroHeight[i];
-        m.matNormal.set([1.5, 0, 1, 0], i * 4);
+        m.detailSlope![i] = 1.5;
         m.wearMask[i] = wear;
         m.normal[i * 4] = Math.round((0.5 / len * 0.5 + 0.5) * 255);
         m.normal[i * 4 + 2] = Math.round(((1 / len) * 0.5 + 0.5) * 255);
