@@ -91,6 +91,7 @@ export function ViewportSplit({ left, right }: ViewportSplitProps) {
   useEffect(() => {
     if (focusSeq === seenFocus.current) return;
     seenFocus.current = focusSeq;
+    if (focusSeq === 0) return;
     if (latest.current.maximized === 'right') update({ ratio: latest.current.ratio, maximized: null });
   }, [focusSeq, update]);
 
@@ -130,7 +131,7 @@ export function ViewportSplit({ left, right }: ViewportSplitProps) {
           aria-valuenow={pct}
           tabIndex={0}
           title={es.viewport.dividerHint}
-          className="w-1 shrink-0 cursor-col-resize touch-none bg-zinc-800 hover:bg-zinc-600 focus-visible:bg-zinc-600 focus-visible:outline-none"
+          className="relative z-10 w-1 shrink-0 cursor-col-resize touch-none bg-zinc-800 before:absolute before:inset-y-0 before:-left-1 before:-right-1 before:content-[''] hover:bg-zinc-600 focus-visible:bg-zinc-600 focus-visible:outline-none"
           data-testid="viewport-divider"
           onPointerDown={(e) => {
             if (e.button !== 0) return;

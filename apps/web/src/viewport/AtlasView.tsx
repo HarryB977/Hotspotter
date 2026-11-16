@@ -118,17 +118,18 @@ export function AtlasView({ maps, layout, activeMap, issues }: AtlasViewProps) {
   // A focus request waits here until the host has a size (it is 0x0 while its pane is hidden).
   const focus = useProject((s) => s.viewFocus);
   const handledFocus = useRef(focus?.seq ?? 0);
-  const prev = useRef<{ w: number; h: number; stageW: number; stageH: number; lw: number; lh: number } | null>(null);
+  const viewGen = useProject((s) => s.viewGen);
+  const prev = useRef<{ gen: number; w: number; h: number; stageW: number; stageH: number; lw: number; lh: number } | null>(null);
 
   // Fit on a new material; on a resize keep the zoom and the atlas point at the centre. A hidden host (0x0) leaves the
   // view alone, and the first real size afterwards is treated as a resize from the last real one.
   useEffect(() => {
     if (box.w === 0 || box.h === 0) return;
     const p = prev.current;
-    prev.current = { w: box.w, h: box.h, stageW, stageH, lw: layout.widthPx, lh: layout.heightPx };
-    const pending = focus && focus.seq !== handledFocus.current ? focus : null;
+    prev.current = { gen: viewGen, w: box.w, h: box.h, stageW, stageH, lw: layout.widthPx, lh: layout.heightPx };
+    const pending = focus && focus.seq > handledFocus.current ? focus : null;
     if (pending) handledFocus.current = pending.seq;
-    if (!p || p.stageW <= 0 || p.stageH <= 0 || p.lw !== layout.widthPx || p.lh !== layout.heightPx) {
+    if (!p || p.gen !== viewGen || p.stageW <= 0 || p.stageH <= 0 || p.lw !== layout.widthPx || p.lh !== layout.heightPx) {
       setView(pending ? focusView({ k: 1, tx: 0, ty: 0 }, pending, box, stageW, stageH) : { k: 1, tx: (box.w - stageW) / 2, ty: (box.h - stageH) / 2 });
       return;
     }
@@ -141,7 +142,7 @@ export function AtlasView({ maps, layout, activeMap, issues }: AtlasViewProps) {
       return pending ? focusView(kept, pending, box, stageW, stageH) : kept;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [box.w, box.h, layout.widthPx, layout.heightPx, focus?.seq]);
+  }, [box.w, box.h, layout.widthPx, layout.heightPx, focus?.seq, viewGen]);
 
   useEffect(() => {
     const el = host.current;

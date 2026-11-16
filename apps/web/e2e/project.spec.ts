@@ -558,3 +558,42 @@ test('a save that finishes after an open leaves the opened project its own path'
   expect(r).toEqual({ written: true, path: { dir: '', name: 'abierto.hsp' }, dirty: false });
   await expect(page.getByTestId('project-name')).toHaveText('abierto');
 });
+
+test('after opening a project the atlas is fitted, a maximized 3D stays, and the first check click still focuses', async ({ page }, testInfo) => {
+  const dir = testInfo.outputPath();
+  mkdirSync(dir, { recursive: true });
+  await page.goto('/');
+  await page.getByTestId('folder-input').setInputFiles(BRICKS);
+  await expect(page.getByTestId('material-name')).toHaveValue('bricks_wall_13');
+  await selectLayer(page, 'structure');
+  await expect(page.getByTestId('structure-type')).toHaveText('Piezas');
+  await settled(page);
+  const zoom = () => page.getByTestId('atlas-stage').evaluate((el) =>
+    Number(/scale\(([\d.e+-]+)\)/.exec((el as HTMLElement).style.transform)![1]));
+  const warnRow = async () => {
+    await page.evaluate(() => {
+      const st = window.__hs!.store.getState();
+      const p = st.material!.settings.period;
+      return st.updateSettings({ period: { ...p, x: 0.37, cutAllowedX: false }, periodUserSet: true });
+    });
+    const r = page.locator('[data-testid="check-row"][data-check-id="proportions"]');
+    await expect(r).toHaveAttribute('data-status', 'warn', { timeout: 20_000 });
+    await expect(page.getByTestId('checks')).not.toHaveAttribute('data-pending', 'true', { timeout: 20_000 });
+    return r;
+  };
+  await (await warnRow()).click();
+  await expect.poll(zoom).toBeGreaterThanOrEqual(4);
+  const path = await saveAs(page, join(dir, 'out'), 'foco');
+  await page.getByRole('button', { name: 'Maximizar vista 3D' }).click();
+  await page.getByTestId('project-open-input').setInputFiles(path);
+  await expect(page.getByTestId('project-name')).toHaveText('foco');
+  await settled(page);
+  // An open keeps a maximized 3D pane.
+  await expect(page.getByTestId('viewport-2d')).toBeHidden();
+  await page.getByRole('button', { name: 'Restaurar vistas' }).click();
+  // The opened project is fitted, not left at the old zoom.
+  await expect.poll(zoom).toBeLessThan(1.01);
+  // The first click after the open focuses again (the request number never goes back).
+  await (await warnRow()).click();
+  await expect.poll(zoom).toBeGreaterThanOrEqual(4);
+});

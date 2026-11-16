@@ -113,6 +113,8 @@ export interface ProjectState {
   /** A recomposition or request is newer than `checks`: they describe an older atlas until the next results land. */
   checksPending: boolean;
   viewFocus: ViewFocus | null;
+  /** Bumped when the atlas view must fit again: a replace import, an open and Nuevo. */
+  viewGen: number;
   /**
    * Where the project was last saved or what it was opened from. `dir` is '' for a project opened from a file: the
    * browser does not expose its folder, so Guardar asks for one.
@@ -222,6 +224,9 @@ let substrateGen = 0;
  */
 let maskReplacedGen = -1;
 let substrateReplacedGen = -1;
+
+/** Numbers focus requests for the whole session: never reset, so no request repeats an older number. */
+let focusSeq = 0;
 
 /** Bumped by every open and by newProject; only the latest open may swap its project in. */
 let openGen = 0;
@@ -558,13 +563,14 @@ export const useProject = create<ProjectState>()((set, get) => ({
   checksError: null,
   checksPending: false,
   viewFocus: null,
+  viewGen: 0,
   projectPath: null,
   dirty: false,
   opening: false,
   projectError: null,
 
   focusAtlas(u, v) {
-    set({ viewFocus: { u, v, seq: (get().viewFocus?.seq ?? 0) + 1 } });
+    set({ viewFocus: { u, v, seq: ++focusSeq } });
   },
 
   newProject() {
@@ -580,7 +586,7 @@ export const useProject = create<ProjectState>()((set, get) => ({
       doc: null, material: null, gpuMaterial: null, sources: [], importing: false, importError: null,
       structure: null, structureError: null, mask: null, substrate: null, wearError: null,
       atlas: null, composeError: null, checks: null, checksError: null, checksPending: false, viewFocus: null,
-      projectPath: null, projectError: null, opening: false, selectedLayer: 'wear',
+      viewGen: get().viewGen + 1, projectPath: null, projectError: null, opening: false, selectedLayer: 'wear',
     });
     destroyProject(old, oldBitmaps);
     // Evaluation reads of the preview atlas were submitted before their first await.
@@ -714,7 +720,7 @@ export const useProject = create<ProjectState>()((set, get) => ({
         doc, material: { settings, images }, gpuMaterial: { ...gpuMaterial, settings }, sources: c.materialFiles,
         importing: false, importError: null, structure, structureError, mask, substrate, wearError: null,
         composeError: null, checks: null, checksError: null, checksPending: false, viewFocus: null,
-        projectPath: { dir: '', name: file.name }, projectError: null, opening: false, selectedLayer: 'wear',
+        viewGen: get().viewGen + 1, projectPath: { dir: '', name: file.name }, projectError: null, opening: false, selectedLayer: 'wear',
       });
       // Live now: the cleanup below must never free them.
       gpuMaterial = null;
@@ -843,6 +849,7 @@ export const useProject = create<ProjectState>()((set, get) => ({
       set({
         sources: images, material, gpuMaterial, doc: createDefaultDoc(settings), importing: false,
         structure: null, structureError: null, mask: null, substrate: null, wearError: null, selectedLayer: 'wear',
+        viewGen: get().viewGen + 1,
       });
       oldStructure?.gpu.destroy();
       oldMask?.texture.destroy();
