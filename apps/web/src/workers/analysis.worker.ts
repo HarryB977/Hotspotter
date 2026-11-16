@@ -1,4 +1,4 @@
-import { analyzeStructure } from '@hotspotter/core';
+import { analyzeStructure, runChecks } from '@hotspotter/core';
 import type { WorkerApi, WorkerOp, WorkerReply, WorkerRequest } from './client';
 
 type Handlers = {
@@ -10,17 +10,22 @@ const handlers: Handlers = {
     const out = analyzeStructure(gray, tileSizeM, threshold === undefined ? undefined : { threshold });
     return { out, transfer: [out.pieceId.buffer, out.jointDistM.buffer] };
   },
+  checks(ctx) {
+    return { out: runChecks(ctx), transfer: [] };
+  },
 };
 
-/** Requests waiting to run, and the newest request id seen per op. */
+/** Requests waiting to run, and the newest opted-in (`supersede`) request id seen per op. */
 const queue: WorkerRequest[] = [];
 const newest = new Map<WorkerOp, number>();
 let draining = false;
+/** Test hook (dev only): set by a simulated crash; a crashed Worker runs nothing more. */
+let dead = false;
 
 function run(req: WorkerRequest): void {
   let reply: WorkerReply;
   let transfer: Transferable[] = [];
-  if (req.id < (newest.get(req.op) ?? 0)) {
+  if (req.supersede && req.id < (newest.get(req.op) ?? 0)) {
     reply = { id: req.id, ok: false, stale: true };
   } else {
     try {
@@ -37,7 +42,7 @@ function run(req: WorkerRequest): void {
 
 /** Runs one request per task, so messages that arrived during a long run are seen before the next one starts. */
 function drain(): void {
-  const req = queue.shift();
+  const req = dead ? undefined : queue.shift();
   if (!req) {
     draining = false;
     return;
@@ -48,8 +53,12 @@ function drain(): void {
 
 self.onmessage = (e: MessageEvent<WorkerRequest>) => {
   const req = e.data;
-  if (import.meta.env.DEV && req.crash) throw new Error(`simulated worker crash (${req.op})`);
-  newest.set(req.op, Math.max(req.id, newest.get(req.op) ?? 0));
+  if (dead) return;
+  if (import.meta.env.DEV && req.crash) {
+    dead = true;
+    throw new Error(`simulated worker crash (${req.op})`);
+  }
+  if (req.supersede) newest.set(req.op, Math.max(req.id, newest.get(req.op) ?? 0));
   queue.push(req);
   if (!draining) {
     draining = true;

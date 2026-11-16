@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import {
   CONTINUOUS, chooseMaps, classifyMapFile, composeInputsFromDoc, createDefaultDoc, downsample,
-  jointMeanRgb, meanRgb, proposeFamily, resolveMaterialName, runChecks, toGray, updateNodeParams, validateLayout,
+  jointMeanRgb, meanRgb, proposeFamily, resolveMaterialName, toGray, updateNodeParams, validateLayout,
 } from '@hotspotter/core';
 import type {
   CheckResult, DocNode, GrayImage, HotspotLayout, LayoutIssue, MapKind, MaterialSettings, MaterialType, NodeParams,
@@ -630,6 +630,7 @@ export const useProject = create<ProjectState>()((set, get) => ({
           'analyze',
           { gray: input.gray, tileSizeM: material.settings.tileSizeM, threshold: threshold ?? undefined },
           [input.gray.data.buffer],
+          { supersede: true },
         );
         // Superseded by a newer analysis before the Worker started it.
         if (!result) return;
@@ -1047,13 +1048,20 @@ async function evaluate(mine: number, opts?: EvaluationOptions): Promise<CheckRe
       normal: normal.data,
     };
     const output = doc.nodes.find((n): n is DocNode<'output'> => n.type === 'output');
-    const results = runChecks({
+    // Every map moves to the Worker; none is read here afterwards.
+    const transfer = new Set<ArrayBuffer>();
+    for (const a of [maps8.rectId, maps8.wearMask, maps8.macroHeight, maps8.heightM, maps8.detailSlope, maps8.normal]) {
+      transfer.add(a.buffer as ArrayBuffer);
+    }
+    const results = await workerCall('checks', {
       layout: inputs.layout, rotations: inputs.rotations, material: inputs.material, wear: inputs.wear,
       exportResolutionPx: opts?.exportResolutionPx ?? output?.params.resolutionPx ?? EVAL_RES,
       maps: maps8,
       substrateMeanRgb: joints && subMean ? subMean : undefined,
       jointMeanRgb: joints && subMean ? joints : undefined,
-    });
+    }, [...transfer], { supersede: !opts?.force });
+    // Skipped for a newer preview evaluation (never a forced one): that one stores its results.
+    if (!results) return null;
     if (mine === evalGen) {
       useProject.setState({ checks: { results, width, height }, checksError: null, checksPending: false });
     }
@@ -1062,7 +1070,10 @@ async function evaluate(mine: number, opts?: EvaluationOptions): Promise<CheckRe
     console.error('evaluation failed', e);
     if (mine === evalGen) {
       useProject.setState({
-        checksError: es.checks.failed(e instanceof Error ? e.message : String(e)), checksPending: false,
+        checksError: e instanceof WorkerCrashedError
+          ? e.message
+          : es.checks.failed(e instanceof Error ? e.message : String(e)),
+        checksPending: false,
       });
     }
     return null;

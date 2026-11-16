@@ -24,7 +24,7 @@ Falta para cerrar la v0.1 (planes v0.1-C/D):
 
 - **Vista 3D** de la vista principal (three.js).
 - **`.exe` portable** y **aviso de actualizaciones** (ver [08](08-distribution.md)).
-- Pasar el **análisis de estructura** (≈1.3 s) y **`runChecks`** (≈0.5–0.7 s) a un **Web Worker**: hoy bloquean el hilo principal.
+- [x] Pasar el **análisis de estructura** (≈1.3 s) y **`runChecks`** (≈0.5–0.7 s) a un **Web Worker** (hecho en la v0.1-C): ya no bloquean el hilo principal.
 - Aplazado de la revisión final de la v0.1-B (2026-11-13), hecho en la v0.1-C (decisión 72):
   - [x] La pasada de color compila una pipeline nueva por cada longitud de escorrentía y resolución (la clave incluye `lookback`). Pasar `LOOKBACK_ROWS` y `CHUNK_ROWS` por uniform para que arrastrar "Longitud" no dé tirones.
   - [x] Quitar las esperas fijas de 200 ms de `structure.spec.ts` (comprobaciones negativas) y esperar a una señal de análisis terminado.

@@ -265,4 +265,84 @@ test.describe('with bricks wall 13', () => {
     expect(await page.evaluate(() => window.__hs!.evalStats.composes)).toBe(before);
     expect(await page.evaluate(() => window.__hs!.evalStats.peak)).toBe(1);
   });
+
+  test('a forced evaluation does not block the main thread', async ({ page }) => {
+    await importBricks(page);
+    await expect(page.getByTestId('checks')).not.toHaveAttribute('data-pending', 'true', { timeout: 20_000 });
+    const r = await page.evaluate(async () => {
+      const store = window.__hs!.store;
+      // Wall-clock time between frame callbacks (a frame's own timestamp can predate a long task).
+      let last = 0;
+      let max = 0;
+      let running = true;
+      const tick = () => {
+        const now = performance.now();
+        max = Math.max(max, now - last);
+        last = now;
+        if (running) requestAnimationFrame(tick);
+      };
+      await new Promise<void>((r) => requestAnimationFrame(() => { last = performance.now(); r(); }));
+      requestAnimationFrame(tick);
+      const res = await store.getState().runEvaluation({ force: true });
+      // One more frame, so a long task right before the evaluation settled is measured too.
+      await new Promise<void>((r) => requestAnimationFrame(() => r()));
+      running = false;
+      return { maxGap: max, n: res?.length };
+    });
+    expect(r.n).toBe(6);
+    expect(r.maxGap).toBeLessThan(120);
+    expect(await page.evaluate(() => window.__hs!.evalStats.peak)).toBe(1);
+  });
+
+  test('a forced evaluation is never skipped by a preview evaluation queued after it', async ({ page }) => {
+    await importBricks(page);
+    const r = await page.evaluate(async () => {
+      const store = window.__hs!.store;
+      const forced = store.getState().runEvaluation({ force: true });
+      // Queued while the forced one waits or runs: it supersedes the store's results, not the export's own.
+      await new Promise((ok) => setTimeout(ok, 0));
+      const preview = store.getState().runEvaluation();
+      const [a, b] = await Promise.all([forced, preview]);
+      return { a: a?.length ?? null, b: b?.length ?? null };
+    });
+    expect(r).toEqual({ a: 6, b: 6 });
+    expect(await page.evaluate(() => window.__hs!.evalStats.peak)).toBe(1);
+  });
+
+  test('a worker crash during the checks shows the Spanish error and the next evaluation works', async ({ page }) => {
+    await importBricks(page);
+    await expect(page.getByTestId('checks')).not.toHaveAttribute('data-pending', 'true', { timeout: 20_000 });
+    const crashed = 'El análisis en segundo plano falló; vuelve a intentarlo.';
+    // Every call pending when the Worker dies fails with the crash.
+    const direct = await page.evaluate(async () => {
+      const hs = window.__hs!;
+      hs.failNextWorkerCall('checks');
+      const settled = await Promise.allSettled([
+        hs.workerCall('checks', {} as never, [], { supersede: true }),
+        hs.workerCall('checks', {} as never, [], { supersede: true }),
+      ]);
+      return settled.map((s) => (s.status === 'rejected' ? (s.reason as Error).message : 'fulfilled'));
+    });
+    expect(direct).toEqual([crashed, crashed]);
+
+    const r = await page.evaluate(async () => {
+      const hs = window.__hs!;
+      hs.failNextWorkerCall('checks');
+      const res = await hs.store.getState().runEvaluation({ force: true });
+      const s = hs.store.getState();
+      return { res, pending: s.checksPending, error: s.checksError };
+    });
+    expect(r).toEqual({ res: null, pending: false, error: crashed });
+    await expect(page.getByTestId('checks-error')).toHaveText(crashed);
+    await expect(page.getByTestId('checks-pending')).toHaveCount(0);
+
+    const after = await page.evaluate(async () => {
+      const store = window.__hs!.store;
+      const res = await store.getState().runEvaluation();
+      const s = store.getState();
+      return { n: res?.length, pending: s.checksPending, error: s.checksError };
+    });
+    expect(after).toEqual({ n: 6, pending: false, error: null });
+    await expect(page.getByTestId('checks-error')).toHaveCount(0);
+  });
 });

@@ -1,4 +1,4 @@
-import type { GrayImage, StructureResult } from '@hotspotter/core';
+import type { CheckContext, CheckResult, GrayImage, StructureResult } from '@hotspotter/core';
 import { es } from '../i18n/es';
 
 /** Operations the shared Worker runs: plain typed arrays in and out, never GPU resources. */
@@ -6,6 +6,11 @@ export interface WorkerApi {
   analyze: {
     in: { gray: GrayImage; tileSizeM: [number, number]; threshold?: number };
     out: StructureResult;
+  };
+  /** The maps' typed arrays are transferred by the caller. */
+  checks: {
+    in: CheckContext;
+    out: CheckResult[];
   };
 }
 
@@ -17,6 +22,8 @@ export type WorkerRequest = {
     id: number;
     op: K;
     input: WorkerApi[K]['in'];
+    /** Opted in to being skipped while queued when a newer opted-in request of the same op arrives. */
+    supersede?: boolean;
     /** Test hook (dev only): the Worker throws uncaught on receipt, as if it had crashed. */
     crash?: boolean;
   };
@@ -25,7 +32,7 @@ export type WorkerRequest = {
 export type WorkerReply =
   | { id: number; ok: true; out: WorkerApi[WorkerOp]['out'] }
   | { id: number; ok: false; message: string }
-  /** Skipped: a newer request of the same op was queued behind it. */
+  /** Skipped: a newer opted-in request of the same op was queued behind it. */
   | { id: number; ok: false; stale: true };
 
 /** The Worker died or could not read a message; every pending call fails with this and the next call starts a new one. */
@@ -81,20 +88,30 @@ function getWorker(): Worker {
   return w;
 }
 
+export interface WorkerCallOptions {
+  /**
+   * Skip this call (resolve null) if a newer call of the same op with this flag arrives before the Worker starts it.
+   * Calls without it always run, and never skip anything.
+   */
+  supersede?: boolean;
+}
+
 /**
  * Runs `op` on the shared Worker (created on first use). `transfer` lists buffers of `input` the caller no
- * longer needs; they move instead of being copied. Resolves null when a newer call of the same op superseded this
- * one before the Worker started it.
+ * longer needs; they move instead of being copied. Resolves null only for a `supersede` call that a newer one
+ * replaced before the Worker started it.
  */
 export function workerCall<K extends WorkerOp>(
-  op: K, input: WorkerApi[K]['in'], transfer: Transferable[] = [],
+  op: K, input: WorkerApi[K]['in'], transfer: Transferable[] = [], opts: WorkerCallOptions = {},
 ): Promise<WorkerApi[K]['out'] | null> {
   return new Promise<WorkerApi[K]['out'] | null>((resolve, reject) => {
     const w = getWorker();
     const id = ++nextId;
     const crashNow = import.meta.env.DEV && crashNext.delete(op);
     pending.set(id, { resolve: resolve as (out: never) => void, reject });
-    const req = { id, op, input, crash: crashNow || undefined } as WorkerRequest;
+    const req = {
+      id, op, input, supersede: opts.supersede || undefined, crash: crashNow || undefined,
+    } as WorkerRequest;
     try {
       w.postMessage(req, transfer);
     } catch (e) {

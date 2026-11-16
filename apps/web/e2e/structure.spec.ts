@@ -324,6 +324,18 @@ test('a worker crash during analysis shows the Spanish error once and the next a
     if (m.type() === 'error' && m.text().startsWith('structure analysis failed')) failures.push(m.text());
   });
   const crashed = 'El análisis en segundo plano falló; vuelve a intentarlo.';
+  // Every call pending when the Worker dies fails with the crash.
+  const direct = await page.evaluate(async () => {
+    const hs = window.__hs!;
+    const gray = () => ({ width: 64, height: 64, data: new Float32Array(64 * 64) });
+    hs.failNextWorkerCall('analyze');
+    const settled = await Promise.allSettled([
+      hs.workerCall('analyze', { gray: gray(), tileSizeM: [1, 1] }, [], { supersede: true }),
+      hs.workerCall('analyze', { gray: gray(), tileSizeM: [1, 1] }, [], { supersede: true }),
+    ]);
+    return settled.map((s) => (s.status === 'rejected' ? (s.reason as Error).message : 'fulfilled'));
+  });
+  expect(direct).toEqual([crashed, crashed]);
   const before = await page.evaluate(async () => {
     const hs = window.__hs!;
     const prev = hs.store.getState().structure;
@@ -346,7 +358,7 @@ test('a worker crash during analysis shows the Spanish error once and the next a
   await expect(page.getByTestId('structure-error')).toHaveCount(0);
 });
 
-test('the Worker skips a queued analysis that a newer one superseded', async ({ page }) => {
+test('the Worker skips a queued opted-in analysis that a newer one superseded, never one that did not opt in', async ({ page }) => {
   await page.goto('/');
   await page.waitForFunction(() => !!window.__hs);
   const r = await page.evaluate(async () => {
@@ -356,16 +368,16 @@ test('the Worker skips a queued analysis that a newer one superseded', async ({ 
       for (let i = 0; i < data.length; i++) data[i] = ((i * 2654435761) >>> 0) / 2 ** 32;
       return { width: 512, height: 512, data };
     };
-    const calls = [0, 1, 2].map(() => {
+    const calls = [true, true, false, true].map((supersede) => {
       const g = gray();
-      return hs.workerCall('analyze', { gray: g, tileSizeM: [1, 1] }, [g.data.buffer]);
+      return hs.workerCall('analyze', { gray: g, tileSizeM: [1, 1] }, [g.data.buffer], { supersede });
     });
     const out = await Promise.all(calls);
     return out.map((o) => (o === null ? null : o.width));
   });
-  // The first may already be running; the second is always queued behind the third's arrival.
-  expect(r[1]).toBeNull();
-  expect(r[2]).toBe(512);
+  // The first may already be running; the second is always queued behind the last's arrival. The third did not opt
+  // in, so nothing skips it.
+  expect(r.slice(1)).toEqual([null, 512, 512]);
 });
 
 test('the export waits for an analysis in flight and uses its structure (R43)', async ({ page }, testInfo) => {
