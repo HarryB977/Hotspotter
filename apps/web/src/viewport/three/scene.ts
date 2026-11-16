@@ -217,10 +217,22 @@ export class View3DScene {
     this.requestRender();
   }
 
+  /**
+   * Uploads a set's textures to the GPU one per task, so no single task uploads (and mipmaps) them all; resolves false
+   * if `isCurrent()` turns false or the scene is disposed first.
+   */
+  async upload(set: AtlasTextureSet, isCurrent: () => boolean): Promise<boolean> {
+    for (const t of textureList(set)) {
+      await new Promise((ok) => setTimeout(ok, 0));
+      if (this.disposed || !isCurrent()) return false;
+      this.renderer.initTexture(t);
+    }
+    return true;
+  }
+
   /** Shows a texture set (null: none); the caller disposes the previous one after this. */
   setTextures(set: AtlasTextureSet | null): void {
     this.textures = set;
-    if (set) for (const t of textureList(set)) this.renderer.initTexture(t);
     const m = this.lit;
     m.map = set?.baseColor ?? null;
     m.normalMap = set?.normal ?? null;

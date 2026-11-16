@@ -123,14 +123,15 @@ function View3D() {
     if (!visible || !gpu || current.current?.atlas === atlas) return;
     const mine = ++loadGen.current;
     const isCurrent = () => mine === loadGen.current && visibleRef.current && useProject.getState().atlas === atlas;
+    const scene = sceneRef.current;
     loadAtlasTextures(gpu, atlas.maps, isCurrent).then(
-      (set) => {
+      async (set) => {
         if (!set) return;
-        if (!isCurrent()) {
+        setPointFilter(set, useProject.getState().view3d.pointFilter);
+        if (!(await scene.upload(set, isCurrent)) || !isCurrent()) {
           disposeAtlasTextures(set);
           return;
         }
-        setPointFilter(set, useProject.getState().view3d.pointFilter);
         if (current.current) retired.current.push(current.current.set);
         current.current = { set, atlas };
         setShown(atlas);

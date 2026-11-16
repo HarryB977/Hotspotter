@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { rectIdImage } from '@hotspotter/core';
+import { rectIdRgb } from '@hotspotter/core';
 import { heightToRgba8, readbackR32, readbackRgba8 } from '@hotspotter/engine';
 import type { AtlasMaps, GpuContext } from '@hotspotter/engine';
 
@@ -43,22 +43,56 @@ function flipped(img: Image8): Uint8Array {
 }
 
 /**
- * Packs the red channel of each source into the channels of one flipped RGBA8 image of `w` × `h` (alpha 255). A
- * source of another size (the 1 × 1 wear mask without wear) is sampled at the nearest texel.
+ * The red channel of `img` as `w` × `h` bytes, rows flipped like `flipped`. A source of another size (the 1 × 1 wear
+ * mask without wear) is sampled at the nearest texel.
  */
-function packed(w: number, h: number, sources: (Image8 | null)[]): Uint8Array {
-  const out = new Uint8Array(w * h * 4);
+function redFlipped(img: Image8, w: number, h: number): Uint8Array {
+  const out = new Uint8Array(w * h);
+  const { width: sw, height: sh, data } = img;
+  const same = sw === w && sh === h;
   for (let y = 0; y < h; y++) {
+    const sy = same ? h - 1 - y : Math.min(sh - 1, Math.floor(((h - 1 - y + 0.5) * sh) / h));
+    const src = sy * sw;
+    const dst = y * w;
     for (let x = 0; x < w; x++) {
-      const o = (y * w + x) * 4;
-      out[o + 3] = 255;
-      sources.forEach((s, c) => {
-        if (!s) return;
-        const sx = Math.min(s.width - 1, Math.floor(((x + 0.5) * s.width) / w));
-        const sy = Math.min(s.height - 1, Math.floor(((h - 1 - y + 0.5) * s.height) / h));
-        out[o + c] = s.data[(sy * s.width + sx) * 4];
-      });
+      const sx = same ? x : Math.min(sw - 1, Math.floor(((x + 0.5) * sw) / w));
+      out[dst + x] = data[(src + sx) * 4];
     }
+  }
+  return out;
+}
+
+/** A row-major id map coloured as the 2D view and _RectID (`rectIdRgb`), rows flipped like `flipped`. */
+function idsFlipped(ids: Uint32Array, w: number, h: number): Uint8Array {
+  const out = new Uint8Array(w * h * 4);
+  // Neighbouring pixels nearly always share an id: remember the last colour instead of hashing every pixel.
+  let last = -1;
+  let c: [number, number, number] = [0, 0, 0];
+  for (let y = 0; y < h; y++) {
+    const src = (h - 1 - y) * w;
+    for (let x = 0, o = y * w * 4; x < w; x++, o += 4) {
+      const id = ids[src + x];
+      if (id !== last) {
+        last = id;
+        c = rectIdRgb(id);
+      }
+      out[o] = c[0];
+      out[o + 1] = c[1];
+      out[o + 2] = c[2];
+      out[o + 3] = 255;
+    }
+  }
+  return out;
+}
+
+/** One RGBA8 image from up to three single-channel planes (missing ones 0), alpha 255. */
+function packed(n: number, r: Uint8Array, g: Uint8Array, b: Uint8Array | null): Uint8Array {
+  const out = new Uint8Array(n * 4);
+  for (let i = 0, o = 0; i < n; i++, o += 4) {
+    out[o] = r[i];
+    out[o + 1] = g[i];
+    out[o + 2] = b ? b[i] : 0;
+    out[o + 3] = 255;
   }
   return out;
 }
@@ -131,37 +165,38 @@ export function loadAtlasTextures(
       atlasTextureStats.reads++;
       return read();
     };
-    const rgba = (t: GPUTexture) => start(() => readbackRgba8(gpu, t));
-    const ids = async (t: GPUTexture): Promise<Image8> => {
+    const { width: w, height: h } = maps.baseColor;
+    // Each map is converted as soon as it lands, so the CPU work is spread between the reads (the main thread keeps
+    // drawing frames) and only the converted bytes are kept.
+    const rgba = async (t: GPUTexture) => flipped(await start(() => readbackRgba8(gpu, t)));
+    const red = async (t: GPUTexture) => redFlipped(await start(() => readbackRgba8(gpu, t)), w, h);
+    const ids = async (t: GPUTexture) => {
       const r = await start(() => readbackR32(gpu, t));
-      return rectIdImage(r.data as Uint32Array, r.width, r.height);
+      return idsFlipped(r.data as Uint32Array, r.width, r.height);
     };
     try {
       const baseColor = await rgba(maps.baseColor);
       const normal = await rgba(maps.normal);
-      const roughness = await rgba(maps.roughness);
-      const metallic = await rgba(maps.metallic);
-      const ao = await rgba(maps.ao);
+      const orm = packed(w * h, await red(maps.ao), await red(maps.roughness), await red(maps.metallic));
       const height = await start(async () => {
         const grey = await heightToRgba8(gpu, maps);
         try {
-          return await readbackRgba8(gpu, grey);
+          return redFlipped(await readbackRgba8(gpu, grey), w, h);
         } finally {
           grey.destroy();
         }
       });
-      const wearMask = await rgba(maps.wearMask);
+      const heightWear = packed(w * h, height, await red(maps.wearMask), null);
       const rectId = await ids(maps.rectId);
       const pieceId = await ids(maps.pieceId);
       if (!isCurrent()) return null;
-      const { width: w, height: h } = baseColor;
       return {
-        baseColor: atlasTexture(baseColor, true),
-        normal: atlasTexture(normal, false),
-        orm: texture(packed(w, h, [ao, roughness, metallic]), w, h, false),
-        heightWear: texture(packed(w, h, [height, wearMask]), w, h, false),
-        rectId: atlasTexture(rectId, false),
-        pieceId: atlasTexture(pieceId, false),
+        baseColor: texture(baseColor, w, h, true),
+        normal: texture(normal, w, h, false),
+        orm: texture(orm, w, h, false),
+        heightWear: texture(heightWear, w, h, false),
+        rectId: texture(rectId, w, h, false),
+        pieceId: texture(pieceId, w, h, false),
         gen: ++atlasTextureStats.gen,
       };
     } catch (e) {
