@@ -64,6 +64,11 @@ export function ProjectName() {
 const ITEM = 'flex w-full items-center justify-between gap-4 px-2 py-1 text-left text-zinc-200 hover:bg-zinc-800 disabled:pointer-events-none disabled:opacity-50';
 
 /** "Archivo" menu (Nuevo, Abrir…, Guardar, Guardar como…), its shortcuts and its dialogs. */
+/** True while a modal other than FileMenu's own dialogs is open. */
+function foreignDialogOpen(): boolean {
+  return document.querySelector('[role="dialog"]:not([data-testid="save-as-dialog"]):not([data-testid="unsaved-dialog"])') !== null;
+}
+
 export function FileMenu() {
   const hasProject = useProject((s) => s.doc !== null && s.material !== null);
   const dirty = useProject((s) => s.dirty);
@@ -134,6 +139,11 @@ export function FileMenu() {
       if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
       const key = e.key.toLowerCase();
       const a = actions.current;
+      if ((key === 's' || key === 'n' || key === 'o') && foreignDialogOpen()) {
+        // Another modal (Exportar, even mid-export) owns the keyboard; keep the browser's own save/open/new away too.
+        e.preventDefault();
+        return;
+      }
       if (key === 's' && !e.shiftKey) {
         e.preventDefault();
         // In Guardar como, Ctrl+S is its Guardar button; the unsaved-changes dialog has its own buttons.

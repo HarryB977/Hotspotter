@@ -32,6 +32,7 @@ export const es = {
     noProject: 'No hay ningún proyecto que guardar.',
     noTarget: 'Elige una carpeta y un nombre para guardar el proyecto.',
     damaged: 'El proyecto está dañado',
+    fileTooBig: 'El archivo es demasiado grande para ser un proyecto de Hotspotter (más de 4 GB)',
     noMaterial: 'El proyecto está dañado: no tiene material',
     substrateNoMaps: 'El proyecto está dañado: el segundo material no tiene mapas',
     missingFile: (path: string) => `Falta el archivo ${path} dentro del proyecto`,

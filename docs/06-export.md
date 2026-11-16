@@ -94,7 +94,7 @@ Las imágenes entran sin recomprimir y bajo un nombre único (si dos archivos ti
 
 **Límites**
 
-- Leer: hasta 1 GiB descomprimido en total (`MAX_UNPACKED_TOTAL`), con tope de ratio de compresión y de entradas, para no descomprimir una bomba.
+- Leer: hasta 1 GiB descomprimido en total (`MAX_UNPACKED_TOTAL`), con tope de ratio de compresión (1032:1, el máximo de deflate) y de tamaño del archivo (4 GiB, el máximo de un zip sin zip64). No hay otro tope de entradas que el contador uint16 del formato: `0xffff` se trata como zip64 y se rechaza. Así no se descomprime una bomba.
 - Guardar: máximo 512 MiB (`MAX_PROJECT_UPLOAD_BYTES`, el límite de subida del servidor; una constante en `packages/core` que usan cliente y servidor). El cliente lo comprueba antes de leer las imágenes y otra vez con el archivo ya empaquetado; un 413 del servidor da el mismo mensaje (R44).
 
 **Errores** (siempre un único mensaje en español, y el proyecto actual queda intacto, nunca a medio cargar):

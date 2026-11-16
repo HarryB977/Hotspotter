@@ -140,10 +140,12 @@ describe('buildShape', () => {
     // Floor, ceiling, 2 walls, 2 skirting fronts, 2 skirting tops.
     expect(faces).toHaveLength(8);
     const sizes = faces.map((f) => [f.quad.useOn, +f.quad.widthM.toFixed(6), +f.quad.heightM.toFixed(6)]);
-    expect(sizes).toEqual(expect.arrayContaining([
+    const key = (a: (string | number)[]) => a.join('|');
+    const expected = [
       ['floors', 2, 6], ['ceilings', 2, 6], ['walls', 6, 3], ['walls', 6, 3],
       ['walls', 6, 0.15], ['walls', 6, 0.15], ['floors', 0.02, 6], ['floors', 0.02, 6],
-    ]));
+    ];
+    expect(sizes.sort((a, b) => key(a).localeCompare(key(b)))).toEqual(expected.sort((a, b) => key(a).localeCompare(key(b))));
     // Open ends: no face looks along the corridor's length.
     expect(faces.every((f) => Math.abs(f.normal[2]) < 0.5)).toBe(true);
   });

@@ -521,6 +521,24 @@ test('shortcuts: Ctrl+O picks a file, Ctrl+Shift+S opens Guardar como, Ctrl+S sa
   )).toBe(0.55);
 });
 
+test('file shortcuts do nothing while the Export dialog is open', async ({ page }) => {
+  await importBricks(page);
+  let choosers = 0;
+  page.on('filechooser', () => { choosers++; });
+  await page.getByTestId('export-open').click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toBeVisible();
+  // Focus on the dialog's title, not on a text field, so the shortcut is not skipped for typing.
+  await dialog.getByRole('heading').click();
+  await page.keyboard.press('Control+o');
+  await page.keyboard.press('Control+Shift+S');
+  await page.keyboard.press('Control+n');
+  await page.waitForTimeout(500);
+  expect(choosers).toBe(0);
+  await expect(page.getByTestId('save-as-dialog')).toHaveCount(0);
+  await expect(page.getByTestId('unsaved-dialog')).toHaveCount(0);
+});
+
 test('a save that finishes after an open leaves the opened project its own path', async ({ page }, testInfo) => {
   const dir = testInfo.outputPath();
   mkdirSync(dir, { recursive: true });

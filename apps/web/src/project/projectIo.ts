@@ -89,7 +89,11 @@ function fileAt(resources: Map<string, Uint8Array>, path: string, prefix: string
 }
 
 /** Reads a `.hsp` file; the document is migrated by parseDoc. Throws HspError (Spanish) on a bad file. */
+/** A zip without zip64 cannot hold more than 4 GiB; the codec refuses zip64. */
+const MAX_HSP_BYTES = 0xffffffff;
+
 export async function unpackHsp(file: File): Promise<ProjectContents> {
+  if (file.size > MAX_HSP_BYTES) throw new HspError(es.project.fileTooBig);
   const { manifest, doc, resources } = await unpackProject(new Uint8Array(await file.arrayBuffer()));
   if (!manifest.material) throw new HspError(es.project.noMaterial);
   const node = doc.nodes.find((n) => n.type === 'material');

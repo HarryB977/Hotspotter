@@ -48,6 +48,17 @@ describe('packHsp', () => {
   });
 });
 
+describe('unpackHsp', () => {
+  it('refuses a file over 4 GiB without reading it (a zip without zip64 cannot be larger)', async () => {
+    const read = vi.fn(() => Promise.reject(new Error('must not be read')));
+    const huge = { name: 'p.hsp', size: 0xffffffff + 1, arrayBuffer: read } as unknown as File;
+    const p = unpackHsp(huge);
+    await expect(p).rejects.toBeInstanceOf(HspError);
+    await expect(p).rejects.toThrow('demasiado grande');
+    expect(read).not.toHaveBeenCalled();
+  });
+});
+
 describe('putFile', () => {
   it('turns the server 413 into a Spanish message', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('{"error":"Payload Too Large"}', { status: 413 })));

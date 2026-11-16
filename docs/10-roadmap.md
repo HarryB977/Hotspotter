@@ -27,22 +27,31 @@ Hecho en la v0.1-C:
 - [x] **Vista 3D** de la vista principal (three.js): formas de prueba, encaje de hotspot con el criterio de ProBuilder, vistas iluminada, por mapa y de rectángulos (decisiones 79 y 80).
 - [x] **Pila de capas** e **inspector** que sigue a la pila; reparto Atlas 2D | Vista 3D con divisor y maximizar (decisiones 76–78).
 - [x] **Guardar y abrir proyectos** `.hsp` con la máscara B/N y el segundo material (decisiones 73–75 y 82).
-- [x] Análisis y comprobaciones en un Worker (decisión 83) y el aplazado de rendimiento de la v0.1-B (decisión 72).
+- [x] Análisis de estructura (≈1.3 s) y `runChecks` (≈0.5–0.7 s) en un **Web Worker** (decisión 83): ya no bloquean el hilo principal.
+- [x] Aplazado de la revisión final de la v0.1-B (2026-11-13), hecho (decisión 72):
+  - [x] La pasada de color compila una pipeline nueva por cada longitud de escorrentía y resolución (la clave incluía `lookback`). `LOOKBACK_ROWS` y `CHUNK_ROWS` van ahora por uniform.
+  - [x] Quitadas las esperas fijas de 200 ms de `structure.spec.ts` (comprobaciones negativas); se espera a una señal de análisis terminado.
+  - [x] `readbackRgba16f` a 2048 devuelve la pendiente por píxel en lugar de los cuatro canales.
 
 Falta para cerrar la v0.1 (plan v0.1-D):
 
 - **`.exe` portable** y **aviso de actualizaciones** (ver [08](08-distribution.md)). El servidor importa todo `packages/core`: el empaquetado del `.exe` debe incluirlo (o importar solo el subpath que usa).
-- [x] Pasar el **análisis de estructura** (≈1.3 s) y **`runChecks`** (≈0.5–0.7 s) a un **Web Worker** (hecho en la v0.1-C): ya no bloquean el hilo principal.
-- Aplazado de la revisión final de la v0.1-B (2026-11-13), hecho en la v0.1-C (decisión 72):
-  - [x] La pasada de color compila una pipeline nueva por cada longitud de escorrentía y resolución (la clave incluye `lookback`). Pasar `LOOKBACK_ROWS` y `CHUNK_ROWS` por uniform para que arrastrar "Longitud" no dé tirones.
-  - [x] Quitar las esperas fijas de 200 ms de `structure.spec.ts` (comprobaciones negativas) y esperar a una señal de análisis terminado.
-  - [x] `readbackRgba16f` a 2048 usa 32 MiB de staging y una copia Float32 de 64 MiB. Devolver la pendiente por píxel en lugar de los cuatro canales.
 - Islas: marcar también las motas sueltas dentro de la franja `wEff` (decisión 51).
 - Comprobar en Anvil si `Can mirror` es un solo flag para los dos ejes (decisión 54).
 - Vista 3D, por confirmar con el usuario: (1) en el Pasillo de 6 × 3 m las paredes estiran un rectángulo unas 3.75 veces, porque el preset de paredes no tiene rectángulo ni franja para paredes de altura de planta (es lo que haría ProBuilder, pero roza la regla de proporciones); (2) la decisión 80 usa `RepeatWrapping` en todas las caras en lugar de Clamp.
 - Vista 3D, menores: los zócalos del Pasillo tienen sus remates estirados porque no se permite girar (decisión 79); el interruptor "Píxeles" vuelve a subir las seis texturas de golpe; la vista 3D no avisa si el contexto WebGL nunca se recupera.
-- El `inset` se exporta en px de referencia (`hotspot.json`), pero ProBuilder lo divide por el tamaño real de la textura: comprobarlo contra la resolución de exportación.
+- `inset`: no es un fallo. Se escribe en px de la textura exportada, porque la exportación resuelve el layout a la resolución de exportación (`encode.ts` → `document.ts`), y hoy vale siempre 0.
 - Que el usuario valide los sets del banco frente a `samples/examples/` (criterio de [11](11-test-bench.md)).
+
+Pendiente tras la revisión final de la v0.1-C:
+
+- Si el Worker se cae durante Abrir, el proyecto se abre sin estructura y nada bloquea la exportación hasta que el usuario vuelve a analizar.
+- Las ediciones hechas mientras se abre un proyecto se pierden sin avisar.
+- Un Worker que no responde nunca dejaría colgada la exportación.
+- Accesibilidad del divisor (Home/End, `aria-controls`) y `focus-visible` en los botones de maximizar.
+- Cosmética del interruptor de la pila de capas (franja muerta, hover).
+- Faltan tests: `localStorage` que lanza, `pointercancel`, los límites 20/80, el tope total de 1 GiB y las dimensiones completas de la columna y las escaleras.
+- Validar en el pipeline la pasada de pendiente, y las esperas por inactividad de `structure.spec.ts`.
 
 ## Para la v0.2 (pedido por el usuario, 2026-11-12)
 

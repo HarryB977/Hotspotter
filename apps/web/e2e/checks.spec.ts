@@ -268,8 +268,7 @@ test.describe('with bricks wall 13', () => {
       return { n: res?.length, bytes: window.__hs!.evalStats.detailBytes };
     });
     expect(r.n).toBe(6);
-    expect(r.bytes).toBeGreaterThan(0);
-    expect(r.bytes).toBeLessThanOrEqual(2048 * 2048 * 4);
+    expect(r.bytes).toBe(2048 * 2048 * 4);
   });
 
   test('evaluations never overlap, and reusing a 2048 px preview gives the same results as composing', async ({ page }) => {

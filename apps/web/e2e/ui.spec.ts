@@ -203,9 +203,12 @@ test.describe('app shell at a laptop-sized window', () => {
     await expect.poll(zoom).toBeGreaterThan(2);
     const k = await zoom();
     const f = page.getByLabel('Intensidad', { exact: true });
+    await page.evaluate(() => { (window as unknown as { __atlas0: unknown }).__atlas0 = window.__hs!.store.getState().atlas; });
     await f.fill('0.7');
     await f.blur();
-    await page.waitForTimeout(800);
+    // The parameter change recomposes the atlas: wait for its new identity, then check the zoom.
+    await expect.poll(() => page.evaluate(() =>
+      window.__hs!.store.getState().atlas !== (window as unknown as { __atlas0: unknown }).__atlas0)).toBe(true);
     expect(await zoom()).toBeCloseTo(k, 5);
     await page.getByTestId('folder-input').setInputFiles(BRICKS);
     await page.getByTestId('import-replace').click();
