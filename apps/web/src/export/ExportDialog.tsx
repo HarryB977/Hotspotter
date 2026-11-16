@@ -4,13 +4,12 @@ import type { CheckResult, DocNode, ExportPreflight, ExportPreset, ProjectDoc } 
 import { es } from '../i18n/es';
 import { useProject } from '../state/store';
 import { Button } from '../components/ui/button';
-import { Input } from '../components/ui/input';
+import { FolderField, loadDir, saveDir } from '../components/FolderField';
 import { Dialog, DialogContent, DialogTitle, DialogTrigger } from '../components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
 import { CheckRow } from '../panels/ChecksPanel';
 import { ExportUploadError, exportProject } from './encode';
 
-const DIR_KEY = 'hotspotter.exportDir';
 const RESOLUTIONS = [1024, 2048, 4096, 8192];
 
 function outputNode(doc: ProjectDoc | null): DocNode<'output'> | undefined {
@@ -25,22 +24,6 @@ function tooBigMessage(res: number, p: Extract<ExportPreflight, { ok: false }>):
   return p.reason === 'texture'
     ? es.export.tooBigTexture(res, p.outW, p.outH, p.limit)
     : es.export.tooBigBuffer(res, Math.ceil(p.bufferBytes / 2 ** 20), Math.floor(p.limit / 2 ** 20));
-}
-
-function loadDir(): string {
-  try {
-    return localStorage.getItem(DIR_KEY) ?? '';
-  } catch {
-    return '';
-  }
-}
-
-function saveDir(dir: string): void {
-  try {
-    localStorage.setItem(DIR_KEY, dir);
-  } catch {
-    // Storage unavailable: the folder is simply not remembered.
-  }
 }
 
 export function ExportDialog() {
@@ -136,15 +119,7 @@ export function ExportDialog() {
       <DialogContent aria-describedby={undefined}>
         <DialogTitle className="mb-2 text-sm font-semibold">{es.export.title}</DialogTitle>
         <div className="flex flex-col gap-2">
-          <label className="flex flex-col gap-1 text-xs text-zinc-400">
-            {es.export.folder}
-            <Input
-              data-testid="export-dir"
-              value={dir}
-              placeholder={es.export.folderPlaceholder}
-              onChange={(e) => setDir(e.target.value)}
-            />
-          </label>
+          <FolderField label={es.export.folder} value={dir} onChange={setDir} testId="export-dir" />
           <div className="flex gap-2">
             <div className="flex flex-1 flex-col gap-1 text-xs text-zinc-400">
               {es.export.preset}

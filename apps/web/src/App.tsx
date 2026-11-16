@@ -9,6 +9,7 @@ import { LayoutPanel } from './panels/LayoutPanel';
 import { Inspector } from './panels/Inspector';
 import { AtlasView } from './viewport/AtlasView';
 import { ExportDialog } from './export/ExportDialog';
+import { FileMenu, ProjectName } from './project/FileMenu';
 import type { ActiveMap } from './state/store';
 
 const MAP_TABS: ActiveMap[] = [
@@ -61,9 +62,10 @@ export function App() {
   return (
     <TooltipProvider delayDuration={400}>
       <div className="grid h-full grid-cols-[240px_minmax(0,1fr)_280px] grid-rows-[30px_minmax(0,1fr)_28px] overflow-hidden">
-        <header className="col-span-3 flex items-center gap-3 border-b border-zinc-800 bg-zinc-900 px-2">
+        <header className="col-span-3 flex min-w-0 items-center gap-3 border-b border-zinc-800 bg-zinc-900 px-2">
           <span className="font-semibold text-zinc-100">{es.appName}</span>
-          <span className="text-zinc-500">{es.topBar.project}</span>
+          <FileMenu />
+          <ProjectName />
           <span className="ml-auto"><ExportDialog /></span>
         </header>
         <aside className="min-h-0 overflow-y-auto border-r border-zinc-800 bg-zinc-900" data-testid="left-column">

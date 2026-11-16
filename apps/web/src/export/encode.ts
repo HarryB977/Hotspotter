@@ -5,6 +5,7 @@ import type { CheckResult, ExportPreset, MapPixels } from '@hotspotter/core';
 import { composeAtlas, heightToRgba8, readbackR32, readbackRgba8 } from '@hotspotter/engine';
 import type { AtlasMaps } from '@hotspotter/engine';
 import { composeInputFor, useProject, whenAnalysisIdle } from '../state/store';
+import { putFile as upload } from '../project/projectIo';
 
 export async function encodePng(p: MapPixels): Promise<Blob> {
   return new Blob([await encodePngRgba8(p)], { type: 'image/png' });
@@ -21,19 +22,7 @@ export interface ExportOptions {
 }
 
 /** Thrown with the server's message when an upload is rejected. */
-export class ExportUploadError extends Error {}
-
-async function upload(dir: string, name: string, body: Blob | string): Promise<string> {
-  const q = new URLSearchParams({ dir, name });
-  const res = await fetch(`/api/export/file?${q}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/octet-stream', 'X-Hotspotter': '1' },
-    body: typeof body === 'string' ? new TextEncoder().encode(body) : body,
-  });
-  const json = (await res.json().catch(() => ({}))) as { path?: string; error?: string };
-  if (!res.ok || !json.path) throw new ExportUploadError(json.error ?? `HTTP ${res.status}`);
-  return json.path;
-}
+export { UploadError as ExportUploadError } from '../project/projectIo';
 
 /**
  * Composes a fresh atlas at `resolutionPx` from the same inputs as the preview (composeInputFor: wear, dirt, mask,
