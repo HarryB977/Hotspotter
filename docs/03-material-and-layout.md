@@ -58,6 +58,16 @@ Un layout es independiente de la resolución: rectángulos en unidades del atlas
 2. **Manual**: editor 2D para dibujar, mover, dividir y unir rectángulos, con snap a una rejilla en cm y **snap al periodo del material**. Atajos al estilo del Subrect Editor de Hammer (cambiar el tamaño de rejilla con `[` y `]`).
 3. **Automático**: la herramienta propone un layout a partir de un objetivo (paredes, suelos, mixto, trims), la densidad y la estructura del material. Las medidas son múltiplos del periodo y el reparto de tamaños y proporciones queda equilibrado. Es un empaquetado en guillotina, que además produce las juntas rectas largas que Anvil detecta con "Detect Grid". Se puede regenerar con otra seed o pasar a manual para retocarlo.
 
+### Modelar para el hotspot de paredes
+
+El preset Paredes está hecho para una **altura de planta de 2,6 m** (decisión 85). Quien modela los mapas debería ajustarse a estas medidas:
+
+- **Paredes de unos 2,6 m de alto.** De largo, lo mejor es 4 m, 2 m u 80 cm, que tienen rectángulo propio, o un largo lejos de esos (más de 5 m, por ejemplo), que usa una franja de 2,6 m de alto que se repite a lo largo sin estirar. Un largo intermedio, como 3,4 m, coge el rectángulo de 4 m y se estira.
+- **Pilares de unos 35 cm de ancho**, con unos 15 cm de saliente. Los cantos de pared de 20 cm también tienen su rectángulo.
+- **Bloques de unos 2 × 2 m**, como el cubo de prueba.
+
+El motivo: el hotspot elige el rectángulo por tamaño y estira la textura hasta un 25 % para que encaje. Con estas medidas, el ladrillo sale a su tamaño real, con un 10 % de diferencia como mucho. Una pared de 3 m de alto o un pilar de 25 cm caen lejos de los rectángulos del preset, y el ladrillo sale estirado o encogido.
+
 ### Variantes
 
 Como en Source 2 (`concrete_painted_white_hs05a/b/c`, `_blue`…), un proyecto puede tener varias **variantes** que comparten el layout y cambian tinte, bandas, sustrato o seed de daño. Se exportan juntas, con sufijo, y una misma definición de rectángulos sirve para todas.

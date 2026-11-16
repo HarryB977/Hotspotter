@@ -54,4 +54,5 @@ export { matchHotspot } from './fit/match';
 export type { FaceQuad, FaceUv, HotspotFit } from './fit/match';
 export { buildShape, SHAPE_PARTS, STOREY_HEIGHT_M } from './fit/shapes';
 export { faceSeed, fitFaces } from './fit/fitFaces';
+export { faceBrickScale } from './fit/scale';
 export type { TestShape, ShapeFace, ShapePart, Vec3 } from './fit/shapes';

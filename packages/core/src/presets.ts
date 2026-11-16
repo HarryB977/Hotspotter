@@ -58,12 +58,14 @@ function trimBands(): Kid[] {
 }
 
 const TREES: Record<PresetId, Node> = {
+  // Built around a 2.6 m storey (decision 85): the strip tiles any storey wall that no fixed rect fits within
+  // ±25 %, the fixed storey rects fit a 4 m wall, wall ends (20) and pillar fronts (35) and sides (15), and 200 x 200
+  // fits a 2 m cube. No rect sits within ±25 % but more than 10 % off any of those sizes.
   walls: stack(
-    band(260, [320, 200, 120, 80, 40, 40], WALL),
-    band(260, [280, 200, 160, 100, 60], WALL),
-    band(120, [200, 200, 160, 120, 120], HALF),
-    band(80, [800], WALL_TILE),
-    band(80, [40, 40, 80, 80, 160, 200, 200], WALL),
+    band(260, [800], WALL_TILE),
+    band(260, [400, 200, 80, 35, 35, 20, 15, 15], WALL),
+    band(200, [200, 200, 120, 120, 80, 80], WALL),
+    band(80, [200, 200, 160, 120, 80, 40], HALF),
   ),
   floors: stack(
     band(16, [800], PLANK),

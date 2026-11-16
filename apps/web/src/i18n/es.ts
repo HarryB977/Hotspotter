@@ -163,6 +163,9 @@ export const es = {
       walls: 'Paredes', floors: 'Suelos', trims: 'Molduras', frames: 'Marcos', generic: 'Genérico', mixed: 'Mixto',
     },
     targets: { walls: 'Paredes', floors: 'Suelos', trims: 'Molduras', mixed: 'Mixto' },
+    wallsPresetHint:
+      'Pensado para paredes de unos 2,6 m de alto (una planta) y pilares de unos 35 cm de ancho. ' +
+      'Las paredes de otras medidas estiran la textura.',
   },
   stack: {
     title: 'Pila',

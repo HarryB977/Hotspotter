@@ -47,23 +47,23 @@ function expectFiniteInside(fit: HotspotFit, layout: HotspotLayout) {
 }
 
 describe('matchHotspot', () => {
-  it('fits a 1 x 2 m wall face onto the closest rect, corners on the rect corners with V flipped', () => {
+  it('fits a 0.5 x 1.5 m wall face onto the closest rect, corners on the rect corners with V flipped', () => {
     // walls preset at 8 m: no rect is within ±25 % on both axes and no strip fits, so ProBuilder takes the closest
-    // overall. The 1.2 x 2.6 m rect at x = 5.2 m, y = 0 scores 2 |ln(0.5 / 0.4615)| + 0.5 |ln(2 / 3.12)| = 0.382.
-    const fit = matchHotspot(wall(1, 2), walls, NO_ROT);
+    // overall. The 0.8 x 2.6 m rect at x = 4.8 m, y = 2.6 m scores 2 |ln(0.333 / 0.3077)| + 0.5 |ln(0.75 / 2.08)| = 0.669.
+    const fit = matchHotspot(wall(0.5, 1.5), walls, NO_ROT);
     const r = rectOf(walls, fit);
-    expect([r.x, r.y, r.w, r.h]).toEqual([2662, 0, 615, 1331]);
+    expect([r.x, r.y, r.w, r.h]).toEqual([3072, 1331, 410, 1331]);
     expect(fit.rotated).toBe(false);
     expect(fit.tiled).toBe(false);
     expect(fit.mirrorX || fit.mirrorY).toBe(false);
     const u0 = r.x / 4096, u1 = (r.x + r.w) / 4096;
     const vTop = 1 - r.y / 4096, vBottom = 1 - (r.y + r.h) / 4096;
     expectUv(fit, [[u0, vBottom], [u1, vBottom], [u1, vTop], [u0, vTop]]);
-    expect(fit.score).toBeCloseTo(2 * Math.abs(Math.log(0.5 / (1.2 / 2.6))) + 0.5 * Math.abs(Math.log(2 / 3.12)), 2);
+    expect(fit.score).toBeCloseTo(2 * Math.abs(Math.log((0.5 / 1.5) / (0.8 / 2.6))) + 0.5 * Math.abs(Math.log(0.75 / 2.08)), 2);
     // Brute force: no rect of the layout scores lower (none allows rotation).
     for (const o of walls.rects) {
       const w = (o.w / 4096) * 8, h = (o.h / 4096) * 8;
-      const score = 2 * Math.abs(Math.log(0.5 / (w / h))) + 0.5 * Math.abs(Math.log(2 / (w * h)));
+      const score = 2 * Math.abs(Math.log((0.5 / 1.5) / (w / h))) + 0.5 * Math.abs(Math.log(0.75 / (w * h)));
       expect(score).toBeGreaterThanOrEqual(fit.score - 1e-12);
     }
   });
@@ -122,8 +122,8 @@ describe('matchHotspot', () => {
     expectUv(fixed, [[u0, vBottom], [u1, vBottom], [u1, vTop], [u0, vTop]]);
   });
 
-  it('a 6 x 0.2 m face takes the tileU strip of the walls preset and repeats it in world metres', () => {
-    const fit = matchHotspot(wall(6, 0.2), walls, NO_ROT);
+  it('a 6 x 2.6 m face takes the storey strip of the walls preset and repeats it in world metres', () => {
+    const fit = matchHotspot(wall(6, 2.6), walls, NO_ROT);
     const r = rectOf(walls, fit);
     expect(r.tileU).toBe(true);
     expect(fit.tiled).toBe(true);
@@ -159,7 +159,7 @@ describe('matchHotspot', () => {
   });
 
   it('a face longer than a strip repeats it past 1 on the tiled axis only', () => {
-    const fit = matchHotspot(wall(40, 0.8), walls, NO_ROT);
+    const fit = matchHotspot(wall(40, 2.6), walls, NO_ROT);
     expect(rectOf(walls, fit).tileU).toBe(true);
     expect(span(us(fit))).toBeCloseTo(5, 12);
     expectFiniteInside(fit, walls);
@@ -193,19 +193,20 @@ describe('matchHotspot', () => {
   });
 
   it('the seed only changes the pick among in-tolerance rects within 0.15 of the best', () => {
-    // walls preset: the two 0.4 x 2.6 m rects score 0 and are the only ones within ±25 % of a 0.4 x 2.6 m face.
+    // walls preset: the two 0.35 x 2.6 m pillar rects score about 0 and are the only ones within ±25 % of a
+    // 0.35 x 2.6 m face.
     const windowed = new Set<string>();
     const single = new Set<string>();
     for (let seed = 0; seed < 32; seed++) {
-      windowed.add(matchHotspot(wall(0.4, 2.6), walls, NO_ROT, { seed }).rectId);
-      // 1 x 2 m falls through to the closest rect (step 3), which ignores the seed.
-      single.add(matchHotspot(wall(1, 2), walls, NO_ROT, { seed }).rectId);
+      windowed.add(matchHotspot(wall(0.35, 2.6), walls, NO_ROT, { seed }).rectId);
+      // 0.5 x 1.5 m falls through to the closest rect (step 3), which ignores the seed.
+      single.add(matchHotspot(wall(0.5, 1.5), walls, NO_ROT, { seed }).rectId);
     }
     expect(windowed.size).toBe(2);
     expect(single.size).toBe(1);
     // Same seed, same answer.
-    expect(matchHotspot(wall(0.4, 2.6), walls, NO_ROT, { seed: 7 })).toEqual(
-      matchHotspot(wall(0.4, 2.6), walls, NO_ROT, { seed: 7 }),
+    expect(matchHotspot(wall(0.35, 2.6), walls, NO_ROT, { seed: 7 })).toEqual(
+      matchHotspot(wall(0.35, 2.6), walls, NO_ROT, { seed: 7 }),
     );
   });
 
