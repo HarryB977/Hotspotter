@@ -1,4 +1,5 @@
 import type { HotspotLayout } from '../layout';
+import { tileAxis } from './match';
 import type { HotspotFit } from './match';
 import type { ShapeFace } from './shapes';
 
@@ -16,8 +17,8 @@ export function faceBrickScale(face: ShapeFace, fit: HotspotFit, layout: Hotspot
   const mPerPx = layout.worldWidthM / layout.widthPx;
   // Rect metres along atlas u (0) and atlas v (1).
   const rectM = [rect.w * mPerPx, rect.h * mPerPx];
-  // Same rule as the matcher: a full-width tileU strip tiles along u, otherwise the strip is tileV.
-  const tiledAxis = !fit.tiled ? null : rect.tileU && rect.x <= 0 && rect.x + rect.w >= layout.widthPx ? 0 : 1;
+  const axis = fit.tiled ? tileAxis(layout, rect) : null;
+  const tiledAxis = axis === 'u' ? 0 : axis === 'v' ? 1 : null;
   // Turned, face width runs along atlas v and face height along atlas u.
   const [axisU, axisV] = fit.rotated ? [1, 0] : [0, 1];
   const ratio = (faceM: number, axis: number) => (axis === tiledAxis ? 1 : faceM / rectM[axis]);

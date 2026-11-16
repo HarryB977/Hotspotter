@@ -49,17 +49,17 @@ function expectFiniteInside(fit: HotspotFit, layout: HotspotLayout) {
 describe('matchHotspot', () => {
   it('fits a 0.5 x 1.5 m wall face onto the closest rect, corners on the rect corners with V flipped', () => {
     // walls preset at 8 m: no rect is within ±25 % on both axes and no strip fits, so ProBuilder takes the closest
-    // overall. The 0.8 x 2.6 m rect at x = 4.8 m, y = 2.6 m scores 2 |ln(0.333 / 0.3077)| + 0.5 |ln(0.75 / 2.08)| = 0.669.
+    // overall. The 0.8 x 2 m rect at x = 6.4 m, y = 5.2 m scores 2 |ln(0.333 / 0.4)| + 0.5 |ln(0.75 / 1.6)| = 0.74.
     const fit = matchHotspot(wall(0.5, 1.5), walls, NO_ROT);
     const r = rectOf(walls, fit);
-    expect([r.x, r.y, r.w, r.h]).toEqual([3072, 1331, 410, 1331]);
+    expect([r.x, r.y, r.w, r.h]).toEqual([3277, 2662, 409, 1024]);
     expect(fit.rotated).toBe(false);
     expect(fit.tiled).toBe(false);
     expect(fit.mirrorX || fit.mirrorY).toBe(false);
     const u0 = r.x / 4096, u1 = (r.x + r.w) / 4096;
     const vTop = 1 - r.y / 4096, vBottom = 1 - (r.y + r.h) / 4096;
     expectUv(fit, [[u0, vBottom], [u1, vBottom], [u1, vTop], [u0, vTop]]);
-    expect(fit.score).toBeCloseTo(2 * Math.abs(Math.log((0.5 / 1.5) / (0.8 / 2.6))) + 0.5 * Math.abs(Math.log(0.75 / 2.08)), 2);
+    expect(fit.score).toBeCloseTo(2 * Math.abs(Math.log((0.5 / 1.5) / (0.8 / 2))) + 0.5 * Math.abs(Math.log(0.75 / 1.6)), 2);
     // Brute force: no rect of the layout scores lower (none allows rotation).
     for (const o of walls.rects) {
       const w = (o.w / 4096) * 8, h = (o.h / 4096) * 8;

@@ -62,11 +62,15 @@ Un layout es independiente de la resolución: rectángulos en unidades del atlas
 
 El preset Paredes está hecho para una **altura de planta de 2,6 m** (decisión 85). Quien modela los mapas debería ajustarse a estas medidas:
 
-- **Paredes de unos 2,6 m de alto.** De largo, lo mejor es 4 m, 2 m u 80 cm, que tienen rectángulo propio, o un largo lejos de esos (más de 5 m, por ejemplo), que usa una franja de 2,6 m de alto que se repite a lo largo sin estirar. Un largo intermedio, como 3,4 m, coge el rectángulo de 4 m y se estira.
-- **Pilares de unos 35 cm de ancho**, con unos 15 cm de saliente. Los cantos de pared de 20 cm también tienen su rectángulo.
-- **Bloques de unos 2 × 2 m**, como el cubo de prueba.
+- **Paredes de 2,6 m de alto, de cualquier largo** a partir de unos 44 cm. Todas usan una franja de 2,6 m de alto que se repite a lo largo, así que el ladrillo sale a su tamaño real sea cual sea el largo. A cambio, la franja no tiene bordes verticales: las esquinas de la pared no salen desgastadas por el hotspot. Las esquinas se resuelven con columnas y marcos.
+- **Pilares de 35 cm de ancho y 15 cm de saliente**, y **cantos de pared de 20 cm**. Cada una de esas tres medidas, a 2,6 m de alto, tiene su propio rectángulo.
+- **Bloques de 2 × 2 m**, como el cubo de prueba, que tienen su rectángulo de 2 × 2 m.
 
-El motivo: el hotspot elige el rectángulo por tamaño y estira la textura hasta un 25 % para que encaje. Con estas medidas, el ladrillo sale a su tamaño real, con un 10 % de diferencia como mucho. Una pared de 3 m de alto o un pilar de 25 cm caen lejos de los rectángulos del preset, y el ladrillo sale estirado o encogido.
+El motivo: el hotspot elige el rectángulo por tamaño y estira la textura hasta un 25 % para que encaje. Con estas medidas, el ladrillo sale a su tamaño real, con un 10 % de diferencia como mucho. Lo que se sale de ellas se estira:
+
+- Una cara de 2,6 m de alto y entre 12 y 44 cm de ancho que no mide 15, 20 o 35 cm (por ejemplo, un pilar de 25 o 30 cm) coge el rectángulo de pilar más parecido y se estira hasta un 25 %.
+- Una pared de otra altura (por ejemplo, 3 m) usa la franja, pero estirada en vertical hasta un 25 %. Si se aleja más de eso, coge el rectángulo de forma más parecida y se estira todavía más.
+- Un bloque de unos 2 m de alto y un ancho distinto de 2 m coge uno de los rectángulos de 2 m de alto (de 0,4 a 2 m de ancho) y se estira en horizontal.
 
 ### Variantes
 

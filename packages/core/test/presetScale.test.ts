@@ -59,65 +59,77 @@ function coveredFaces(shape: TestShape): { face: ShapeFace; index: number }[] {
       (shape === 'cube' && face.normal[1] > 0));
 }
 
-describe('walls preset keeps brick scale', () => {
-  const layout = presetLayout('walls', 2048);
-  const shapes: TestShape[] = ['cube', 'wallWithOpenings', 'corridor'];
-
-  it('is a valid layout', () => {
-    expect(validateLayout(layout)).toEqual([]);
-  });
-
-  it('covers the expected faces', () => {
-    expect(coveredFaces('cube')).toHaveLength(5);
-    // Front, back, two ends; two columns with front and two sides each.
-    expect(coveredFaces('wallWithOpenings')).toHaveLength(10);
-    // Two walls; six columns with front and two sides each.
-    expect(coveredFaces('corridor')).toHaveLength(20);
-    for (const s of shapes) {
-      for (const { face } of coveredFaces(s)) {
-        if (face.part !== 'body') expect(face.quad.heightM).toBeCloseTo(STOREY_HEIGHT_M, 9);
-      }
-    }
-  });
-
-  it('has no rect the matcher could take (±25 %) that is more than 10 % off a covered face', () => {
-    const mPerPx = layout.worldWidthM / layout.widthPx;
-    const bad: string[] = [];
-    for (const s of shapes) {
-      for (const { face } of coveredFaces(s)) {
-        for (const r of layout.rects) {
-          const ru = face.quad.widthM / (r.w * mPerPx), rv = face.quad.heightM / (r.h * mPerPx);
-          const within = (x: number, t: number) => Math.abs(Math.log(x)) <= Math.log(1 + t) + 1e-5;
-          if (within(ru, 0.25) && within(rv, 0.25) && !(Math.abs(ru - 1) <= TOLERANCE && Math.abs(rv - 1) <= TOLERANCE)) {
-            bad.push(`${s} ${face.quad.widthM} x ${face.quad.heightM}: ${r.id}`);
-          }
+/** Ratio failures (|r − 1| > TOLERANCE on either axis) of `faces[index]` fitted with seeds 0..7, runoff off and on. */
+function scaleFailures(label: string, faces: ShapeFace[], indices: number[], layout: HotspotLayout): string[] {
+  const failures: string[] = [];
+  for (const runoff of [false, true]) {
+    for (let seed = 0; seed < 8; seed++) {
+      const fits = fitFaces(faces, layout, NO_ROT, { seed, runoff });
+      for (const index of indices) {
+        const face = faces[index], f = fits[index];
+        const [ru, rv] = faceBrickScale(face, f, layout);
+        if (Math.abs(ru - 1) > TOLERANCE || Math.abs(rv - 1) > TOLERANCE) {
+          failures.push(
+            `${layout.widthPx} px ${label} face ${index} (${face.quad.widthM.toFixed(2)} x ${face.quad.heightM.toFixed(2)} m) ` +
+            `seed ${seed} runoff ${runoff}: ${f.rectId}${f.tiled ? ' tiled' : ''} ratios ${ru.toFixed(3)}, ${rv.toFixed(3)}`,
+          );
         }
       }
     }
-    expect([...new Set(bad)]).toEqual([]);
-  });
+  }
+  return [...new Set(failures)];
+}
 
-  it(`stays within ${TOLERANCE * 100} % on both axes of every covered face`, () => {
-    const failures: string[] = [];
-    for (const shape of shapes) {
-      const faces = buildShape(shape);
-      const covered = coveredFaces(shape);
-      for (const runoff of [false, true]) {
-        for (let seed = 0; seed < 8; seed++) {
-          const fits = fitFaces(faces, layout, NO_ROT, { seed, runoff });
-          for (const { face, index } of covered) {
-            const f = fits[index];
-            const [ru, rv] = faceBrickScale(face, f, layout);
-            if (Math.abs(ru - 1) > TOLERANCE || Math.abs(rv - 1) > TOLERANCE) {
-              failures.push(
-                `${shape} face ${index} (${face.quad.widthM.toFixed(2)} x ${face.quad.heightM.toFixed(2)} m) ` +
-                `seed ${seed} runoff ${runoff}: ${f.rectId}${f.tiled ? ' tiled' : ''} ratios ${ru.toFixed(3)}, ${rv.toFixed(3)}`,
-              );
+const shapes: TestShape[] = ['cube', 'wallWithOpenings', 'corridor'];
+
+it('covers the expected faces', () => {
+  expect(coveredFaces('cube')).toHaveLength(5);
+  // Front, back, two ends; two columns with front and two sides each.
+  expect(coveredFaces('wallWithOpenings')).toHaveLength(10);
+  // Two walls; six columns with front and two sides each.
+  expect(coveredFaces('corridor')).toHaveLength(20);
+  for (const s of shapes) {
+    for (const { face } of coveredFaces(s)) {
+      if (face.part !== 'body') expect(face.quad.heightM).toBeCloseTo(STOREY_HEIGHT_M, 9);
+    }
+  }
+});
+
+for (const widthPx of [1024, 2048, 4096]) {
+  describe(`walls preset keeps brick scale at ${widthPx} px`, () => {
+    const layout = presetLayout('walls', widthPx);
+
+    it('is a valid layout', () => {
+      expect(validateLayout(layout)).toEqual([]);
+    });
+
+    it('has no rect the matcher could take (±25 %) that is more than 10 % off a covered face', () => {
+      const mPerPx = layout.worldWidthM / layout.widthPx;
+      const bad: string[] = [];
+      for (const s of shapes) {
+        for (const { face } of coveredFaces(s)) {
+          for (const r of layout.rects) {
+            const ru = face.quad.widthM / (r.w * mPerPx), rv = face.quad.heightM / (r.h * mPerPx);
+            const within = (x: number, t: number) => Math.abs(Math.log(x)) <= Math.log(1 + t) + 1e-5;
+            if (within(ru, 0.25) && within(rv, 0.25) && !(Math.abs(ru - 1) <= TOLERANCE && Math.abs(rv - 1) <= TOLERANCE)) {
+              bad.push(`${s} ${face.quad.widthM} x ${face.quad.heightM}: ${r.id}`);
             }
           }
         }
       }
-    }
-    expect([...new Set(failures)]).toEqual([]);
+      expect([...new Set(bad)]).toEqual([]);
+    });
+
+    it(`stays within ${TOLERANCE * 100} % on both axes of every covered face`, () => {
+      const failures = shapes.flatMap((shape) =>
+        scaleFailures(shape, buildShape(shape), coveredFaces(shape).map((c) => c.index), layout));
+      expect(failures).toEqual([]);
+    });
+
+    it(`keeps storey walls of any length within ${TOLERANCE * 100} %`, () => {
+      const lengths = [0.5, 0.8, 1.2, 2.0, 2.5, 3.4, 4.5, 7];
+      const faces = lengths.map((l) => face(l, STOREY_HEIGHT_M));
+      expect(scaleFailures('storey wall', faces, faces.map((_, i) => i), layout)).toEqual([]);
+    });
   });
-});
+}

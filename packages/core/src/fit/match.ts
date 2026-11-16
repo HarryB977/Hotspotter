@@ -34,7 +34,7 @@ const MAX_LOG = Math.log(1 + 0.25) + 1e-5;
 /** ProBuilder's default Random Tolerance: in-tolerance rects scoring within this of the best are picked at random. */
 const RANDOM_TOLERANCE = 0.15;
 
-type TileAxis = 'u' | 'v' | null;
+export type TileAxis = 'u' | 'v' | null;
 
 interface Candidate {
   rect: HotspotRect;
@@ -49,7 +49,7 @@ interface Candidate {
 }
 
 /** Tiling axis in rect space; a strip must span the whole atlas on that axis (as ProBuilder's GetTilingAxis). */
-function tileAxis(l: HotspotLayout, r: HotspotRect): TileAxis {
+export function tileAxis(l: HotspotLayout, r: HotspotRect): TileAxis {
   if (r.tileU && r.x <= 0 && r.x + r.w >= l.widthPx) return 'u';
   if (r.tileV && r.y <= 0 && r.y + r.h >= l.heightPx) return 'v';
   return null;
