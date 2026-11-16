@@ -3,6 +3,7 @@ import type { Page } from '@playwright/test';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { selectLayer } from './helpers';
 
 const PBR = resolve(fileURLToPath(new URL('.', import.meta.url)), '../../../samples/pbr');
 const BRICKS = resolve(PBR, 'bricks wall 13');
@@ -18,6 +19,7 @@ async function importBricks(page: Page): Promise<void> {
   await page.goto('/');
   await page.getByTestId('folder-input').setInputFiles(BRICKS);
   await expect(page.getByTestId('material-name')).toHaveValue('bricks_wall_13');
+  await selectLayer(page, 'structure');
   await expect(page.getByTestId('structure-type')).toHaveText('Piezas');
   // The analysis runs in a Worker, so the first atlas may be composed before the structure lands: wait for the
   // atlas composed from the current structure.
@@ -167,6 +169,7 @@ test('with the material rotated 90°, pieceId follows the same UV mapping as the
 test('concrete wall 01 is continuous', async ({ page }) => {
   await page.goto('/');
   await page.getByTestId('folder-input').setInputFiles(CONCRETE);
+  await selectLayer(page, 'structure');
   await expect(page.getByTestId('structure-type')).toHaveText('Continuo');
 });
 
@@ -240,6 +243,7 @@ test('automatic re-analyses keep a user-set period; Detectar resets it to the de
 test('focusing and leaving the threshold and period fields commits nothing', async ({ page }) => {
   await page.goto('/');
   await page.getByTestId('folder-input').setInputFiles(CONCRETE);
+  await selectLayer(page, 'structure');
   await expect(page.getByTestId('structure-type')).toHaveText('Continuo');
   await page.waitForFunction(() => !!window.__hs?.store.getState().structure);
   // No joints found: the automatic threshold field is empty.
@@ -261,6 +265,9 @@ test('focusing and leaving the threshold and period fields commits nothing', asy
   // Same on bricks, whose field shows the suggested threshold: a blur must not pin it.
   await page.getByTestId('folder-input').setInputFiles(BRICKS);
   await page.getByTestId('import-replace').click();
+  // The replace import selects Desgaste again: select Estructura once it has landed.
+  await expect(page.getByTestId('material-name')).toHaveValue('bricks_wall_13');
+  await selectLayer(page, 'structure');
   await expect(page.getByTestId('structure-type')).toHaveText('Piezas');
   await expect.poll(async () => (await page.getByTestId('structure-threshold').inputValue()) !== '').toBe(true);
   await page.getByTestId('structure-threshold').focus();

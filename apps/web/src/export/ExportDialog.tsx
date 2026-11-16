@@ -10,7 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { CheckRow } from '../panels/ChecksPanel';
 import { ExportUploadError, exportProject } from './encode';
 
-const RESOLUTIONS = [1024, 2048, 4096, 8192];
+export const RESOLUTIONS = [1024, 2048, 4096, 8192];
 
 function outputNode(doc: ProjectDoc | null): DocNode<'output'> | undefined {
   return doc?.nodes.find((n): n is DocNode<'output'> => n.type === 'output');

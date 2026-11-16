@@ -133,9 +133,18 @@ export const es = {
     },
     targets: { walls: 'Paredes', floors: 'Suelos', trims: 'Molduras', mixed: 'Mixto' },
   },
+  stack: {
+    title: 'Pila',
+    custom: 'Grafo personalizado',
+    customHint: 'El documento no es una cadena lineal: se edita en la vista de nodos (v0.4)',
+  },
   inspector: {
     title: 'Inspector',
     empty: 'Nada seleccionado',
+    materialHint: 'Los mapas, las propiedades, la orientación y el periodo del material están en la columna izquierda, en Material.',
+    customGraph: 'Este proyecto tiene un grafo personalizado: sus capas se editarán en la vista de nodos (v0.4).',
+    exportRes: 'Resolución de exportación',
+    output: 'Salida',
     preview: 'Resolución de preview',
     worldWidth: 'Ancho (m)',
     placement: 'Colocación',

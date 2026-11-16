@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { join, resolve } from 'node:path';
 import { deflateSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
+import { selectLayer } from './helpers';
 
 const BRICKS = resolve(fileURLToPath(new URL('.', import.meta.url)), '../../../samples/pbr/bricks wall 13');
 const CONCRETE = resolve(fileURLToPath(new URL('.', import.meta.url)), '../../../samples/pbr/concrete wall 01');
@@ -92,7 +93,9 @@ async function buildSession(page: Page, dir: string): Promise<void> {
   await page.goto('/');
   await page.getByTestId('folder-input').setInputFiles(BRICKS);
   await expect(page.getByTestId('material-name')).toHaveValue('bricks_wall_13');
+  await selectLayer(page, 'structure');
   await expect(page.getByTestId('structure-type')).toHaveText('Piezas');
+  await selectLayer(page, 'wear');
   await settled(page);
   await setField(page, 'Intensidad', '0.8');
   const png = join(dir, 'black-mask.png');
@@ -278,7 +281,9 @@ test('dirty: false after open and save, true after one edit; beforeunload asks o
   await expect(page).toHaveTitle('Hotspotter');
 
   await page.getByTestId('folder-input').setInputFiles(BRICKS);
+  await selectLayer(page, 'structure');
   await expect(page.getByTestId('structure-type')).toHaveText('Piezas');
+  await selectLayer(page, 'wear');
   await settled(page);
   expect(await dirty(page)).toBe(true);
   expect(await asksBeforeUnload(page)).toBe(true);
@@ -288,6 +293,10 @@ test('dirty: false after open and save, true after one edit; beforeunload asks o
   expect(await dirty(page)).toBe(false);
   expect(await asksBeforeUnload(page)).toBe(false);
 
+  // The selected layer is view state: selecting one never makes the project dirty.
+  await selectLayer(page, 'dirt');
+  expect(await dirty(page)).toBe(false);
+  await selectLayer(page, 'wear');
   await setField(page, 'Intensidad', '0.7');
   expect(await dirty(page)).toBe(true);
   expect(await asksBeforeUnload(page)).toBe(true);
@@ -299,11 +308,14 @@ test('dirty: false after open and save, true after one edit; beforeunload asks o
   await expect.poll(() => dirty(page)).toBe(false);
   expect(readdirSync(dir).filter((f) => f.endsWith('.hsp'))).toEqual(['limpio.hsp']);
   await page.getByLabel('Intensidad', { exact: true }).blur();
+  await selectLayer(page, 'output');
 
   await page.getByTestId('project-open-input').setInputFiles(path);
   await expect(page.getByTestId('unsaved-dialog')).toHaveCount(0);
   await settled(page);
   expect(await dirty(page)).toBe(false);
+  // An open shows the wear section again, as an import does.
+  await expect(page.locator('[data-testid="stack-row"][data-layer="wear"]')).toHaveAttribute('aria-selected', 'true');
   expect(await asksBeforeUnload(page)).toBe(false);
   const intensity = await page.evaluate(() =>
     (window.__hs!.store.getState().doc!.nodes.find((n) => n.id === 'wear')!.params as { intensity: number }).intensity);
@@ -314,7 +326,9 @@ test('dirty: false after open and save, true after one edit; beforeunload asks o
 async function importBricks(page: Page): Promise<void> {
   await page.goto('/');
   await page.getByTestId('folder-input').setInputFiles(BRICKS);
+  await selectLayer(page, 'structure');
   await expect(page.getByTestId('structure-type')).toHaveText('Piezas');
+  await selectLayer(page, 'wear');
   await settled(page);
 }
 

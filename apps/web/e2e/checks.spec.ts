@@ -3,6 +3,7 @@ import type { Page } from '@playwright/test';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { selectLayer } from './helpers';
 
 const BRICKS = resolve(fileURLToPath(new URL('.', import.meta.url)), '../../../samples/pbr/bricks wall 13');
 
@@ -16,6 +17,7 @@ async function importBricks(page: Page): Promise<void> {
   await page.goto('/');
   await page.getByTestId('folder-input').setInputFiles(BRICKS);
   await expect(page.getByTestId('material-name')).toHaveValue('bricks_wall_13');
+  await selectLayer(page, 'structure');
   await expect(page.getByTestId('structure-type')).toHaveText('Piezas');
   await expect(page.getByTestId('check-row')).toHaveCount(6, { timeout: 30_000 });
 }

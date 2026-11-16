@@ -5,7 +5,7 @@ import { MaterialPanel } from './panels/MaterialPanel';
 import { ChecksPanel } from './panels/ChecksPanel';
 import { TooltipProvider } from './components/ui/tooltip';
 import { Tabs, TabsList, TabsTrigger } from './components/ui/tabs';
-import { LayoutPanel } from './panels/LayoutPanel';
+import { StackPanel } from './panels/StackPanel';
 import { Inspector } from './panels/Inspector';
 import { AtlasView } from './viewport/AtlasView';
 import { ExportDialog } from './export/ExportDialog';
@@ -70,8 +70,8 @@ export function App() {
         </header>
         <aside className="min-h-0 overflow-y-auto border-r border-zinc-800 bg-zinc-900" data-testid="left-column">
           <MaterialPanel />
+          <StackPanel />
           <ChecksPanel />
-          <LayoutPanel />
         </aside>
         <main className="flex min-h-0 min-w-0 flex-col bg-zinc-950">
           <PanelTitle>{es.atlas.title}</PanelTitle>

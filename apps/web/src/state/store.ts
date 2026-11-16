@@ -93,6 +93,8 @@ export interface ProjectState {
   /** Preview resolution; the export resolution lives in the output node. */
   previewRes: PreviewRes;
   activeMap: ActiveMap;
+  /** Layer whose section the inspector shows. View state: not in the document, not tracked as a change. */
+  selectedLayer: NodeType | null;
   atlas: AtlasResult | null;
   /** Last preview composition failure, shown in the status bar; cleared by the next success. */
   composeError: string | null;
@@ -147,6 +149,7 @@ export interface ProjectState {
   runEvaluation(opts?: EvaluationOptions): Promise<CheckResult[] | null>;
   setPreviewRes(r: PreviewRes): void;
   setActiveMap(m: ActiveMap): void;
+  setSelectedLayer(t: NodeType | null): void;
   /** Shallow-merges params into a node. */
   updateNode<T extends NodeType>(id: string, patch: Partial<NodeParams[T]>): void;
   /** Replaces the layout node params wholesale, so no keys of another mode linger. */
@@ -542,6 +545,7 @@ export const useProject = create<ProjectState>()((set, get) => ({
   sources: [],
   previewRes: 1024,
   activeMap: 'baseColor',
+  selectedLayer: 'wear',
   atlas: null,
   composeError: null,
   structure: null,
@@ -576,7 +580,7 @@ export const useProject = create<ProjectState>()((set, get) => ({
       doc: null, material: null, gpuMaterial: null, sources: [], importing: false, importError: null,
       structure: null, structureError: null, mask: null, substrate: null, wearError: null,
       atlas: null, composeError: null, checks: null, checksError: null, checksPending: false, viewFocus: null,
-      projectPath: null, projectError: null, opening: false,
+      projectPath: null, projectError: null, opening: false, selectedLayer: 'wear',
     });
     destroyProject(old, oldBitmaps);
     // Evaluation reads of the preview atlas were submitted before their first await.
@@ -710,7 +714,7 @@ export const useProject = create<ProjectState>()((set, get) => ({
         doc, material: { settings, images }, gpuMaterial: { ...gpuMaterial, settings }, sources: c.materialFiles,
         importing: false, importError: null, structure, structureError, mask, substrate, wearError: null,
         composeError: null, checks: null, checksError: null, checksPending: false, viewFocus: null,
-        projectPath: { dir: '', name: file.name }, projectError: null, opening: false,
+        projectPath: { dir: '', name: file.name }, projectError: null, opening: false, selectedLayer: 'wear',
       });
       // Live now: the cleanup below must never free them.
       gpuMaterial = null;
@@ -751,6 +755,10 @@ export const useProject = create<ProjectState>()((set, get) => ({
 
   setActiveMap(m) {
     set({ activeMap: m });
+  },
+
+  setSelectedLayer(t) {
+    set({ selectedLayer: t });
   },
 
   updateNode(id, patch) {
@@ -834,7 +842,7 @@ export const useProject = create<ProjectState>()((set, get) => ({
       substrateReplacedGen = ++substrateGen;
       set({
         sources: images, material, gpuMaterial, doc: createDefaultDoc(settings), importing: false,
-        structure: null, structureError: null, mask: null, substrate: null, wearError: null,
+        structure: null, structureError: null, mask: null, substrate: null, wearError: null, selectedLayer: 'wear',
       });
       oldStructure?.gpu.destroy();
       oldMask?.texture.destroy();

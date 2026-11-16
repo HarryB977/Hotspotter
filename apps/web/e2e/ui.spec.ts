@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { selectLayer } from './helpers';
 
 const BRICKS = resolve(fileURLToPath(new URL('.', import.meta.url)), '../../../samples/pbr/bricks wall 13');
 
@@ -14,7 +15,9 @@ test.describe('app shell at a laptop-sized window', () => {
     await page.goto('/');
     await page.getByTestId('folder-input').setInputFiles(BRICKS);
     await expect(page.getByTestId('material-name')).toHaveValue('bricks_wall_13');
+    await selectLayer(page, 'structure');
     await expect(page.getByTestId('structure-type')).toHaveText('Piezas');
+    await selectLayer(page, 'wear');
   });
 
   test('the map bar stays on screen and only the side panels scroll', async ({ page }) => {
@@ -22,15 +25,26 @@ test.describe('app shell at a laptop-sized window', () => {
     const box = await footer.boundingBox();
     expect(box).not.toBeNull();
     expect(box!.y + box!.height).toBeLessThanOrEqual(700);
-    // The page itself never scrolls; the long inspector scrolls inside its own column.
-    const page_ = await page.evaluate(() => ({
-      docH: document.documentElement.scrollHeight,
-      winH: window.innerHeight,
+    // The page itself never scrolls; the side columns scroll inside themselves.
+    const pageFits = () => page.evaluate(() => document.documentElement.scrollHeight <= window.innerHeight);
+    expect(await pageFits()).toBe(true);
+    const overflow = (id: string) => page.getByTestId(id).evaluate((el) => ({
+      y: getComputedStyle(el).overflowY, sh: el.scrollHeight, ch: el.clientHeight,
     }));
-    expect(page_.docH).toBeLessThanOrEqual(page_.winH);
-    const inspector = page.getByText(/Desgaste/).first().locator('xpath=ancestor::div[contains(@class,"overflow-y-auto")][1]');
-    const scroll = await inspector.evaluate((el) => ({ sh: el.scrollHeight, ch: el.clientHeight }));
-    expect(scroll.sh).toBeGreaterThan(scroll.ch);
+    // The left column (Material, Pila, Comprobaciones) is taller than the window.
+    const left = await overflow('left-column');
+    expect(left.y).toBe('auto');
+    expect(left.sh).toBeGreaterThan(left.ch);
+    // The inspector shows one layer; Desgaste, selected after an import, fits at 700 px. Lower, it scrolls inside its
+    // column and the page still does not.
+    await expect(page.getByTestId('wear-section')).toBeVisible();
+    expect((await overflow('inspector-scroll')).y).toBe('auto');
+    await page.setViewportSize({ width: 1366, height: 450 });
+    await expect.poll(async () => {
+      const r = await overflow('inspector-scroll');
+      return r.sh > r.ch;
+    }).toBe(true);
+    expect(await pageFits()).toBe(true);
   });
 
   test('labels are not selectable, fields are', async ({ page }) => {
