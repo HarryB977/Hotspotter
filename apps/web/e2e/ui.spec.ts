@@ -102,4 +102,44 @@ test.describe('app shell at a laptop-sized window', () => {
     await page.keyboard.press('Enter');
     await expect(seed).toHaveValue('7');
   });
+  test('the 2D | 3D divider resizes the panes, maximizes one and remembers both', async ({ page }) => {
+    const atlasW = async () => (await page.getByTestId('viewport-2d').boundingBox())!.width;
+    const sep = page.getByRole('separator', { name: 'Cambiar el ancho de las vistas' });
+    await expect(sep).toHaveAttribute('aria-valuenow', '50');
+    const w0 = await atlasW();
+    const b = (await sep.boundingBox())!;
+    const y = b.y + b.height / 2;
+    await page.mouse.move(b.x + b.width / 2, y);
+    await page.mouse.down();
+    await page.mouse.move(b.x + b.width / 2 - 200, y, { steps: 8 });
+    await page.mouse.up();
+    expect(Math.abs(w0 - 200 - (await atlasW()))).toBeLessThan(6);
+    // Dragging does not select text.
+    expect(await page.evaluate(() => String(window.getSelection()))).toBe('');
+    await page.reload();
+    await expect(page.getByRole('separator', { name: 'Cambiar el ancho de las vistas' })).not.toHaveAttribute('aria-valuenow', '50');
+    // Double click resets to 50 %.
+    await page.getByRole('separator', { name: 'Cambiar el ancho de las vistas' }).dblclick();
+    await expect(page.getByRole('separator', { name: 'Cambiar el ancho de las vistas' })).toHaveAttribute('aria-valuenow', '50');
+    // Maximize 3D hides the atlas pane, and survives a reload.
+    await page.getByRole('button', { name: 'Maximizar vista 3D' }).click();
+    await expect(page.getByTestId('viewport-2d')).toBeHidden();
+    await page.reload();
+    await expect(page.getByTestId('viewport-3d')).toBeVisible();
+    await expect(page.getByTestId('viewport-2d')).toBeHidden();
+    expect(await page.evaluate(() => document.documentElement.scrollHeight <= window.innerHeight)).toBe(true);
+    await page.getByRole('button', { name: 'Restaurar vistas' }).click();
+    await expect(page.getByTestId('viewport-2d')).toBeVisible();
+    // The map bar still spans the whole centre, below both panes.
+    const bar = (await page.getByRole('tablist').first().boundingBox())!;
+    const atlas = (await page.getByTestId('viewport-2d').boundingBox())!;
+    expect(bar.y).toBeGreaterThanOrEqual(atlas.y + atlas.height);
+  });
+
+  test('a corrupt hs.viewport value falls back to 50 %', async ({ page }) => {
+    await page.evaluate(() => localStorage.setItem('hs.viewport', '{"ratio":"x","max":"zzz"}'));
+    await page.reload();
+    await expect(page.getByRole('separator', { name: 'Cambiar el ancho de las vistas' })).toHaveAttribute('aria-valuenow', '50');
+    await expect(page.getByTestId('viewport-3d')).toBeVisible();
+  });
 });

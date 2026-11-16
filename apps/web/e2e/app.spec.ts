@@ -1050,6 +1050,8 @@ test.describe('wear and dirt controls (bricks wall 13)', () => {
   test('the Desgaste tab shows the wear mask', async ({ page }) => {
     // Big enough that the atlas is drawn at least 1:1, so every map texel has its own screen pixels.
     await page.setViewportSize({ width: 1920, height: 1400 });
+    // The 2D | 3D split halves the atlas pane; maximize it so the canvas keeps its full width.
+    await page.getByRole('button', { name: 'Maximizar atlas 2D' }).click();
     await setField(page, 'Intensidad', '1');
     await page.getByTestId('atlas-overlay').evaluate((el) => { (el as unknown as HTMLElement).style.visibility = 'hidden'; });
     /** Screenshot of the canvas, split by the wearMask value at the texel each screen pixel shows (red channel). */

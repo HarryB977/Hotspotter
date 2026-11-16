@@ -8,6 +8,7 @@ import { Tabs, TabsList, TabsTrigger } from './components/ui/tabs';
 import { StackPanel } from './panels/StackPanel';
 import { Inspector } from './panels/Inspector';
 import { AtlasView } from './viewport/AtlasView';
+import { ViewportSplit } from './viewport/ViewportSplit';
 import { ExportDialog } from './export/ExportDialog';
 import { FileMenu, ProjectName } from './project/FileMenu';
 import type { ActiveMap } from './state/store';
@@ -83,12 +84,14 @@ export function App() {
           </div>
         </aside>
         <main className="flex min-h-0 min-w-0 flex-col bg-zinc-950">
-          <PanelTitle>{es.atlas.title}</PanelTitle>
-          {atlas ? (
-            <AtlasView maps={atlas.maps} layout={atlas.layout} activeMap={activeMap} issues={atlas.issues} />
-          ) : (
-            <div className="flex flex-1 items-center justify-center text-zinc-600">{es.atlas.empty}</div>
-          )}
+          <ViewportSplit
+            left={atlas ? (
+              <AtlasView maps={atlas.maps} layout={atlas.layout} activeMap={activeMap} issues={atlas.issues} />
+            ) : (
+              <div className="flex flex-1 items-center justify-center text-zinc-600">{es.atlas.empty}</div>
+            )}
+            right={<div className="flex flex-1 items-center justify-center text-zinc-600">{es.viewport.placeholder3d}</div>}
+          />
         </main>
         <aside className="flex min-h-0 flex-col border-l border-zinc-800 bg-zinc-900">
           <PanelTitle>{es.inspector.title}</PanelTitle>

@@ -120,6 +120,15 @@ export const es = {
       'Elige una resolución menor.',
   },
   atlas: { title: 'Atlas 2D', empty: 'Importa un material para empezar' },
+  viewport: {
+    title3d: 'Vista 3D',
+    placeholder3d: 'La vista 3D llega pronto',
+    divider: 'Cambiar el ancho de las vistas',
+    dividerHint: 'Arrastra para cambiar el ancho; doble clic para dejarlas al 50 %',
+    maximize2d: 'Maximizar atlas 2D',
+    maximize3d: 'Maximizar vista 3D',
+    restore: 'Restaurar vistas',
+  },
   layout: {
     mode: 'Modo',
     modePreset: 'Preset',
