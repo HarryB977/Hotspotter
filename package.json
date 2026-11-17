@@ -7,13 +7,16 @@
     "dev": "concurrently -n server,web \"npm run dev -w @hotspotter/server\" \"npm run dev -w @hotspotter/web\"",
     "e2e": "npm run e2e -w @hotspotter/web",
     "bench": "node scripts/bench.mjs",
+    "portable": "node scripts/build-portable.mjs",
     "test": "npm run typecheck && npm run test --workspaces --if-present",
     "build": "npm run build --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present"
   },
   "devDependencies": {
-    "concurrently": "9.1.0",
     "@types/node": "22.10.2",
+    "concurrently": "9.1.0",
+    "esbuild": "0.28.2",
+    "postject": "1.0.0-alpha.6",
     "typescript": "5.6.3",
     "vitest": "2.1.9"
   }
