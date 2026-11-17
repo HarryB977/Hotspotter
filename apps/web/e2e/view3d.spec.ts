@@ -571,3 +571,74 @@ test('the 3D settings are remembered in localStorage, not in the project', async
   await page.reload();
   await expect(page.getByTestId('view3d-mode')).toHaveText('Iluminado');
 });
+
+test('at a 1024 px preview the 3D view reads its own 2048 px atlas', async ({ page }) => {
+  await importBricks(page);
+  const r = await page.evaluate(() => {
+    const hs = window.__hs!;
+    const s = hs.store.getState();
+    return {
+      preview: s.atlas!.resolutionPx, own: s.view3dAtlas!.resolutionPx, distinct: s.view3dAtlas !== s.atlas,
+      width: hs.view3d.textureWidth(),
+    };
+  });
+  expect(r).toEqual({ preview: 1024, own: 2048, distinct: true, width: 2048 });
+});
+
+test('with the 3D pane hidden no 2048 px compose runs; restored, exactly one runs', async ({ page }) => {
+  await importBricks(page);
+  await page.getByRole('button', { name: 'Maximizar atlas 2D' }).click();
+  await expect(page.getByTestId('viewport-3d')).toBeHidden();
+  const before = await page.evaluate(() => {
+    const hs = window.__hs!;
+    (window as unknown as { __atlas: unknown }).__atlas = hs.store.getState().atlas;
+    hs.store.getState().updateNode('wear', { seed: 9 });
+    return hs.compose3dCount;
+  });
+  await expect.poll(() => page.evaluate(() =>
+    window.__hs!.store.getState().atlas !== (window as unknown as { __atlas: unknown }).__atlas)).toBe(true);
+  await page.waitForTimeout(500);
+  expect(await page.evaluate(() => window.__hs!.compose3dCount)).toBe(before);
+
+  await page.getByRole('button', { name: 'Restaurar vistas' }).click();
+  await settle(page);
+  expect(await page.evaluate(() => ({ count: window.__hs!.compose3dCount, width: window.__hs!.view3d.textureWidth() })))
+    .toEqual({ count: before + 1, width: 2048 });
+});
+
+test('at a 2048 px preview the 3D view reads the preview atlas and composes nothing of its own', async ({ page }) => {
+  await importBricks(page);
+  await page.evaluate(() => window.__hs!.store.getState().setPreviewRes(2048));
+  await expect.poll(() => page.evaluate(() => window.__hs!.store.getState().atlas?.resolutionPx)).toBe(2048);
+  await settle(page);
+  const count = await page.evaluate(() => {
+    const hs = window.__hs!;
+    (window as unknown as { __atlas: unknown }).__atlas = hs.store.getState().atlas;
+    hs.store.getState().updateNode('wear', { seed: 4 });
+    return hs.compose3dCount;
+  });
+  await expect.poll(() => page.evaluate(() =>
+    window.__hs!.store.getState().atlas !== (window as unknown as { __atlas: unknown }).__atlas)).toBe(true);
+  await settle(page);
+  expect(await page.evaluate(() => {
+    const hs = window.__hs!;
+    const s = hs.store.getState();
+    return { count: hs.compose3dCount, same: s.view3dAtlas === s.atlas, width: hs.view3d.textureWidth() };
+  })).toEqual({ count, same: true, width: 2048 });
+});
+
+test('five recompositions leave as many 3D textures alive as before', async ({ page }) => {
+  await importBricks(page);
+  const baseline = await page.evaluate(() => ({
+    gpu: window.__hs!.view3d.gpuTextures(), live: window.__hs!.view3d.liveTextures,
+  }));
+  for (let seed = 20; seed < 25; seed++) {
+    const gen = await page.evaluate(() => window.__hs!.view3dTextureGen);
+    await page.evaluate((v) => window.__hs!.store.getState().updateNode('wear', { seed: v }), seed);
+    await expect.poll(() => page.evaluate(() => window.__hs!.view3dTextureGen)).toBeGreaterThan(gen);
+  }
+  await settle(page);
+  expect(await page.evaluate(() => ({
+    gpu: window.__hs!.view3d.gpuTextures(), live: window.__hs!.view3d.liveTextures,
+  }))).toEqual(baseline);
+});

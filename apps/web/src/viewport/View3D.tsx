@@ -115,11 +115,14 @@ export function View3DPane() {
 
 /**
  * Test shapes with the hotspot applied as the target engine would (decision 79), lit by a procedural room and one
- * movable light. It reads the preview atlas back once per composition (decision 80), and only while it is on screen.
+ * movable light. It reads its atlas back once per composition (decision 80), and only while it is on screen; that
+ * atlas is composed at VIEW3D_RES when the preview is lower (decision 88).
  */
 function View3D() {
   const gpu = useProject((s) => s.gpu);
-  const atlas = useProject((s) => s.atlas);
+  const atlas = useProject((s) => s.view3dAtlas);
+  const hasPreview = useProject((s) => s.atlas !== null);
+  const setView3dVisible = useProject((s) => s.setView3dVisible);
   const settings = useProject((s) => s.view3d);
   const setView3d = useProject((s) => s.setView3d);
   const { shape, mode, lightAzimuthDeg, lightElevationDeg, pointFilter, textured } = settings;
@@ -158,12 +161,14 @@ function View3D() {
       scene.setSize(w, h);
       visibleRef.current = w > 0 && h > 0;
       setVisible(visibleRef.current);
+      setView3dVisible(visibleRef.current);
     };
     const ro = new ResizeObserver(resize);
     ro.observe(el);
     resize();
     return () => {
       ro.disconnect();
+      setView3dVisible(false);
       loadGen.current++;
       // Textures first, while their renderer is still alive to free them.
       for (const s of retired.current) disposeAtlasTextures(s);
@@ -174,11 +179,13 @@ function View3D() {
       sceneRef.current = null;
       view3dDebug.shownAtlas = null;
     };
-  }, []);
+  }, [setView3dVisible]);
 
   // One read per atlas, only while the pane is on screen; a newer atlas, hiding the pane or unmounting supersedes it.
   useEffect(() => {
     if (!sceneRef.current) return;
+    // With a preview but no 3D atlas yet (its composition at VIEW3D_RES is pending), the old textures stay up.
+    if (!atlas && hasPreview) return;
     if (!atlas) {
       loadGen.current++;
       if (current.current) retired.current.push(current.current.set);
@@ -188,7 +195,7 @@ function View3D() {
     }
     if (!visible || !gpu || current.current?.atlas === atlas) return;
     const mine = ++loadGen.current;
-    const isCurrent = () => mine === loadGen.current && visibleRef.current && useProject.getState().atlas === atlas;
+    const isCurrent = () => mine === loadGen.current && visibleRef.current && useProject.getState().view3dAtlas === atlas;
     const scene = sceneRef.current;
     loadAtlasTextures(gpu, atlas.maps, isCurrent).then(
       async (set) => {
@@ -204,7 +211,7 @@ function View3D() {
       },
       (e) => console.error('3d view textures failed', e),
     );
-  }, [atlas, visible, gpu]);
+  }, [atlas, hasPreview, visible, gpu]);
 
   // The textures and the fitted shape change together, then the replaced textures are freed.
   useLayoutEffect(() => {
@@ -325,7 +332,7 @@ function View3D() {
         onPointerLeave={() => setHover(null)}
       >
         <canvas ref={canvas} className="absolute inset-0 h-full w-full" data-testid="view3d-canvas" />
-        {(glError || !atlas) && (
+        {(glError || !hasPreview) && (
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-4 text-center text-zinc-600">
             {glError ?? t.empty3d}
           </div>

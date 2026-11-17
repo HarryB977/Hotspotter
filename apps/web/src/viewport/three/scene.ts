@@ -395,6 +395,11 @@ export class View3DScene {
     return this.renderer.info.memory.textures;
   }
 
+  /** Width of the colour texture on screen, or null without textures. */
+  get textureWidth(): number | null {
+    return this.textures?.baseColor.image.width ?? null;
+  }
+
   requestRender(): void {
     if (this.frame || this.disposed) return;
     this.frame = requestAnimationFrame(() => {
