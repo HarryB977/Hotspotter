@@ -1,0 +1,71 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build and upload the zip as a workflow artifact, without creating a release'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # Unit tests and typecheck only. e2e is not run in CI: it needs samples/
+      # (never committed) and a WebGPU-capable browser.
+      - name: Test
+        run: npm test
+
+      # The tag decides the version. On a manual run the root version is used.
+      - name: Check version
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if [ "${GITHUB_REF_TYPE}" != "tag" ]; then
+            TAG="v$(node -p "require('./package.json').version")"
+          fi
+          echo "HS_TAG=${TAG}" >> "$GITHUB_ENV"
+          node scripts/check-version.mjs "${TAG}"
+
+      # The token is read from the secret by the build script, which never prints it.
+      # Without the secret the build still works and update checks go unauthenticated.
+      - name: Build portable
+        run: npm run portable
+        env:
+          HOTSPOTTER_READ_TOKEN: ${{ secrets.HOTSPOTTER_READ_TOKEN }}
+
+      - name: Release notes
+        shell: bash
+        run: node scripts/release-notes.mjs "${HS_TAG#v}" > notes.md
+
+      - name: Upload zip (dry run)
+        if: github.event_name == 'workflow_dispatch' && inputs.dry_run
+        uses: actions/upload-artifact@v4
+        with:
+          name: hotspotter-portable
+          path: dist/*.zip
+
+      - name: Create release
+        if: github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && !inputs.dry_run)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          FLAGS=""
+          case "${HS_TAG}" in *-*) FLAGS="--prerelease" ;; esac
+          gh release create "${HS_TAG}" dist/*.zip --title "${HS_TAG}" --notes-file notes.md ${FLAGS}

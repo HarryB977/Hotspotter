@@ -1,5 +1,6 @@
 {
   "name": "hotspotter",
+  "version": "0.1.0",
   "private": true,
   "workspaces": ["packages/*", "apps/*"],
   "overrides": { "vite": "5.4.21" },
@@ -8,7 +9,7 @@
     "e2e": "npm run e2e -w @hotspotter/web",
     "bench": "node scripts/bench.mjs",
     "portable": "node scripts/build-portable.mjs",
-    "test": "npm run typecheck && npm run test --workspaces --if-present",
+    "test": "npm run typecheck && npm run test --workspaces --if-present && vitest run --config vitest.scripts.config.mjs",
     "build": "npm run build --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present"
   },
