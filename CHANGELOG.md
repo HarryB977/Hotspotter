@@ -2,6 +2,8 @@
 
 Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Las versiones siguen `X.Y.Z`.
 
+## [Sin publicar]
+
 ## [0.1.0] - 2026-11-17
 
 Primera versión usable.

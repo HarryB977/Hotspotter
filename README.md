@@ -1,13 +1,31 @@
 # Hotspotter
 
-Herramienta que convierte un material PBR tileable en un atlas de hotspots (WebGPU) y lo exporta para Unity (URP/HDRP) y Anvil.
+Convierte un material PBR tileable en un atlas de hotspots (rectángulos con bisel y desgaste) y lo exporta para Unity (URP/HDRP) y Anvil.
 
-## Requisitos
+## Descargar y usar
 
-- Node 22
-- Chrome o Edge actualizados (con WebGPU)
+1. Descarga el zip de la **[última versión](https://github.com/HarryB977/Hotspotter/releases/latest)** (en «Assets», `Hotspotter-X.Y.Z-win64.zip`).
+2. Descomprímelo entero donde quieras y abre `hotspotter.exe` desde la carpeta descomprimida, nunca desde dentro del zip.
+3. La primera vez Windows mostrará SmartScreen porque el `.exe` no está firmado: **Más información → Ejecutar de todas formas**.
+4. Se abre una ventana de consola y la app en Chrome o Edge. **Cerrar la consola cierra Hotspotter.**
 
-## Uso
+Necesitas Windows 10 u 11 y Chrome o Edge actualizados (la app usa WebGPU). No hace falta instalar nada más.
+
+### Actualizar
+
+Cuando haya una versión nueva, la app lo avisa en la barra de estado. Para actualizar, cierra Hotspotter (la ventana de consola), descarga el zip nuevo y sobrescribe la carpeta.
+
+Tus datos están en `%LOCALAPPDATA%\Hotspotter`, fuera de la carpeta del programa, así que sobrescribirla no los borra. Ahí también está `hotspotter.log`, útil si algo falla.
+
+### Proyectos
+
+El menú Archivo guarda y abre proyectos `.hsp` (un zip con el diseño, el material, la máscara y el segundo material; ver [docs/06-export.md](docs/06-export.md#proyecto-hsp)). La vista 3D prueba el atlas sobre formas simples.
+
+---
+
+## Desarrollo
+
+Requisitos: Node 22 y Chrome o Edge con WebGPU. La documentación por temas está en [docs/](docs/README.md).
 
 ```
 npm install
@@ -16,42 +34,33 @@ npm run dev
 
 `npm run dev` arranca el servidor local (puerto 7420) y la web (http://localhost:5173).
 
-## Proyectos
-
-El menú Archivo guarda y abre proyectos `.hsp` (un zip con el diseño, el material, la máscara y el segundo material; ver [docs/06-export.md](docs/06-export.md#proyecto-hsp)). La vista 3D prueba el atlas sobre formas simples.
-
-## Tests
+### Tests
 
 ```
-npm test       # core y servidor
+npm test       # tipos, core, servidor, web y scripts de release
 npm run e2e    # Playwright (arranca servidor y web si no están en marcha)
 npm run bench  # banco visual sobre samples/pbr (necesita samples/, que no está en git)
 ```
 
 `npm run bench` exporta cada set de `samples/pbr/` a 2048 px en `samples/_bench/<fecha-hora>/` y abre un `index.html` con miniaturas y las comprobaciones de cada set (ver [docs/11-test-bench.md](docs/11-test-bench.md)).
 
-## Publicar una versión
+### Portable local
 
-Los releases los crea GitHub Actions (`.github/workflows/release.yml`) al empujar un tag `vX.Y.Z`. Detalles en [docs/08-distribution.md](docs/08-distribution.md).
+`npm run portable` genera `dist/portable/Hotspotter/hotspotter.exe` y el zip, sin publicar nada.
 
-1. **Crea el token de lectura** (una sola vez): GitHub → Settings → Developer settings → Fine-grained personal access tokens → Generate new token. Repositorio: solo `HarryB977/Hotspotter`. Permisos: Contents de solo lectura y Metadata de solo lectura. Elige una caducidad larga y planifica un release antes de que venza: al caducar, todos los `.exe` ya repartidos muestran la línea de aviso de acceso (`authError`).
-2. **Guárdalo como secreto** del repositorio: Settings → Secrets and variables → Actions → New repository secret, con el nombre `HOTSPOTTER_READ_TOKEN`.
-3. **Antes de la primera versión, haz el ensayo**: pestaña Actions → "Release" → Run workflow. Compila y sube el zip como artefacto sin publicar nada. Lo encuentras al final de la página de esa ejecución, en la sección «Artifacts»; es un zip que contiene dentro el zip portable. Descárgalo, descomprímelo y pruébalo.
-4. **Publica**: sube la versión en todos los `package.json`, ejecuta `npm install` para que `package-lock.json` quede al día, añade una sección `## [X.Y.Z]` a `CHANGELOG.md` (sus notas serán las del release), haz commit y:
+### Publicar una versión
+
+1. Comprueba que la sección `## [Sin publicar]` de [CHANGELOG.md](CHANGELOG.md) tiene las notas de lo que cambia; serán las notas del release.
+2. Desde `main`, sin cambios pendientes:
 
    ```
-   git push
-   git tag vX.Y.Z
-   git push origin vX.Y.Z
+   npm run release minor
    ```
 
-   Un tag con guion (`v0.2.0-beta.1`) se publica como prerelease y la app no lo ofrece como actualización.
-5. **Rotar el token**: revócalo en GitHub, crea uno nuevo, actualiza el secreto `HOTSPOTTER_READ_TOKEN` y publica una versión nueva. Los `.exe` ya repartidos dejan de ver actualizaciones y muestran en la barra de estado la línea de aviso de acceso (`authError`).
+   `patch` para arreglos (0.1.0 → 0.1.1), `minor` para novedades (0.1.0 → 0.2.0), `major` para 1.0.0, o una versión exacta (`npm run release 0.2.0-beta.1`; con guion es prerelease y la app no la ofrece).
 
-### Para tus compañeros
+El comando enseña la versión y las notas y pide confirmación. Después pasa `npm test`, sube la versión en todos los `package.json`, fecha las notas del CHANGELOG, hace el commit, crea la etiqueta y sube ambas cosas. GitHub Actions compila el `.exe` y publica el release en unos minutos. Si algo no cuadra (otra rama, cambios sin commitear, `main` desfasado, notas vacías, etiqueta repetida), se para sin tocar nada.
 
-- Descarga el zip del release y descomprímelo entero; ejecuta `hotspotter.exe` desde la carpeta descomprimida, nunca desde dentro del zip.
-- SmartScreen avisará porque el `.exe` no está firmado: Más información → Ejecutar de todas formas.
-- Para actualizar, cierra Hotspotter (la ventana de consola) y sobrescribe la carpeta con la nueva.
-- Tus datos están en `%LOCALAPPDATA%\Hotspotter`, fuera de la carpeta del programa, así que sobrescribirla no los borra. Ahí también está `hotspotter.log`.
+Opciones (van detrás de `--`): `npm run release -- minor --sin-tests` se salta `npm test` (la Action lo pasa igualmente) y `--si` no pide confirmación.
 
+Detalles del proceso, el token de lectura y el ensayo sin publicar: [docs/08-distribution.md](docs/08-distribution.md#proceso-de-release).

@@ -6,6 +6,7 @@ Generador local de texturas **hotspot** (atlas de rectángulos con bisel y desga
 
 - Documentación por temas en [docs/](docs/README.md). Léela antes de cambiar comportamiento; actualízala al cambiarlo.
 - Decisiones cerradas en [docs/09-decisions.md](docs/09-decisions.md). No las reabras sin preguntar al usuario. Añade allí las nuevas.
+- Al fusionar algo que note quien usa la app, añade una línea en español en `## [Sin publicar]` de [CHANGELOG.md](CHANGELOG.md): son las notas del próximo release (`npm run release`, ver docs/08).
 - Idioma: el usuario y el equipo hablan español. Docs y textos de la UI en español primero; el código y los comentarios, en inglés.
 - La extensión de ProBuilder en `C:\Users\enriq\Desktop\Enrique\Git\HarryTools\Packages\com.harryb97.tools.probuilderextensions\` es **solo referencia**: no se modifica nunca.
 

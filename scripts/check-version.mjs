@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 const readJson = (file) => JSON.parse(readFileSync(file, 'utf8'))
 
 /** Directories of the root and of every workspace ("dir/*" patterns only). */
-function packageDirs(root) {
+export function packageDirs(root) {
   const dirs = [root]
   for (const pattern of readJson(join(root, 'package.json')).workspaces ?? []) {
     if (pattern.endsWith('/*')) {

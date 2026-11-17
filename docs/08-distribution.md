@@ -47,4 +47,18 @@ El lanzador escribe en `<carpeta de datos>\hotspotter.log` (decisión 98): una l
 - **`workflow_dispatch`** solo compila y sube el zip como artefacto: es el ensayo, y nunca publica.
 - Permisos: `contents: read` en el workflow y `write` solo en el job; el checkout usa `persist-credentials: false`. Los e2e no se ejecutan en CI.
 
-El procedimiento paso a paso está en el [README](../README.md#publicar-una-versión). Versionado semver, con `CHANGELOG.md` en la raíz.
+Versionado semver, con `CHANGELOG.md` en la raíz. Lo que se va fusionando se anota en su sección `## [Sin publicar]`.
+
+### Publicar (decisión 99)
+
+`npm run release <patch|minor|major|X.Y.Z>` (`scripts/release.mjs`) hace todo desde el PC: comprueba que estás en `main` sin cambios y al día con `origin`, que la etiqueta no existe y que `[Sin publicar]` tiene notas; enseña versión y notas y pide confirmación; pasa `npm test`; sube la versión en todos los `package.json` y en `package-lock.json`; convierte `[Sin publicar]` en `## [X.Y.Z] - fecha` (dejando una `[Sin publicar]` vacía); hace commit `chore: release vX.Y.Z`, crea la etiqueta anotada y sube rama y etiqueta con `git push --atomic`. El push de la etiqueta dispara la Action. `--sin-tests` se salta `npm test` y `--si` la confirmación (con npm van detrás de `--`). El uso resumido está en el [README](../README.md#publicar-una-versión).
+
+### Configuración única
+
+1. **Token de lectura**: GitHub → Settings → Developer settings → Fine-grained personal access tokens → Generate new token. Repositorio: solo `HarryB977/Hotspotter`. Permisos: Contents y Metadata de solo lectura. El usuario lo creó sin caducidad.
+2. **Secreto**: Settings → Secrets and variables → Actions → New repository secret, nombre `HOTSPOTTER_READ_TOKEN`.
+3. **Ensayo**: pestaña Actions → «Release» → Run workflow. Compila y sube el zip como artefacto («Artifacts», un zip que contiene el zip portable) sin publicar nada. Hecho y validado por el usuario el 2026-11-17.
+
+### Rotar el token
+
+Solo si se filtra: revócalo en GitHub, crea uno nuevo, actualiza el secreto `HOTSPOTTER_READ_TOKEN` y publica una versión nueva. Los `.exe` ya repartidos dejan de ver actualizaciones y muestran en la barra de estado la línea de aviso de acceso (`authError`). Si el repo pasa a público, basta con borrar el secreto: el build sale sin token y la consulta va sin autenticar.

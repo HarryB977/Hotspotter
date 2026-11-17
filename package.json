@@ -9,6 +9,7 @@
     "e2e": "npm run e2e -w @hotspotter/web",
     "bench": "node scripts/bench.mjs",
     "portable": "node scripts/build-portable.mjs",
+    "release": "node scripts/release.mjs",
     "test": "npm run typecheck && npm run test --workspaces --if-present && vitest run --config vitest.scripts.config.mjs",
     "build": "npm run build --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present"
