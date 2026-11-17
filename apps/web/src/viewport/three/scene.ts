@@ -1,10 +1,11 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
-import type { HotspotFit, HotspotLayout, ShapeFace, TestShape } from '@hotspotter/core';
+import type { HotspotFit, HotspotLayout, ShapeFace, ShapePart, TestShape } from '@hotspotter/core';
 import type { View3dMode } from '../../state/store';
 import { atlasTexture, releaseTexture, textureList } from './atlasTextures';
 import type { AtlasTextureSet } from './atlasTextures';
+import { faceGeometry } from './faceGeometry';
 
 /** The UI accent (tailwind `accent`), for the rect outlines. */
 const ACCENT = '#f59e0b';
@@ -23,6 +24,8 @@ const ENVIRONMENT_INTENSITY = 0.6;
 /** Camera direction of the framing: azimuth and elevation, degrees. */
 const VIEW_AZIMUTH_DEG = 35;
 const VIEW_ELEVATION_DEG = 22;
+/** Parts without the hotspot texture: plain, somewhat rough grey that does not distract (decision 87). */
+const NEUTRAL = { color: 0x8a8a8a, roughness: 0.85, metalness: 0 };
 
 /** Debug counters and handles (exposed by the test harness). */
 export const view3dDebug: {
@@ -87,14 +90,11 @@ function direction(azimuthDeg: number, elevationDeg: number): THREE.Vector3 {
   return new THREE.Vector3(Math.sin(az) * Math.cos(el), Math.sin(el), Math.cos(az) * Math.cos(el));
 }
 
-function faceGeometry(face: ShapeFace, fit: HotspotFit): THREE.BufferGeometry {
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.Float32BufferAttribute(face.corners.flat(), 3));
-  g.setAttribute('normal', new THREE.Float32BufferAttribute([0, 1, 2, 3].flatMap(() => face.normal), 3));
-  g.setAttribute('uv', new THREE.Float32BufferAttribute(fit.uv.flat(), 2));
-  // The corners run CCW seen from the normal's side.
-  g.setIndex([0, 1, 2, 0, 2, 3]);
-  return g;
+/** A point of a face given in its local metres (s along corners[0]→[1], t along corners[0]→[3]). */
+function facePoint(face: ShapeFace, s: number, t: number): THREE.Vector3 {
+  const [p0, p1, , p3] = face.corners.map(v3);
+  const { widthM: w, heightM: h } = face.quad;
+  return p0.clone().addScaledVector(p1.clone().sub(p0), w > 0 ? s / w : 0).addScaledVector(p3.clone().sub(p0), h > 0 ? t / h : 0);
 }
 
 /**
@@ -147,11 +147,14 @@ export function rectOutline(face: ShapeFace, fit: HotspotFit, layout: HotspotLay
 /** What a face of the shape on screen shows (debug and tests). */
 export interface FaceOnScreen {
   rectId: string;
+  part: ShapePart;
   normal: [number, number, number];
   uv: HotspotFit['uv'];
   tiled: boolean;
   /** Corners in canvas CSS pixels, top-left origin. */
   screen: [number, number][];
+  /** Corners of each hole in canvas CSS pixels (s0 t0, s1 t0, s1 t1, s0 t1). */
+  holes: [number, number][][];
   /** The face's front side looks at the camera. */
   facing: boolean;
 }
@@ -174,10 +177,20 @@ export class View3DScene {
     fragmentShader: UNLIT_FRAGMENT,
     uniforms: { map: { value: null }, channel: { value: -1 }, srgb: { value: false }, hasMap: { value: false } },
   });
+  /** Shared by every part without the texture, in lit and rects modes. */
+  private readonly neutral = new THREE.MeshStandardMaterial(NEUTRAL);
+  /** Parts without the texture in the unlit map modes: flat mid grey (the `hasMap = false` path). */
+  private readonly unlitNeutral = new THREE.ShaderMaterial({
+    vertexShader: UNLIT_VERTEX,
+    fragmentShader: UNLIT_FRAGMENT,
+    uniforms: { map: { value: null }, channel: { value: -1 }, srgb: { value: false }, hasMap: { value: false } },
+  });
   private readonly lineMaterial = new THREE.LineBasicMaterial({ color: ACCENT, toneMapped: false });
   private readonly shape = new THREE.Group();
-  private lines: THREE.LineSegments | null = null;
+  /** Each face's mesh and its rect outline, in face order. */
   private meshes: THREE.Mesh[] = [];
+  private lines: THREE.LineSegments[] = [];
+  private textured: Record<ShapePart, boolean> | null = null;
   private textures: AtlasTextureSet | null = null;
   private mode: View3dMode = 'lit';
   private width = 0;
@@ -290,20 +303,38 @@ export class View3DScene {
     this.requestRender();
   }
 
-  /** Replaces the shape: one mesh per face with its fit's uv, and the rect outlines. */
-  setShape(faces: readonly ShapeFace[], fits: readonly HotspotFit[], layout: HotspotLayout | null): void {
+  /**
+   * Replaces the shape: one mesh per face with its fit's uv and its holes cut out, and its rect outline. Parts that
+   * `textured` leaves out are painted neutral.
+   */
+  setShape(
+    faces: readonly ShapeFace[], fits: readonly HotspotFit[], layout: HotspotLayout | null,
+    textured: Record<ShapePart, boolean>,
+  ): void {
     this.clearShape();
-    const outline: THREE.Vector3[] = [];
+    this.textured = { ...textured };
     faces.forEach((face, i) => {
       const mesh = new THREE.Mesh(faceGeometry(face, fits[i]), this.lit);
       mesh.userData = { rectId: fits[i].rectId, face, fit: fits[i] };
+      const outline = layout ? rectOutline(face, fits[i], layout) : [];
+      const line = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(outline), this.lineMaterial);
       this.meshes.push(mesh);
-      this.shape.add(mesh);
-      if (layout) outline.push(...rectOutline(face, fits[i], layout));
+      this.lines.push(line);
+      this.shape.add(mesh, line);
     });
-    this.lines = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(outline), this.lineMaterial);
-    this.shape.add(this.lines);
     this.applyMode();
+  }
+
+  /** Which parts get the texture: swaps the materials (and the outlines shown), the geometry stays. */
+  setTextured(textured: Record<ShapePart, boolean>): void {
+    const old = this.textured;
+    if (old && (Object.keys(textured) as ShapePart[]).every((p) => old[p] === textured[p])) return;
+    this.textured = { ...textured };
+    this.applyMode();
+  }
+
+  private isTextured(mesh: THREE.Object3D): boolean {
+    return this.textured?.[(mesh.userData.face as ShapeFace).part] ?? true;
   }
 
   /** Frames the whole shape; the corridor, seen from inside, is framed from inside its open end. */
@@ -327,7 +358,7 @@ export class View3DScene {
     this.requestRender();
   }
 
-  /** Rect id of the face under a client-space point, or null. */
+  /** Rect id of the textured face under a client-space point, or null (none, or a neutral face in front). */
   pick(clientX: number, clientY: number): string | null {
     const r = this.renderer.domElement.getBoundingClientRect();
     if (r.width === 0 || r.height === 0) return null;
@@ -335,7 +366,7 @@ export class View3DScene {
     const ray = new THREE.Raycaster();
     ray.setFromCamera(ndc, this.camera);
     const hit = ray.intersectObjects(this.meshes, false)[0];
-    return hit ? (hit.object.userData.rectId as string) : null;
+    return hit && this.isTextured(hit.object) ? (hit.object.userData.rectId as string) : null;
   }
 
   /** Each face's rect and where its corners are on screen (debug and tests). */
@@ -344,12 +375,18 @@ export class View3DScene {
     return this.meshes.map((m) => {
       const face = m.userData.face as ShapeFace;
       const fit = m.userData.fit as HotspotFit;
-      const screen = face.corners.map((c): [number, number] => {
-        const p = v3(c).project(this.camera);
+      const onScreen = (p: THREE.Vector3): [number, number] => {
+        p.project(this.camera);
         return [((p.x + 1) / 2) * this.width, ((1 - p.y) / 2) * this.height];
-      });
+      };
+      const screen = face.corners.map((c) => onScreen(v3(c)));
+      const holes = (face.holes ?? []).map(([s0, t0, s1, t1]) =>
+        [[s0, t0], [s1, t0], [s1, t1], [s0, t1]].map(([s, t]) => onScreen(facePoint(face, s, t))));
       const toCamera = this.camera.position.clone().sub(v3(face.corners[0]));
-      return { rectId: fit.rectId, normal: face.normal, uv: fit.uv, tiled: fit.tiled, screen, facing: toCamera.dot(v3(face.normal)) > 0 };
+      return {
+        rectId: fit.rectId, part: face.part, normal: face.normal, uv: fit.uv, tiled: fit.tiled, screen, holes,
+        facing: toCamera.dot(v3(face.normal)) > 0,
+      };
     });
   }
 
@@ -375,6 +412,7 @@ export class View3DScene {
   private applyMode(): void {
     const unlit = UNLIT[this.mode];
     const material = unlit ? this.unlit : this.lit;
+    const neutral = unlit ? this.unlitNeutral : this.neutral;
     if (unlit) {
       const u = this.unlit.uniforms;
       const tex = this.textures ? this.textures[unlit.tex] : null;
@@ -383,17 +421,19 @@ export class View3DScene {
       u.channel.value = unlit.channel;
       u.srgb.value = !!unlit.srgb;
     }
-    for (const m of this.meshes) m.material = material;
-    if (this.lines) this.lines.visible = this.mode === 'rects';
+    this.meshes.forEach((m, i) => {
+      const textured = this.isTextured(m);
+      m.material = textured ? material : neutral;
+      this.lines[i].visible = textured && this.mode === 'rects';
+    });
     this.requestRender();
   }
 
   private clearShape(): void {
-    for (const m of this.meshes) m.geometry.dispose();
-    this.lines?.geometry.dispose();
+    for (const m of [...this.meshes, ...this.lines]) m.geometry.dispose();
     this.shape.clear();
     this.meshes = [];
-    this.lines = null;
+    this.lines = [];
   }
 
   /**
@@ -462,6 +502,8 @@ export class View3DScene {
     this.controls.dispose();
     this.lit.dispose();
     this.unlit.dispose();
+    this.neutral.dispose();
+    this.unlitNeutral.dispose();
     this.lineMaterial.dispose();
     this.envTarget.dispose();
     this.renderer.dispose();

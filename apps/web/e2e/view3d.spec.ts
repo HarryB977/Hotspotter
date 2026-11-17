@@ -289,11 +289,190 @@ test('a lost WebGL context comes back and is drawn again without any input', asy
   expect(Math.abs(after.mean - before.mean)).toBeLessThan(before.mean * 0.1 + 2);
 });
 
+/** Turns a part's texture on or off through the "Partes" dropdown, and closes it. */
+async function setPart(page: Page, name: string, on: boolean): Promise<void> {
+  await page.getByTestId('view3d-parts').click();
+  const menu = page.getByTestId('view3d-parts-menu');
+  await menu.getByRole('checkbox', { name, exact: true }).setChecked(on);
+  await page.keyboard.press('Escape');
+  await expect(menu).toBeHidden();
+}
+
+type FaceInfo = Awaited<ReturnType<NonNullable<Window['__hs']>['view3d']['faces']>>[number];
+
+/** Mean RGB of a screenshot inside a face's screen quad, shrunk toward its centre by `shrink`, and the pixel count. */
+function faceMean(page: Page, b64: string, screen: [number, number][], shrink = 0.6): Promise<{ rgb: number[]; n: number }> {
+  return page.evaluate(async ([b64, screen, shrink]) => {
+    const bmp = await createImageBitmap(await (await fetch(`data:image/png;base64,${b64}`)).blob());
+    const g = new OffscreenCanvas(bmp.width, bmp.height).getContext('2d')!;
+    g.drawImage(bmp, 0, 0);
+    const px = g.getImageData(0, 0, bmp.width, bmp.height).data;
+    const cx = screen.reduce((a, p) => a + p[0], 0) / 4;
+    const cy = screen.reduce((a, p) => a + p[1], 0) / 4;
+    const quad = screen.map(([x, y]) => [cx + (x - cx) * shrink, cy + (y - cy) * shrink]);
+    const inside = (x: number, y: number) => {
+      let sign = 0;
+      for (let i = 0; i < 4; i++) {
+        const [ax, ay] = quad[i];
+        const [bx, by] = quad[(i + 1) % 4];
+        const cross = (bx - ax) * (y - ay) - (by - ay) * (x - ax);
+        if (cross !== 0) {
+          if (sign !== 0 && Math.sign(cross) !== sign) return false;
+          sign = Math.sign(cross);
+        }
+      }
+      return true;
+    };
+    const sum = [0, 0, 0];
+    let n = 0;
+    for (let y = 0; y < bmp.height; y++) {
+      for (let x = 0; x < bmp.width; x++) {
+        if (!inside(x + 0.5, y + 0.5)) continue;
+        for (let c = 0; c < 3; c++) sum[c] += px[(y * bmp.width + x) * 4 + c];
+        n++;
+      }
+    }
+    return { rgb: sum.map((v) => v / n), n };
+  }, [b64, screen, shrink] as const);
+}
+
+/** RGB of the screenshot pixel at a canvas point. */
+function pixelAt(page: Page, b64: string, x: number, y: number): Promise<number[]> {
+  return page.evaluate(async ([b64, x, y]) => {
+    const bmp = await createImageBitmap(await (await fetch(`data:image/png;base64,${b64}`)).blob());
+    const g = new OffscreenCanvas(bmp.width, bmp.height).getContext('2d')!;
+    g.drawImage(bmp, 0, 0);
+    return [...g.getImageData(Math.round(x), Math.round(y), 1, 1).data.slice(0, 3)];
+  }, [b64, x, y] as const);
+}
+
+const maxChannelDiff = (a: number[], b: number[]) => Math.max(...a.map((v, i) => Math.abs(v - b[i])));
+const quadArea = (q: [number, number][]) =>
+  Math.abs(q.reduce((a, [x, y], i) => a + x * q[(i + 1) % 4][1] - q[(i + 1) % 4][0] * y, 0)) / 2;
+
+test('the wall with openings is open through its door and window', async ({ page }) => {
+  await importBricks(page);
+  await choose(page, 'view3d-shape', 'Pared con huecos');
+  await settleFrames(page);
+  const faces = await page.evaluate(() => window.__hs!.view3d.faces());
+  const walls = faces.filter((f) => f.part === 'wall' && Math.abs(f.normal[2]) === 1);
+  expect(walls).toHaveLength(2);
+  const front = walls.find((f) => f.normal[2] === 1 && f.facing)!;
+  expect(front.holes).toHaveLength(2);
+  const b64 = await shot(page);
+  // Through the middle of each opening there is only the background (#09090b).
+  for (const hole of front.holes) {
+    const x = hole.reduce((a, p) => a + p[0], 0) / 4;
+    const y = hole.reduce((a, p) => a + p[1], 0) / 4;
+    const [r, g, b] = await pixelAt(page, b64, x, y);
+    expect(Math.abs(r - 9) + Math.abs(g - 9) + Math.abs(b - 11)).toBeLessThanOrEqual(6);
+  }
+});
+
+test('frames are neutral by default, "Marcos" textures them, and the choice is remembered', async ({ page }) => {
+  await importBricks(page);
+  await choose(page, 'view3d-shape', 'Pared con huecos');
+  await settleFrames(page);
+  const dirty = await page.evaluate(() => window.__hs!.store.getState().dirty);
+  // The largest frame face toward the camera: a door jamb's front.
+  const frame = (await page.evaluate(() => window.__hs!.view3d.faces()))
+    .filter((f: FaceInfo) => f.part === 'frames' && f.facing && f.normal[2] === 1)
+    .sort((a: FaceInfo, b: FaceInfo) => quadArea(b.screen) - quadArea(a.screen))[0];
+  const byDefault = await faceMean(page, await shot(page), frame.screen);
+  expect(byDefault.n).toBeGreaterThan(300);
+
+  await setPart(page, 'Marcos', true);
+  await settleFrames(page);
+  const textured = await faceMean(page, await shot(page), frame.screen);
+
+  // Everything neutral: the reference grey of that face.
+  for (const name of ['Pared', 'Columnas', 'Marcos']) await setPart(page, name, false);
+  await settleFrames(page);
+  const neutral = await faceMean(page, await shot(page), frame.screen);
+
+  expect(maxChannelDiff(byDefault.rgb, neutral.rgb)).toBeLessThanOrEqual(12);
+  expect(maxChannelDiff(textured.rgb, byDefault.rgb)).toBeGreaterThan(12);
+
+  await setPart(page, 'Marcos', true);
+  expect(await page.evaluate(() => window.__hs!.store.getState().dirty)).toBe(dirty);
+  expect(JSON.parse((await page.evaluate(() => localStorage.getItem('hs.view3d')))!).textured).toEqual({
+    body: true, wall: false, columns: false, frames: true, skirting: false, floor: true, ceiling: true,
+  });
+  await page.reload();
+  await expect(page.getByTestId('view3d-shape')).toHaveText('Pared con huecos');
+  await page.getByTestId('view3d-parts').click();
+  await expect(page.getByRole('checkbox', { name: 'Marcos', exact: true })).toBeChecked();
+  await expect(page.getByRole('checkbox', { name: 'Pared', exact: true })).not.toBeChecked();
+  await expect(page.getByRole('checkbox', { name: 'Columnas', exact: true })).not.toBeChecked();
+  // Only the current shape's parts, in their order.
+  const menu = page.getByTestId('view3d-parts-menu');
+  await expect(menu.getByRole('checkbox')).toHaveCount(3);
+  expect(await menu.getByRole('checkbox').evaluateAll((els) => els.map((e) => e.closest('label')!.textContent))).toEqual(
+    ['Pared', 'Columnas', 'Marcos'],
+  );
+
+  // A stored value without the parts falls back to the defaults.
+  await page.evaluate(() => localStorage.setItem('hs.view3d', JSON.stringify({ shape: 'corridor' })));
+  await page.reload();
+  await expect.poll(() => page.evaluate(() => window.__hs?.store.getState().view3d.textured)).toEqual({
+    body: true, wall: true, columns: true, frames: false, skirting: false, floor: true, ceiling: true,
+  });
+});
+
+test('with every part neutral the shape is plain grey and recompositions still reach the view', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('console', (m) => {
+    // The dev server has no favicon: the browser's own request for it 404s on every page.
+    if (m.type() === 'error' && !m.location().url.endsWith('/favicon.ico')) errors.push(`${m.text()} ${m.location().url}`);
+  });
+  page.on('pageerror', (e) => errors.push(e.message));
+  await importBricks(page);
+  await choose(page, 'view3d-shape', 'Pared con huecos');
+  for (const name of ['Pared', 'Columnas']) await setPart(page, name, false);
+  await settleFrames(page);
+
+  /** Shape pixels (not the background) and how many of them are not grey (channels more than 8 apart). */
+  const greyness = (b64: string) => page.evaluate(async (b64) => {
+    const bmp = await createImageBitmap(await (await fetch(`data:image/png;base64,${b64}`)).blob());
+    const g = new OffscreenCanvas(bmp.width, bmp.height).getContext('2d')!;
+    g.drawImage(bmp, 0, 0);
+    const px = g.getImageData(0, 0, bmp.width, bmp.height).data;
+    let shape = 0, coloured = 0, offMid = 0;
+    for (let i = 0; i < px.length; i += 4) {
+      const [r, gg, b] = [px[i], px[i + 1], px[i + 2]];
+      if (Math.abs(r - 9) + Math.abs(gg - 9) + Math.abs(b - 11) <= 6) continue;
+      shape++;
+      if (Math.max(r, gg, b) - Math.min(r, gg, b) > 8) coloured++;
+      if (Math.abs((r + gg + b) / 3 - 128) > 3) offMid++;
+    }
+    return { shape, coloured, offMid };
+  }, b64);
+
+  const lit = await greyness(await shot(page));
+  expect(lit.shape).toBeGreaterThan(20_000);
+  expect(lit.coloured / lit.shape).toBeLessThan(0.01);
+  expect((await stats(page, await shot(page))).variance).toBeGreaterThan(100);
+
+  // Unlit maps show flat mid grey on neutral parts (antialiased silhouette edges aside).
+  await choose(page, 'view3d-mode', 'BaseColor');
+  await settleFrames(page);
+  const flat = await greyness(await shot(page));
+  expect(flat.shape).toBeGreaterThan(20_000);
+  expect(flat.offMid / flat.shape).toBeLessThan(0.05);
+
+  const gen = await page.evaluate(() => window.__hs!.view3dTextureGen);
+  await page.evaluate(() => window.__hs!.store.getState().updateNode('wear', { seed: 9 }));
+  await expect.poll(() => page.evaluate(() => window.__hs!.view3dTextureGen)).toBeGreaterThan(gen);
+  await settle(page);
+  expect(errors).toEqual([]);
+});
+
 test('the toolbar fits on one row at a 50 % split on a 1600 px window', async ({ page }) => {
   await importBricks(page);
   // The widest choices.
   await choose(page, 'view3d-shape', 'Pared con huecos');
   await choose(page, 'view3d-mode', 'Rectángulos');
+  await expect(page.getByTestId('view3d-parts')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Encajar vista' })).toHaveAttribute('title', /Encajar vista/);
   const toolbar = page.getByTestId('view3d-toolbar');
   // One row: every control's vertical centre on the same line (they differ in height, so their tops do not).

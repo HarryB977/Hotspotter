@@ -139,6 +139,12 @@ export const es = {
     lightAzimuthHint: 'Dirección de la luz alrededor de la forma, en grados (0 = de frente). Arrastra para girarla',
     lightElevation: 'Altura de la luz',
     lightElevationHint: 'Altura de la luz sobre el horizonte, en grados (90 = desde arriba)',
+    parts: 'Partes',
+    partsHint: 'Partes de la forma que llevan la textura del hotspot; las demás se pintan de gris neutro',
+    partNames: {
+      body: 'Cuerpo', wall: 'Pared', columns: 'Columnas', frames: 'Marcos', skirting: 'Rodapié', floor: 'Suelo',
+      ceiling: 'Techo',
+    },
     pointFilter: 'Píxeles',
     pointFilterHint: 'Muestra los píxeles de las texturas sin suavizar (filtrado point), para revisar pixel art',
     fit: 'Encajar vista',

@@ -5,7 +5,7 @@ import {
 } from '@hotspotter/core';
 import type {
   CheckResult, DocNode, GrayImage, HotspotLayout, LayoutIssue, MapKind, MaterialSettings, MaterialType, NodeParams,
-  NodeType, ProjectDoc, ProportionIssue, RectPlacement, StructureResult, TestShape,
+  NodeType, ProjectDoc, ProportionIssue, RectPlacement, ShapePart, StructureResult, TestShape,
 } from '@hotspotter/core';
 import {
   composeAtlas, hasMapFromFiles, initGpu, readbackDetailSlope, readbackR32, readbackRgba8, uploadMaterial, uploadRgba8, uploadStructure,
@@ -39,10 +39,17 @@ export interface View3dSettings {
   lightElevationDeg: number;
   /** Nearest-texel filtering, to review pixel art. */
   pointFilter: boolean;
+  /** Which parts of the shapes get the hotspot texture; the others are painted neutral grey. */
+  textured: Record<ShapePart, boolean>;
 }
 
+/** Every shape part. Frames and skirting are neutral by default: they never get the texture at first. */
+const DEFAULT_TEXTURED: Record<ShapePart, boolean> = {
+  body: true, wall: true, columns: true, frames: false, skirting: false, floor: true, ceiling: true,
+};
+
 export const DEFAULT_VIEW3D: View3dSettings = {
-  shape: 'cube', mode: 'lit', lightAzimuthDeg: 35, lightElevationDeg: 45, pointFilter: false,
+  shape: 'cube', mode: 'lit', lightAzimuthDeg: 35, lightElevationDeg: 45, pointFilter: false, textured: DEFAULT_TEXTURED,
 };
 
 const VIEW3D_KEY = 'hs.view3d';
@@ -54,12 +61,16 @@ export function sanitizeView3d(v: unknown, base: View3dSettings = DEFAULT_VIEW3D
   const num = (x: unknown) => (typeof x === 'number' && Number.isFinite(x) ? x : null);
   const az = num(o.lightAzimuthDeg);
   const el = num(o.lightElevationDeg);
+  const textured = (typeof o.textured === 'object' && o.textured !== null ? o.textured : {}) as Record<string, unknown>;
   return {
     shape: VIEW3D_SHAPES.includes(o.shape as TestShape) ? (o.shape as TestShape) : base.shape,
     mode: VIEW3D_MODES.includes(o.mode as View3dMode) ? (o.mode as View3dMode) : base.mode,
     lightAzimuthDeg: az === null ? base.lightAzimuthDeg : ((az % 360) + 360) % 360,
     lightElevationDeg: el === null ? base.lightElevationDeg : Math.min(90, Math.max(0, el)),
     pointFilter: typeof o.pointFilter === 'boolean' ? o.pointFilter : base.pointFilter,
+    textured: Object.fromEntries((Object.keys(DEFAULT_TEXTURED) as ShapePart[]).map((p) => [
+      p, typeof textured[p] === 'boolean' ? textured[p] : base.textured[p],
+    ])) as Record<ShapePart, boolean>,
   };
 }
 

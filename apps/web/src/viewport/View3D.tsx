@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Focus } from 'lucide-react';
-import { buildShape, fitFaces } from '@hotspotter/core';
-import type { DocNode, HotspotFit, ShapeFace, TestShape } from '@hotspotter/core';
+import { SHAPE_PARTS, buildShape, fitFaces } from '@hotspotter/core';
+import type { DocNode, HotspotFit, ShapeFace, ShapePart, TestShape } from '@hotspotter/core';
 import { es } from '../i18n/es';
 import {
   VIEW3D_MODES, VIEW3D_SHAPES, runoffOf, useProject,
@@ -34,6 +34,70 @@ function fitShape(atlas: AtlasResult, shape: TestShape): { faces: ShapeFace[]; f
   return { faces, fits: fitFaces(faces, atlas.layout, rotations, { seed, runoff }) };
 }
 
+/**
+ * The "Partes" dropdown: one checkbox per part of the current shape (SHAPE_PARTS order) saying whether it gets the
+ * hotspot texture. Closes on a click outside or Escape.
+ */
+function PartsMenu({ shape, textured, onChange }: {
+  shape: TestShape;
+  textured: Record<ShapePart, boolean>;
+  onChange: (textured: Record<ShapePart, boolean>) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!root.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    window.addEventListener('mousedown', onDown);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('mousedown', onDown);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+  return (
+    <div className="relative" ref={root}>
+      <button
+        type="button"
+        className="flex h-6 items-center gap-1 rounded border border-zinc-800 bg-zinc-900 px-1.5 text-sm text-zinc-100 focus-visible:border-accent focus-visible:outline-none"
+        aria-haspopup="true"
+        aria-expanded={open}
+        title={t.partsHint}
+        onClick={() => setOpen((o) => !o)}
+        data-testid="view3d-parts"
+      >
+        {t.parts}
+      </button>
+      {open && (
+        <div
+          role="group"
+          aria-label={t.parts}
+          className="absolute left-0 top-full z-40 mt-1 min-w-[8rem] rounded border border-zinc-700 bg-zinc-900 py-1 text-xs shadow-lg"
+          data-testid="view3d-parts-menu"
+        >
+          {SHAPE_PARTS[shape].map((p) => (
+            <label key={p} className="flex cursor-pointer items-center gap-2 px-2 py-1 text-zinc-200 hover:bg-zinc-800">
+              <input
+                type="checkbox"
+                className="accent-accent"
+                checked={textured[p]}
+                onChange={(e) => onChange({ ...textured, [p]: e.target.checked })}
+                data-testid={`view3d-part-${p}`}
+              />
+              {t.partNames[p]}
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default View3DPane;
 
 /** The 3D view, remountable by the test harness (`view3dDebug.remount`) to check that nothing leaks. */
@@ -58,7 +122,7 @@ function View3D() {
   const atlas = useProject((s) => s.atlas);
   const settings = useProject((s) => s.view3d);
   const setView3d = useProject((s) => s.setView3d);
-  const { shape, mode, lightAzimuthDeg, lightElevationDeg, pointFilter } = settings;
+  const { shape, mode, lightAzimuthDeg, lightElevationDeg, pointFilter, textured } = settings;
 
   const host = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
@@ -155,7 +219,7 @@ function View3D() {
       }
     }
     scene.setTextures(current.current?.set ?? null);
-    scene.setShape(fitted.faces, fitted.fits, shown?.layout ?? null);
+    scene.setShape(fitted.faces, fitted.fits, shown?.layout ?? null, useProject.getState().view3d.textured);
     for (const s of retired.current) disposeAtlasTextures(s);
     retired.current = [];
     view3dDebug.shownAtlas = shown;
@@ -166,6 +230,7 @@ function View3D() {
   }, [shown, shape]);
 
   useEffect(() => sceneRef.current?.setMode(mode), [mode]);
+  useEffect(() => sceneRef.current?.setTextured(textured), [textured]);
   useEffect(() => sceneRef.current?.setLight(lightAzimuthDeg, lightElevationDeg), [lightAzimuthDeg, lightElevationDeg]);
   useEffect(() => {
     if (!current.current) return;
@@ -181,7 +246,7 @@ function View3D() {
       <div
         role="toolbar"
         aria-label={t.toolbar}
-        className="flex shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b border-zinc-800 px-1.5 py-1 text-xs text-zinc-400"
+        className="flex shrink-0 flex-wrap items-center gap-x-1.5 gap-y-1 border-b border-zinc-800 px-1.5 py-1 text-xs text-zinc-400"
         data-testid="view3d-toolbar"
       >
         <Select value={shape} onValueChange={(v) => setView3d({ shape: v as TestShape })}>
@@ -200,6 +265,7 @@ function View3D() {
             {VIEW3D_MODES.map((m) => <SelectItem key={m} value={m}>{modeLabel(m)}</SelectItem>)}
           </SelectContent>
         </Select>
+        <PartsMenu shape={shape} textured={textured} onChange={(v) => setView3d({ textured: v })} />
         <div className="flex items-center gap-1">
           <span title={t.lightHint}>{t.light}</span>
           <NumField
