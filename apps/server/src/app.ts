@@ -1,22 +1,26 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import Fastify, { type FastifyInstance } from 'fastify';
 import fastifyStatic from '@fastify/static';
 import { registerExportRoute } from './exportRoute';
+import { APP_VERSION } from './config';
+import type { UpdateServiceLike } from './updateTypes';
 
-const { version } = JSON.parse(
-  readFileSync(new URL('../package.json', import.meta.url), 'utf8'),
-) as { version: string };
+/** Browser origins allowed to call the API: the bundled app, plus the Vite dev server in dev. */
+export function allowedOrigins(port: number, dev: boolean): Set<string> {
+  const ports = dev ? [port, 5173] : [port];
+  return new Set(ports.flatMap((p) => [`http://127.0.0.1:${p}`, `http://localhost:${p}`]));
+}
 
-/** Browser origins allowed to call the API: the Vite dev server and the bundled app. */
-export const ALLOWED_ORIGINS = new Set([
-  'http://localhost:5173',
-  'http://127.0.0.1:5173',
-  'http://localhost:7420',
-  'http://127.0.0.1:7420',
-]);
-
-export function buildApp(opts: { webRoot?: string; allowedPort?: number }): FastifyInstance {
+export function buildApp(opts: {
+  webRoot?: string;
+  port: number;
+  version?: string;
+  dev?: boolean;
+  updates?: UpdateServiceLike;
+}): FastifyInstance {
   const app = Fastify();
+  const origins = allowedOrigins(opts.port, opts.dev ?? false);
+  const version = opts.version ?? APP_VERSION;
 
   // Blocks DNS rebinding: only loopback host names are accepted.
   app.addHook('onRequest', async (req, reply) => {
@@ -24,13 +28,13 @@ export function buildApp(opts: { webRoot?: string; allowedPort?: number }): Fast
     const i = host.lastIndexOf(':');
     const name = i < 0 ? host : host.slice(0, i);
     const port = i < 0 ? '' : host.slice(i + 1);
-    const portOk = opts.allowedPort === undefined || port === String(opts.allowedPort);
+    const portOk = port === String(opts.port);
     if ((name !== '127.0.0.1' && name !== 'localhost') || !portOk) {
       return reply.code(403).send({ error: 'Host no permitido' });
     }
     // Blocks cross-site requests that reach the server through the dev proxy, which rewrites Host.
     const origin = req.headers.origin;
-    if (origin !== undefined && !ALLOWED_ORIGINS.has(origin)) {
+    if (origin !== undefined && !origins.has(origin)) {
       return reply.code(403).send({ error: 'Origen no permitido' });
     }
   });

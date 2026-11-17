@@ -21,7 +21,7 @@ const put = (query: Record<string, string>, body: Buffer, headers: Record<string
 beforeAll(async () => {
   root = await mkdtemp(join(tmpdir(), 'hotspotter-'));
   dir = join(root, 'my export folder', 'sub dir');
-  app = buildApp({});
+  app = buildApp({ port: 80, dev: true });
   await app.ready();
 });
 
@@ -79,7 +79,7 @@ describe('server', () => {
   });
 
   it('rejects non-loopback Host headers with 403', async () => {
-    const strict = buildApp({ allowedPort: 7420 });
+    const strict = buildApp({ port: 7420 });
     const ok = await strict.inject({ method: 'GET', url: '/api/health', headers: { host: '127.0.0.1:7420' } });
     expect(ok.statusCode).toBe(200);
     for (const host of ['evil.example:7420', 'localhost:9999', '127.0.0.1']) {
