@@ -3,7 +3,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import fastifyStatic from '@fastify/static';
 import { registerExportRoute } from './exportRoute';
 import { APP_VERSION } from './config';
-import type { UpdateServiceLike } from './updateTypes';
+import type { UpdateService } from './updates';
 
 /** Browser origins allowed to call the API: the bundled app, plus the Vite dev server in dev. */
 export function allowedOrigins(port: number, dev: boolean): Set<string> {
@@ -16,7 +16,7 @@ export function buildApp(opts: {
   port: number;
   version?: string;
   dev?: boolean;
-  updates?: UpdateServiceLike;
+  updates?: UpdateService;
 }): FastifyInstance {
   const app = Fastify();
   const origins = allowedOrigins(opts.port, opts.dev ?? false);
@@ -41,6 +41,18 @@ export function buildApp(opts: {
 
   app.get('/api/health', async () => ({ ok: true, version }));
   registerExportRoute(app);
+
+  const updates = opts.updates;
+  if (updates) {
+    app.get('/api/update', async () => updates.state());
+    app.post('/api/update/skip', async (req, reply) => {
+      if (req.headers['x-hotspotter'] !== '1') return reply.code(403).send({ error: 'Falta la cabecera X-Hotspotter' });
+      const v = (req.body as { version?: unknown } | null)?.version;
+      if (typeof v !== 'string' || !/^v?\d+\.\d+\.\d+$/.test(v)) return reply.code(400).send({ error: 'Versión no válida' });
+      await updates.skip(v);
+      return reply.code(204).send();
+    });
+  }
 
   if (opts.webRoot && existsSync(opts.webRoot)) {
     app.register(fastifyStatic, { root: opts.webRoot });
