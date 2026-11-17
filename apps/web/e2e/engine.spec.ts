@@ -75,6 +75,8 @@ declare global {
         /** Adds a height map of 8-texel vertical stripes. */
         heightRelief?: boolean;
         groove?: { widthM: number; bevelM: number };
+        /** Rects: two side by side (default), or a tileU strip over the top half and a fixed rect under it. */
+        strip?: boolean;
       }): Promise<ComposeProbe>;
     };
   }
@@ -100,7 +102,7 @@ test.describe('composeAtlas', () => {
         return [(cx + cy) % 2 ? 255 : 0, cx * 32, cy * 32, 255];
       };
       window.__t11 = {
-        async compose({ albedoOnly = true, normal = 'gl', flatNormal = false, heightRelief = false, groove = { widthM: 0.02, bevelM: 0.01 } }) {
+        async compose({ albedoOnly = true, normal = 'gl', flatNormal = false, heightRelief = false, groove = { widthM: 0.02, bevelM: 0.01 }, strip = false }) {
           const { core, engine } = window.__hs!;
           const ctx = await engine.initGpu();
           const period = { x: 0.125, y: 0.125, phaseX: 0, phaseY: 0, cutAllowedX: false, cutAllowedY: false };
@@ -109,10 +111,15 @@ test.describe('composeAtlas', () => {
             widthPx: 512,
             heightPx: 512,
             worldWidthM: 1,
-            rects: [
-              core.makeRect({ id: 'a', x: 0, y: 0, w: 256, h: 512 }),
-              core.makeRect({ id: 'b', x: 256, y: 0, w: 256, h: 512 }),
-            ],
+            rects: strip
+              ? [
+                core.makeRect({ id: 's', x: 0, y: 0, w: 512, h: 256, tileU: true }),
+                core.makeRect({ id: 'f', x: 0, y: 256, w: 512, h: 256 }),
+              ]
+              : [
+                core.makeRect({ id: 'a', x: 0, y: 0, w: 256, h: 512 }),
+                core.makeRect({ id: 'b', x: 256, y: 0, w: 256, h: 512 }),
+              ],
             groove: { ...groove, depthM, profile: 'bevel' as const },
           };
           const images: Partial<Record<'baseColor' | 'normal' | 'height', ImageBitmap>> = {
@@ -238,6 +245,33 @@ test.describe('composeAtlas', () => {
     expect(Math.abs(r.right + DEPTH_M * 0.512)).toBeLessThan(2e-4);
     expect(Math.abs(r.farLeft)).toBeLessThan(2e-4);
     expect(Math.abs(r.farRight)).toBeLessThan(2e-4);
+  });
+
+  test('a tileU strip has no groove or bevel at its u-ends; its top and bottom and a fixed rect keep them (decision 89)', async ({ page }) => {
+    const r = await page.evaluate(async () => {
+      const m = await window.__t11!.compose({ strip: true });
+      const i = (x: number, y: number) => y * m.w + x;
+      const h = (x: number, y: number) => m.height[i(x, y)];
+      return {
+        // Middle row of the strip: its two ends and its centre.
+        stripEnds: [h(0, 128), h(1, 128), h(4, 128), h(507, 128), h(510, 128), h(511, 128)],
+        stripEndIds: [m.rectId[i(0, 128)], m.rectId[i(511, 128)]],
+        // Its top edge (the atlas top) and the shared edge with the fixed rect still have the groove.
+        stripTop: h(256, 0),
+        shared: h(256, 256),
+        sharedId: m.rectId[i(256, 256)],
+        // The fixed rect, which also spans the atlas but does not tile, keeps its left and right groove.
+        fixedEnds: [h(0, 384), h(511, 384)],
+        fixedEndIds: [m.rectId[i(0, 384)], m.rectId[i(511, 384)]],
+      };
+    });
+    for (const v of r.stripEnds) expect(Math.abs(v)).toBeLessThan(2e-4);
+    expect(r.stripEndIds).toEqual([1, 1]);
+    expect(r.stripTop).toBeLessThan(-0.9 * DEPTH_M);
+    expect(r.shared).toBeLessThan(-0.9 * DEPTH_M);
+    expect(r.sharedId).toBe(0);
+    for (const v of r.fixedEnds) expect(v).toBeLessThan(-0.9 * DEPTH_M);
+    expect(r.fixedEndIds).toEqual([0, 0]);
   });
 
   test('packParams places bevelM at byte 52 and seed at byte 56', async ({ page }) => {

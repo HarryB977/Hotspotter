@@ -39,7 +39,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
   // Groove floor (outside the visible, groove-shrunk rect): never worn (R31). lossR = -1 marks it as "don't care" for
   // the border pass (R32a); every reader treats lossR < 0 as 0.
-  let ve = visibleEdgePx(r, px, 0.5 * P.grooveWidthM * ppm);
+  let ve = visibleEdgePx(r, pl.seams, px, 0.5 * P.grooveWidthM * ppm);
   if (ve < 0.0) {
     textureStore(outLoss, c, vec4<u32>(pack2x16float(vec2<f32>(-1.0, 0.0)), 0u, 0u, 0u));
     return;
@@ -48,8 +48,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   // Distance to the visible edge and damage potential.
   let e = ve / ppm;
   // Thin-trim cap on the visible rect (the rect minus the groove floor).
-  let visibleMinM = max(min(r.z, r.w) / ppm - P.grooveWidthM, 0.0);
-  let wEff = min(W.widthM, 0.33 * visibleMinM);
+  let wEff = min(W.widthM, 0.33 * visibleMinM(r, pl.seams, ppm, P.grooveWidthM));
   var pEdge = 0.0;
   if (wEff > 0.0) {
     pEdge = W.intensity * (1.0 - smoothstep(0.0, wEff, e));

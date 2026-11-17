@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { makeRect, pxPerMetre, rectSizeM, validateLayout, DEFAULT_GROOVE } from '../src/layout';
+import { makeRect, pxPerMetre, rectSizeM, seamlessAxes, validateLayout, DEFAULT_GROOVE } from '../src/layout';
 import type { HotspotLayout, HotspotRect } from '../src/layout';
 
 function layout(rects: HotspotRect[], widthPx = 200, heightPx = 100): HotspotLayout {
@@ -74,5 +74,17 @@ describe('makeRect', () => {
       allowRotation: false, allowMirrorX: false, allowMirrorY: false,
       tileU: false, tileV: false, useOn: 'any', inset: 0, group: '',
     });
+  });
+});
+
+describe('seamlessAxes (decision 89)', () => {
+  it('a tiling strip spanning the atlas has no edges on its tiling axis; a short one keeps them', () => {
+    const l = layout([]);
+    expect(seamlessAxes(l, makeRect({ id: 'u', x: 0, y: 0, w: 200, h: 20, tileU: true }))).toEqual({ u: true, v: false });
+    expect(seamlessAxes(l, makeRect({ id: 'v', x: 0, y: 0, w: 20, h: 100, tileV: true }))).toEqual({ u: false, v: true });
+    expect(seamlessAxes(l, makeRect({ id: 'b', x: 0, y: 0, w: 200, h: 100, tileU: true, tileV: true })))
+      .toEqual({ u: true, v: true });
+    expect(seamlessAxes(l, makeRect({ id: 's', x: 0, y: 0, w: 100, h: 20, tileU: true }))).toEqual({ u: false, v: false });
+    expect(seamlessAxes(l, makeRect({ id: 'f', x: 0, y: 0, w: 200, h: 20 }))).toEqual({ u: false, v: false });
   });
 });

@@ -52,6 +52,18 @@ export function rectSizeM(l: HotspotLayout, r: HotspotRect): { w: number; h: num
   return { w: r.w / ppm, h: r.h / ppm };
 }
 
+/**
+ * Axes on which rect `r` is a seamless tiling strip (decision 89): tileU or tileV spanning the whole atlas on that axis,
+ * as ProBuilder's GetTilingAxis. Its two edges on that axis are no edge: no groove, bevel, edge wear or dirt edge, so
+ * the strip repeats without a seam. A tiling flag on a rect that does not span the atlas keeps its edges.
+ */
+export function seamlessAxes(l: HotspotLayout, r: HotspotRect): { u: boolean; v: boolean } {
+  return {
+    u: r.tileU && r.x <= 0 && r.x + r.w >= l.widthPx,
+    v: r.tileV && r.y <= 0 && r.y + r.h >= l.heightPx,
+  };
+}
+
 export type LayoutIssue = {
   kind: 'overlap' | 'outOfBounds' | 'tileNotFullSpan' | 'tooSmall';
   rectIds: string[];

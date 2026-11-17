@@ -373,7 +373,8 @@ test('frames are neutral by default, "Marcos" textures them, and the choice is r
   await importBricks(page);
   await choose(page, 'view3d-shape', 'Pared con huecos');
   await settleFrames(page);
-  const dirty = await page.evaluate(() => window.__hs!.store.getState().dirty);
+  // Import leaves the project dirty: start clean, so a part toggle that dirtied it would show.
+  await page.evaluate(() => window.__hs!.store.setState({ dirty: false }));
   // The largest frame face toward the camera: a door jamb's front.
   const frame = (await page.evaluate(() => window.__hs!.view3d.faces()))
     .filter((f: FaceInfo) => f.part === 'frames' && f.facing && f.normal[2] === 1)
@@ -394,7 +395,7 @@ test('frames are neutral by default, "Marcos" textures them, and the choice is r
   expect(maxChannelDiff(textured.rgb, byDefault.rgb)).toBeGreaterThan(12);
 
   await setPart(page, 'Marcos', true);
-  expect(await page.evaluate(() => window.__hs!.store.getState().dirty)).toBe(dirty);
+  expect(await page.evaluate(() => window.__hs!.store.getState().dirty)).toBe(false);
   expect(JSON.parse((await page.evaluate(() => localStorage.getItem('hs.view3d')))!).textured).toEqual({
     body: true, wall: false, columns: false, frames: true, skirting: false, floor: true, ceiling: true,
   });
@@ -548,11 +549,12 @@ test('the normal map follows the GL convention and the rows are not flipped', as
 
 test('the 3D settings are remembered in localStorage, not in the project', async ({ page }) => {
   await importBricks(page);
-  const dirty = await page.evaluate(() => window.__hs!.store.getState().dirty);
+  // Import leaves the project dirty: start clean, so a view setting that dirtied it would show.
+  await page.evaluate(() => window.__hs!.store.setState({ dirty: false }));
   await choose(page, 'view3d-shape', 'Escalera');
   await choose(page, 'view3d-mode', 'Normal');
   await page.getByTestId('view3d-point-filter').click();
-  expect(await page.evaluate(() => window.__hs!.store.getState().dirty)).toBe(dirty);
+  expect(await page.evaluate(() => window.__hs!.store.getState().dirty)).toBe(false);
   expect(JSON.parse((await page.evaluate(() => localStorage.getItem('hs.view3d')))!)).toMatchObject({
     shape: 'stairs', mode: 'normal', pointFilter: true,
   });

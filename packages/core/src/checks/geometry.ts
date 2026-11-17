@@ -1,8 +1,11 @@
-import { pxPerMetre } from '../layout';
+import { pxPerMetre, seamlessAxes } from '../layout';
 import type { HotspotLayout } from '../layout';
 import type { WearParams } from '../wear/params';
 
-/** A rect at evaluation resolution: its visible (groove-shrunk) bounds and wear widths, as the loss pass sizes them. */
+/**
+ * A rect at evaluation resolution: its visible bounds (shrunk by half the groove, except on a seamless axis) and wear
+ * widths, as rectId.wgsl draws it and the loss pass sizes it.
+ */
 export interface EvalRect {
   /** Index in layout.rects; the rect id map holds index + 1. */
   index: number;
@@ -16,6 +19,9 @@ export interface EvalRect {
   wEffM: number;
   /** Guaranteed rim: min(minEdgeM, 0.5 · wEff), metres (R28). */
   rimM: number;
+  /** Seamless tiling strip (decision 89): its left and right (u) or top and bottom (v) edges are no edge. */
+  seamU: boolean;
+  seamV: boolean;
 }
 
 export interface EvalGeometry {
@@ -33,21 +39,32 @@ export function evalGeometry(layout: HotspotLayout, wear: WearParams | null, wid
   const s = widthPx / layout.widthPx;
   const hg = 0.5 * layout.groove.widthM * ppmRef;
   const rects = layout.rects.map((r, index) => {
-    const visibleMinM = Math.max(Math.min(r.w, r.h) / ppmRef - layout.groove.widthM, 0);
+    const seam = seamlessAxes(layout, r);
+    // The short side across the edges that exist: a seamless axis has none.
+    const sidePx = Math.min(seam.u ? Infinity : r.w, seam.v ? Infinity : r.h);
+    const visibleMinM = Math.max(sidePx / ppmRef - layout.groove.widthM, 0);
     const wEffM = wear ? Math.min(wear.widthM, 0.33 * visibleMinM) : 0;
+    const hx = seam.u ? 0 : hg, hy = seam.v ? 0 : hg;
     return {
       index, id: r.id,
-      x0: (r.x + hg) * s, x1: (r.x + r.w - hg) * s, y0: (r.y + hg) * s, y1: (r.y + r.h - hg) * s,
+      x0: (r.x + hx) * s, x1: (r.x + r.w - hx) * s, y0: (r.y + hy) * s, y1: (r.y + r.h - hy) * s,
       wEffM, rimM: wear ? Math.min(wear.minEdgeM, 0.5 * wEffM) : 0,
+      seamU: seam.u, seamV: seam.v,
     };
   });
   return { ppm: ppmRef * s, rects };
 }
 
-/** Distance (evaluation px) from the centre of pixel (x, y) to the visible edge of `r`; negative on the groove floor. */
+/**
+ * Distance (evaluation px) from the centre of pixel (x, y) to the visible edge of `r`; negative on the groove floor.
+ * The edges on a seamless axis do not count (Infinity when both axes are seamless), as visibleEdgePx in common.wgsl.
+ */
 export function edgeDistPx(r: EvalRect, x: number, y: number): number {
   const cx = x + 0.5, cy = y + 0.5;
-  return Math.min(cx - r.x0, r.x1 - cx, cy - r.y0, r.y1 - cy);
+  return Math.min(
+    r.seamU ? Infinity : Math.min(cx - r.x0, r.x1 - cx),
+    r.seamV ? Infinity : Math.min(cy - r.y0, r.y1 - cy),
+  );
 }
 
 /**

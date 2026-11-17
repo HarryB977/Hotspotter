@@ -9,10 +9,12 @@ export const COVERAGE_GAP_M = 0.02;
 interface Sample { covered: boolean; x: number; y: number }
 
 /**
- * Perimeter samples of one rect, walked clockwise (top, right, bottom, left), one per evaluation px. A sample is
- * covered when any pixel of the guaranteed rim band (from the visible edge inwards, max(rim, 1 px) deep) has wear.
+ * Perimeter samples of one rect, walked clockwise (top, right, bottom, left), one per evaluation px, as closed loops.
+ * A sample is covered when any pixel of the guaranteed rim band (from the visible edge inwards, max(rim, 1 px) deep)
+ * has wear. A seamless tiling strip (decision 89) has no edge on its tiling axis: a tileU strip gives two loops, its top
+ * and its bottom, each wrapping around the strip's ends as the strip repeats; a tileV strip its left and its right.
  */
-function perimeter(ctx: CheckContext, r: EvalRect, ppm: number): Sample[] {
+function perimeter(ctx: CheckContext, r: EvalRect, ppm: number): Sample[][] {
   const { width: W, height: H, rectId, wearMask } = ctx.maps;
   const id = r.index + 1;
   const depth = Math.max(r.rimM * ppm, 1);
@@ -33,12 +35,17 @@ function perimeter(ctx: CheckContext, r: EvalRect, ppm: number): Sample[] {
     for (let x = x0; x <= x1; x++) if (hit(x, y)) return true;
     return false;
   };
-  const out: Sample[] = [];
-  for (let x = xa; x <= xb; x++) out.push({ covered: column(x, ya, topEnd), x: x + 0.5, y: ya + 0.5 });
-  for (let y = ya; y <= yb; y++) out.push({ covered: row(y, rightStart, xb), x: xb + 0.5, y: y + 0.5 });
-  for (let x = xb; x >= xa; x--) out.push({ covered: column(x, botStart, yb), x: x + 0.5, y: yb + 0.5 });
-  for (let y = yb; y >= ya; y--) out.push({ covered: row(y, xa, leftEnd), x: xa + 0.5, y: y + 0.5 });
-  return out;
+  const top: Sample[] = [], right: Sample[] = [], bottom: Sample[] = [], left: Sample[] = [];
+  if (!r.seamV) {
+    for (let x = xa; x <= xb; x++) top.push({ covered: column(x, ya, topEnd), x: x + 0.5, y: ya + 0.5 });
+    for (let x = xb; x >= xa; x--) bottom.push({ covered: column(x, botStart, yb), x: x + 0.5, y: yb + 0.5 });
+  }
+  if (!r.seamU) {
+    for (let y = ya; y <= yb; y++) right.push({ covered: row(y, rightStart, xb), x: xb + 0.5, y: y + 0.5 });
+    for (let y = yb; y >= ya; y--) left.push({ covered: row(y, xa, leftEnd), x: xa + 0.5, y: y + 0.5 });
+  }
+  if (r.seamU || r.seamV) return [top, bottom, left, right].filter((s) => s.length > 0);
+  return [[...top, ...right, ...bottom, ...left]];
 }
 
 /** Middle points of the uncovered runs longer than `minSamples`, around the closed perimeter. */
@@ -90,7 +97,7 @@ export function checkCoverage(ctx: CheckContext): CheckResult {
   for (const r of geo.rects) {
     // Thin trims cap the rim (R28); one under a pixel is skipped for the same reason as above.
     if (r.rimM * geo.ppm < 1) continue;
-    const found = gaps(perimeter(ctx, r, geo.ppm), minSamples);
+    const found = perimeter(ctx, r, geo.ppm).flatMap((loop) => gaps(loop, minSamples));
     if (found.length === 0) continue;
     rectIds.push(r.id);
     points.push(...found);

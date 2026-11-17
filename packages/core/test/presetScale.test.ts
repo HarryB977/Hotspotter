@@ -126,10 +126,21 @@ for (const widthPx of [1024, 2048, 4096]) {
       expect(failures).toEqual([]);
     });
 
-    it(`keeps storey walls of any length within ${TOLERANCE * 100} %`, () => {
-      const lengths = [0.5, 0.8, 1.2, 2.0, 2.5, 3.4, 4.5, 7];
+    it(`keeps storey walls of any length within ${TOLERANCE * 100} %, on the strip at exact scale`, () => {
+      const lengths = [0.45, 0.5, 0.8, 1.2, 2.0, 2.5, 3.4, 4.5, 7];
       const faces = lengths.map((l) => face(l, STOREY_HEIGHT_M));
       expect(scaleFailures('storey wall', faces, faces.map((_, i) => i), layout)).toEqual([]);
+      for (const runoff of [false, true]) {
+        for (let seed = 0; seed < 8; seed++) {
+          const fits = fitFaces(faces, layout, NO_ROT, { seed, runoff });
+          faces.forEach((f, i) => {
+            expect(fits[i].tiled, `${f.quad.widthM} m seed ${seed}`).toBe(true);
+            const [ru, rv] = faceBrickScale(f, fits[i], layout);
+            expect(ru).toBeCloseTo(1);
+            expect(rv).toBeCloseTo(1);
+          });
+        }
+      }
     });
   });
 }

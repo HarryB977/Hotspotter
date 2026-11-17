@@ -1542,6 +1542,63 @@ test.describe('wear size proposed from the piece size (bricks wall 13, preview 2
     for (const c of checks) expect(c.status, c.id).not.toBe('error');
   });
 
+  test('the storey strip is seamless at its ends and still wears at its top and bottom (decision 89)', async ({ page }) => {
+    await importSample(page, BRICKS, 'Piezas');
+    const r = await page.evaluate(async () => {
+      const hs = window.__hs!;
+      const s = hs.store.getState();
+      const atlas = s.atlas!;
+      const w = s.doc!.nodes.find((n) => n.type === 'wear')!.params as WearParams;
+      const { data, width: W } = await hs.engine.readbackRgba8(s.gpu!, atlas.maps.wearMask);
+      const lay = atlas.layout;
+      const scale = W / lay.widthPx;
+      const ppm = W / lay.worldWidthM;
+      const strip = lay.rects.find((r) => r.tileU && r.w === lay.widthPx)!;
+      const half = 0.5 * lay.groove.widthM * ppm;
+      const y0 = strip.y * scale + half, y1 = (strip.y + strip.h) * scale - half;
+      // Lost fraction (wearMask ≥ 128) of the pixels whose centres lie in [xa, xb) × [ya, yb), in metres from the strip.
+      const lostIn = (xa: number, xb: number, ya: number, yb: number) => {
+        let lost = 0, n = 0;
+        for (let y = Math.ceil(ya - 0.5); y + 0.5 < yb; y++) {
+          for (let x = Math.ceil(xa - 0.5); x + 0.5 < xb; x++) {
+            n++;
+            if (data[(y * W + x) * 4] >= 128) lost++;
+          }
+        }
+        return lost / n;
+      };
+      // Rows away from the top and bottom edge wear (beyond the reach), where only the ends could break.
+      const ya = y0 + w.widthM * ppm, yb = y1 - w.widthM * ppm;
+      const cm = 0.01 * ppm;
+      return {
+        stripCm: [Math.round(strip.w / lay.widthPx * lay.worldWidthM * 100), Math.round(strip.h / lay.widthPx * lay.worldWidthM * 100)],
+        left: lostIn(0, 2 * cm, ya, yb),
+        right: lostIn(W - 2 * cm, W, ya, yb),
+        middle: lostIn(W / 2 - cm, W / 2 + cm, ya, yb),
+        top: lostIn(0, W, y0, y0 + 2 * cm),
+        bottom: lostIn(0, W, y1 - 2 * cm, y1),
+      };
+    });
+    console.log(`strip: ${JSON.stringify(r)}`);
+    expect(r.stripCm).toEqual([800, 260]);
+    expect(r.left).toBeLessThan(0.02);
+    expect(r.right).toBeLessThan(0.02);
+    expect(r.middle).toBeLessThan(0.02);
+    expect(r.top).toBeGreaterThan(0.2);
+    expect(r.bottom).toBeGreaterThan(0.2);
+
+    // Rule 3: every check passes or warns on this atlas, and coverage does not flag the strip's ends.
+    const checks = await page.evaluate(async () => {
+      const res = await window.__hs!.store.getState().runEvaluation({ force: true });
+      const strip = window.__hs!.store.getState().atlas!.layout.rects.find((x) => x.tileU)!.id;
+      return { all: res!.map((x) => ({ id: x.id, status: x.status })), strip, coverage: res!.find((x) => x.id === 'coverage')! };
+    });
+    console.log(`checks: ${JSON.stringify(checks.all)}`);
+    expect(checks.all).toHaveLength(6);
+    for (const c of checks.all) expect(c.status, c.id).not.toBe('error');
+    expect(checks.coverage.rectIds).not.toContain(checks.strip);
+  });
+
   test('an edited Alcance survives re-importing the same folder with Añadir (Reemplazar starts a fresh document)', async ({ page }) => {
     await importSample(page, BRICKS, 'Piezas');
     const field = page.getByLabel('Alcance (cm)', { exact: true });
@@ -1569,7 +1626,7 @@ test.describe('wear size proposed from the piece size (bricks wall 13, preview 2
     mkdirSync(dir, { recursive: true });
     await importSample(page, BRICKS, 'Piezas');
     const path = await saveAs(page, dir, 'antiguo');
-    // (e) As an older build wrote it: no userSetWearSize, the old fixed reach.
+    // (e) As an older build wrote it: no userSetWearSize, the old fixed reach, break size and intensity.
     const edited = await page.evaluate(async (b64) => {
       const { core } = window.__hs!;
       const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
@@ -1579,6 +1636,8 @@ test.describe('wear size proposed from the piece size (bricks wall 13, preview 2
         const w = m.doc.nodes.find((n: { type: string }) => n.type === 'wear').params;
         delete w.userSetWearSize;
         w.widthM = 0.04;
+        w.sizeM = 0.03;
+        w.intensity = 0.5;
         return { path: f.path, bytes: new TextEncoder().encode(JSON.stringify(m)) };
       });
       const zip = await core.writeZip(files);
@@ -1599,7 +1658,7 @@ test.describe('wear size proposed from the piece size (bricks wall 13, preview 2
     expect(await page.evaluate(() => window.__hs!.store.getState().projectError)).toBeNull();
     await expect(page.getByTestId('project-name')).toHaveText('antiguo');
     await settled(page);
-    expect(await wearParams(page)).toMatchObject({ widthM: 0.04, userSetWearSize: true });
+    expect(await wearParams(page)).toMatchObject({ widthM: 0.04, sizeM: 0.03, intensity: 0.5, userSetWearSize: true });
   });
 
   test('a continuous material keeps the fixed reach', async ({ page }) => {
