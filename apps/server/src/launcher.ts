@@ -5,6 +5,7 @@ import { createInterface } from 'node:readline';
 import { buildApp } from './app';
 import { chooseBrowser, findInstalled, launchBrowser, readDefaultProgId } from './browser';
 import { APP_VERSION, dataDir } from './config';
+import { createFileLog, rotateLog } from './log';
 import { findRunning, pickPort, removeInstance, writeInstance } from './instance';
 import { createUpdateService } from './updates';
 
@@ -43,6 +44,15 @@ async function main(): Promise<void> {
   const dir = dataDir();
   mkdirSync(dir, { recursive: true });
   const skipBrowser = process.env.HOTSPOTTER_NO_BROWSER === '1';
+  rotateLog(dir);
+  const token = typeof __HOTSPOTTER_GH_TOKEN__ !== 'undefined' ? __HOTSPOTTER_GH_TOKEN__ : '';
+  const log = createFileLog(dir, [token]);
+  // Update-check failures and other server-side problems are reported with console.error; keep a copy in the log.
+  const consoleError = console.error.bind(console);
+  console.error = (...args: unknown[]) => {
+    consoleError(...args);
+    log(args.map((a) => (a instanceof Error ? a.message : String(a))).join(' '));
+  };
 
   const running = await findRunning(dir);
   if (running) {
@@ -62,10 +72,13 @@ async function main(): Promise<void> {
   }
 
   const port = await pickPort(PREFERRED_PORT);
-  const token = typeof __HOTSPOTTER_GH_TOKEN__ !== 'undefined' ? __HOTSPOTTER_GH_TOKEN__ : '';
   const updates = createUpdateService({ currentVersion: APP_VERSION, token: token || undefined, dir });
   const app = buildApp({ webRoot: join(dirname(process.execPath), 'web'), port, dev: false, updates });
+  app.addHook('onError', async (req, _reply, err) => {
+    log(`server error ${req.method} ${req.url.split('?')[0]}: ${err.message}`);
+  });
   await app.listen({ host: '127.0.0.1', port });
+  log(`start version ${APP_VERSION} port ${port} pid ${process.pid}`);
 
   writeInstance(dir, { port, version: APP_VERSION, pid: process.pid });
   process.on('exit', () => removeInstance(dir, process.pid));
