@@ -115,7 +115,7 @@ describe('server', () => {
   });
 
   it('accepts an export upload from an allowed Origin with the X-Hotspotter header', async () => {
-    for (const origin of ['http://localhost:5173', 'http://127.0.0.1:5173', 'http://localhost:7420', 'http://127.0.0.1:7420']) {
+    for (const origin of ['http://localhost:5173', 'http://127.0.0.1:5173', 'http://localhost:80', 'http://127.0.0.1:80']) {
       const res = await put({ dir, name: 'ok.png' }, Buffer.from(origin), { origin });
       expect(res.statusCode, origin).toBe(200);
     }
