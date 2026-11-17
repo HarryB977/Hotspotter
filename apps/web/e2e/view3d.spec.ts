@@ -423,8 +423,10 @@ test('frames are neutral by default, "Marcos" textures them, and the choice is r
 test('with every part neutral the shape is plain grey and recompositions still reach the view', async ({ page }) => {
   const errors: string[] = [];
   page.on('console', (m) => {
-    // The dev server has no favicon: the browser's own request for it 404s on every page.
-    if (m.type() === 'error' && !m.location().url.endsWith('/favicon.ico')) errors.push(`${m.text()} ${m.location().url}`);
+    // The dev server has no favicon and no /api/update (the update notice treats that 404 as "no update"):
+    // the browser's own logging of those 404s is expected on every page.
+    const url = m.location().url;
+    if (m.type() === 'error' && !url.endsWith('/favicon.ico') && !url.endsWith('/api/update')) errors.push(`${m.text()} ${m.location().url}`);
   });
   page.on('pageerror', (e) => errors.push(e.message));
   await importBricks(page);
