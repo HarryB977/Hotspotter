@@ -14,6 +14,7 @@ import { FileMenu, ProjectName } from './project/FileMenu';
 import { MAP_TABS } from './state/store';
 import type { ActiveMap } from './state/store';
 import { mapLabel } from './viewport/mapLabel';
+import { UpdateNotice } from './update/UpdateNotice';
 
 // three.js is half the bundle: the 3D view loads in its own chunk.
 const View3DPane = lazy(() => import('./viewport/View3D'));
@@ -135,6 +136,7 @@ export function App() {
               </>
             )}
             <span data-testid="gpu-info">{gpu ? gpu.adapterInfo : ''}</span>
+            <UpdateNotice />
           </span>
         </footer>
       </div>

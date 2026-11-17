@@ -8,6 +8,24 @@ const BRICKS = resolve(fileURLToPath(new URL('.', import.meta.url)), '../../../s
 
 test.skip(!existsSync(BRICKS), 'samples/pbr/bricks wall 13 not present');
 
+test.describe('status bar with the update notice', () => {
+  for (const height of [700, 450]) {
+    test(`stays on one row on screen at 1366x${height}`, async ({ page }) => {
+      await page.setViewportSize({ width: 1366, height });
+      await page.route('**/api/update', (r) => r.fulfill({
+        json: { status: 'available', version: '9.9.9', notes: 'x', url: 'https://example.com/r' },
+      }));
+      await page.goto('/');
+      await expect(page.getByTestId('update-notice')).toBeVisible();
+      const footer = page.locator('footer');
+      const box = (await footer.boundingBox())!;
+      expect(box.height).toBeLessThanOrEqual(30);
+      expect(box.y + box.height).toBeLessThanOrEqual(height);
+      expect(await page.evaluate(() => document.documentElement.scrollHeight <= window.innerHeight)).toBe(true);
+    });
+  }
+});
+
 test.describe('app shell at a laptop-sized window', () => {
   test.use({ viewport: { width: 1366, height: 700 } });
 
