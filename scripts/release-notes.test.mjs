@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, mkdtempSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { FOOTER, buildNotes, extractSection } from './release-notes.mjs'
 import { findMismatches } from './check-version.mjs'
 
@@ -71,7 +71,7 @@ describe('buildNotes', () => {
 
 describe('release-notes CLI', () => {
   const file = join(tmp, 'CHANGELOG.md')
-  writeFileSync(file, CHANGELOG)
+  beforeAll(() => writeFileSync(file, CHANGELOG))
   const run = (version) =>
     spawnSync(process.execPath, [join(here, 'release-notes.mjs'), version, file], {
       encoding: 'utf8',
@@ -112,8 +112,7 @@ describe('check-version', () => {
   })
 
   it('exits 0 when the real repo matches the tag', () => {
-    const version = JSON.parse(readFileSync(resolve(here, "..", "package.json"), "utf8")).version
+    const version = JSON.parse(readFileSync(resolve(here, '..', 'package.json'), 'utf8')).version
     expect(cli(`v${version}`).status).toBe(0)
   })
 })
-

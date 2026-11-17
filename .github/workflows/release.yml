@@ -1,23 +1,26 @@
+# A release is created only from a pushed version tag (vX.Y.Z). A manual run
+# (workflow_dispatch) only builds the portable zip and uploads it as a workflow
+# artifact: it never creates a tag or a release.
 name: Release
 
 on:
   push:
     tags: ['v*.*.*']
   workflow_dispatch:
-    inputs:
-      dry_run:
-        description: 'Build and upload the zip as a workflow artifact, without creating a release'
-        type: boolean
-        default: true
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   release:
     runs-on: windows-latest
+    # Only this job may write; needed by `gh release create`.
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
         with:
@@ -31,12 +34,13 @@ jobs:
       - name: Test
         run: npm test
 
-      # The tag decides the version. On a manual run the root version is used.
+      # On push the tag decides the version. On a manual run there is no tag, so
+      # the check compares against the root package.json version.
       - name: Check version
         shell: bash
         run: |
           TAG="${GITHUB_REF_NAME}"
-          if [ "${GITHUB_REF_TYPE}" != "tag" ]; then
+          if [ "${GITHUB_EVENT_NAME}" != "push" ]; then
             TAG="v$(node -p "require('./package.json').version")"
           fi
           echo "HS_TAG=${TAG}" >> "$GITHUB_ENV"
@@ -49,23 +53,24 @@ jobs:
         env:
           HOTSPOTTER_READ_TOKEN: ${{ secrets.HOTSPOTTER_READ_TOKEN }}
 
-      - name: Release notes
-        shell: bash
-        run: node scripts/release-notes.mjs "${HS_TAG#v}" > notes.md
-
-      - name: Upload zip (dry run)
-        if: github.event_name == 'workflow_dispatch' && inputs.dry_run
+      - name: Upload zip
+        if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
           name: hotspotter-portable
           path: dist/*.zip
 
+      - name: Release notes
+        if: github.event_name == 'push'
+        shell: bash
+        run: node scripts/release-notes.mjs "${HS_TAG#v}" > notes.md
+
       - name: Create release
-        if: github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && !inputs.dry_run)
+        if: github.event_name == 'push'
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           FLAGS=""
           case "${HS_TAG}" in *-*) FLAGS="--prerelease" ;; esac
-          gh release create "${HS_TAG}" dist/*.zip --title "${HS_TAG}" --notes-file notes.md ${FLAGS}
+          gh release create "${HS_TAG}" dist/*.zip --verify-tag --title "${HS_TAG}" --notes-file notes.md ${FLAGS}
