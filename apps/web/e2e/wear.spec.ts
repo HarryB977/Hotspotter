@@ -1,5 +1,10 @@
 import { test, expect } from '@playwright/test';
+import type { Page } from '@playwright/test';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { DirtParams, WearParams } from '@hotspotter/core';
+import { saveAs, selectLayer, settled } from './helpers';
 
 // ---------------------------------------------------------------------------
 // Wear loss pass (Task 8).
@@ -1427,4 +1432,179 @@ test('a WGSL error in a cached pipeline surfaces through checkPipelines, once, a
   // Shown to the user as is: it leads with a Spanish sentence.
   expect(r.err?.message).toMatch(/^Error interno de un shader \("broken"\)/);
   expect(r).toMatchObject({ again: 'ok', recreated: true, reported: true, sameGood: true });
+});
+
+// ---------------------------------------------------------------------------
+// Wear size proposed from the piece size (decision 86), on the real app with bricks wall 13.
+// ---------------------------------------------------------------------------
+
+const PBR = resolve(fileURLToPath(new URL('.', import.meta.url)), '../../../samples/pbr');
+const BRICKS = resolve(PBR, 'bricks wall 13');
+const CONCRETE = resolve(PBR, 'concrete wall 01');
+
+/** Imports a sample folder and waits for the settled atlas after its analysis. */
+async function importSample(page: Page, dir: string, structureType: 'Piezas' | 'Continuo'): Promise<void> {
+  await page.getByTestId('folder-input').setInputFiles(dir);
+  await selectLayer(page, 'structure');
+  await expect(page.getByTestId('structure-type')).toHaveText(structureType);
+  await selectLayer(page, 'wear');
+  await settled(page);
+}
+
+const wearParams = (page: Page) =>
+  page.evaluate(() => window.__hs!.store.getState().doc!.nodes.find((n) => n.type === 'wear')!.params as WearParams);
+
+/**
+ * Break depth at the corners of the largest `wall` rect: scanlines perpendicular to its four visible edges (the rect
+ * inset by half the groove floor), only those within longM of a corner. Each gives the inward distance, in metres, to
+ * the first pixel with wearMask < 128, capped at longM.
+ */
+const measureBreak = (page: Page) =>
+  page.evaluate(async () => {
+    const hs = window.__hs!;
+    const s = hs.store.getState();
+    const piece = hs.core.medianPieceSizeM(s.structure!.result, s.material!.settings.tileSizeM)!;
+    const atlas = s.atlas!;
+    const { data, width: W } = await hs.engine.readbackRgba8(s.gpu!, atlas.maps.wearMask);
+    const lay = atlas.layout;
+    const scale = W / lay.widthPx;
+    const ppm = W / lay.worldWidthM;
+    const rect = lay.rects.filter((r) => r.group === 'wall').sort((a, b) => b.w * b.h - a.w * a.h)[0];
+    const half = 0.5 * lay.groove.widthM * ppm;
+    const x0 = rect.x * scale + half, x1 = (rect.x + rect.w) * scale - half;
+    const y0 = rect.y * scale + half, y1 = (rect.y + rect.h) * scale - half;
+    const L = piece.longM, capPx = L * ppm;
+    const lost = (x: number, y: number) => data[(y * W + x) * 4] >= 128;
+    // Pixel indices whose centre lies between a and b, within capPx of either end.
+    const along = (a: number, b: number) => {
+      const out: number[] = [];
+      for (let i = Math.ceil(a - 0.5); i + 0.5 <= b; i++) if (i + 0.5 - a <= capPx || b - (i + 0.5) <= capPx) out.push(i);
+      return out;
+    };
+    // Metres from `edge` (px) inward, in direction `dir`, to the first pixel that is not lost; capped at L.
+    const scan = (edge: number, dir: 1 | -1, isLost: (i: number) => boolean) => {
+      const first = dir > 0 ? Math.ceil(edge - 0.5) : Math.floor(edge - 0.5);
+      for (let k = 0; ; k++) {
+        const i = first + dir * k;
+        const d = Math.max(0, dir * (i + 0.5 - edge)) / ppm;
+        if (d >= L) return L;
+        if (!isLost(i)) return d;
+      }
+    };
+    const depths: number[] = [];
+    for (const y of along(y0, y1)) depths.push(scan(x0, 1, (x) => lost(x, y)), scan(x1, -1, (x) => lost(x, y)));
+    for (const x of along(x0, x1)) depths.push(scan(y0, 1, (y) => lost(x, y)), scan(y1, -1, (y) => lost(x, y)));
+    depths.sort((a, b) => a - b);
+    const q = (p: number) => depths[Math.min(depths.length - 1, Math.floor(p * depths.length))];
+    const cm = (px: number) => Math.round((px / lay.widthPx) * lay.worldWidthM * 100);
+    return { piece, rectCm: [cm(rect.w), cm(rect.h)], n: depths.length, median: q(0.5), p90: q(0.9) };
+  });
+
+test.describe('wear size proposed from the piece size (bricks wall 13, preview 2048)', () => {
+  test.skip(!existsSync(BRICKS) || !existsSync(CONCRETE), 'samples/pbr bricks wall 13 / concrete wall 01 not present');
+  test.describe.configure({ timeout: 180_000 });
+
+  test.beforeEach(async ({ page }) => {
+    await page.evaluate(() => window.__hs!.store.getState().setPreviewRes(2048));
+  });
+
+  test('the proposal reaches one median piece, and a corner breaks by about a third of a brick or more', async ({ page }) => {
+    await importSample(page, BRICKS, 'Piezas');
+    // (a) Proposed from the median piece size the analysis found.
+    const a = await page.evaluate(() => {
+      const hs = window.__hs!;
+      const s = hs.store.getState();
+      const piece = hs.core.medianPieceSizeM(s.structure!.result, s.material!.settings.tileSizeM);
+      const w = s.doc!.nodes.find((n) => n.type === 'wear')!.params as WearParams;
+      return { piece, widthM: w.widthM, sizeM: w.sizeM, intensity: w.intensity, userSetWearSize: w.userSetWearSize };
+    });
+    // (b) The visible result, measured on the wearMask of the largest wall rect (logged before any assertion).
+    const m = await measureBreak(page);
+    console.log(`break: ${JSON.stringify({ ...m, widthM: a.widthM, sizeM: a.sizeM, intensity: a.intensity })}`);
+    expect(a.piece).not.toBeNull();
+    expect(a.widthM).toBeCloseTo(1.0 * a.piece!.longM, 6);
+    expect(a.sizeM).toBeCloseTo(1.5 * a.piece!.shortM, 6);
+    expect(a.intensity).toBe(0.75);
+    expect(a.userSetWearSize).toBe(false);
+    expect(m.rectCm).toEqual([200, 200]);
+    const L = m.piece.longM;
+    expect(m.median).toBeGreaterThanOrEqual(0.25 * L);
+    expect(m.median).toBeLessThanOrEqual(0.75 * L);
+    expect(m.p90).toBeGreaterThanOrEqual(0.4 * L);
+
+    // (c) Rule 3: coverage and islands are not errors with the proposed size.
+    const checks = await page.evaluate(async () => {
+      const res = await window.__hs!.store.getState().runEvaluation({ force: true });
+      return res!.filter((r) => r.id === 'coverage' || r.id === 'islands').map((r) => ({ id: r.id, status: r.status, message: r.message }));
+    });
+    console.log(`checks: ${JSON.stringify(checks)}`);
+    expect(checks).toHaveLength(2);
+    for (const c of checks) expect(c.status, c.id).not.toBe('error');
+  });
+
+  test('an edited Alcance survives re-importing the same folder with Añadir (Reemplazar starts a fresh document)', async ({ page }) => {
+    await importSample(page, BRICKS, 'Piezas');
+    const field = page.getByLabel('Alcance (cm)', { exact: true });
+    await field.fill('7');
+    await field.blur();
+    await settled(page);
+    expect(await wearParams(page)).toMatchObject({ widthM: 0.07, userSetWearSize: true });
+    // (d) The same folder again, keeping the document: the analysis runs again and proposes nothing over it.
+    await page.evaluate(() => {
+      (window as unknown as { __before?: unknown }).__before = window.__hs!.store.getState().structure;
+    });
+    await page.getByTestId('folder-input').setInputFiles(BRICKS);
+    await page.getByTestId('import-add').click();
+    await page.waitForFunction(() => {
+      const s = window.__hs!.store.getState();
+      return !!s.structure && s.structure !== (window as unknown as { __before?: unknown }).__before;
+    });
+    await settled(page);
+    expect((await wearParams(page)).widthM).toBe(0.07);
+    await expect(field).toHaveValue('7');
+  });
+
+  test('a project saved before the proposal keeps its reach when opened', async ({ page }, testInfo) => {
+    const dir = testInfo.outputPath();
+    mkdirSync(dir, { recursive: true });
+    await importSample(page, BRICKS, 'Piezas');
+    const path = await saveAs(page, dir, 'antiguo');
+    // (e) As an older build wrote it: no userSetWearSize, the old fixed reach.
+    const edited = await page.evaluate(async (b64) => {
+      const { core } = window.__hs!;
+      const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+      const files = (await core.readZip(bytes)).map((f) => {
+        if (f.path !== 'project.json') return { ...f, store: true };
+        const m = JSON.parse(new TextDecoder().decode(f.bytes));
+        const w = m.doc.nodes.find((n: { type: string }) => n.type === 'wear').params;
+        delete w.userSetWearSize;
+        w.widthM = 0.04;
+        return { path: f.path, bytes: new TextEncoder().encode(JSON.stringify(m)) };
+      });
+      const zip = await core.writeZip(files);
+      let s = '';
+      for (let i = 0; i < zip.length; i += 0x8000) s += String.fromCharCode(...zip.subarray(i, i + 0x8000));
+      return btoa(s);
+    }, readFileSync(path).toString('base64'));
+    writeFileSync(path, Buffer.from(edited, 'base64'));
+    await page.evaluate(() => {
+      (window as unknown as { __before?: unknown }).__before = window.__hs!.store.getState().doc;
+    });
+    await page.getByTestId('project-open-input').setInputFiles(path);
+    // The saved project already shows this name: wait for the opened document instead.
+    await page.waitForFunction(() => {
+      const s = window.__hs!.store.getState();
+      return !s.opening && !!s.doc && s.doc !== (window as unknown as { __before?: unknown }).__before;
+    });
+    expect(await page.evaluate(() => window.__hs!.store.getState().projectError)).toBeNull();
+    await expect(page.getByTestId('project-name')).toHaveText('antiguo');
+    await settled(page);
+    expect(await wearParams(page)).toMatchObject({ widthM: 0.04, userSetWearSize: true });
+  });
+
+  test('a continuous material keeps the fixed reach', async ({ page }) => {
+    // (f) No pieces, no piece size: the fixed defaults.
+    await importSample(page, CONCRETE, 'Continuo');
+    expect(await wearParams(page)).toMatchObject({ widthM: 0.04, sizeM: 0.03, intensity: 0.5, userSetWearSize: false });
+  });
 });

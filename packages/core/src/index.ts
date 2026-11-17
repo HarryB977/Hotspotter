@@ -39,10 +39,11 @@ export { toGray, downsample, proposeMaterialType, analyzeStructure } from './str
 export type { GrayImage, MaterialType, StructureResult } from './structure/analyze';
 export { jointMask, segmentPieces, jointDistance } from './structure/pieces';
 export { estimatePeriod } from './structure/period';
+export { medianPieceSizeM } from './structure/pieceSize';
 export type { PeriodEstimate } from './structure/period';
 export { syntheticBrick, syntheticFbm, syntheticGrain } from './structure/synthetic';
 export type { SyntheticBrickOptions } from './structure/synthetic';
-export { WEAR_FAMILIES, DEFAULT_WEAR, DEFAULT_DIRT, proposeFamily } from './wear/params';
+export { WEAR_FAMILIES, DEFAULT_WEAR, DEFAULT_DIRT, proposeFamily, proposeWearSize } from './wear/params';
 export type { WearFamily, FamilyShape, WearParams, DirtParams } from './wear/params';
 export { CHECK_IDS, runChecks, deltaE76, jointMeanRgb, meanRgb } from './checks';
 export type { CheckId, CheckStatus, CheckResult, EvalMaps, CheckContext } from './checks';

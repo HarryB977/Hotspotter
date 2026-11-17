@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import {
   CONTINUOUS, HspError, chooseMaps, classifyMapFile, composeInputsFromDoc, createDefaultDoc, downsample,
-  jointMeanRgb, meanRgb, proposeFamily, resolveMaterialName, toGray, updateNodeParams, validateLayout,
+  jointMeanRgb, meanRgb, medianPieceSizeM, proposeFamily, proposeWearSize, resolveMaterialName, toGray, updateNodeParams, validateLayout,
 } from '@hotspotter/core';
 import type {
   CheckResult, DocNode, GrayImage, HotspotLayout, LayoutIssue, MapKind, MaterialSettings, MaterialType, NodeParams,
@@ -338,12 +338,27 @@ function dirtNode(doc: ProjectDoc): DocNode<'dirt'> | undefined {
   return doc.nodes.find((n): n is DocNode<'dirt'> => n.type === 'dirt');
 }
 
-/** Sets the proposed wear family unless the user picked one; returns `doc` itself when nothing changes. */
-function withProposedFamily(doc: ProjectDoc, type: MaterialType, materialName: string): ProjectDoc {
+/**
+ * Sets the proposed wear family unless the user picked one, and the reach, break size and intensity proposed from
+ * the piece size unless the user edited any of them; returns `doc` itself when nothing changes.
+ */
+function withProposedWear(
+  doc: ProjectDoc, type: MaterialType, materialName: string, pieceSize: { longM: number; shortM: number } | null,
+): ProjectDoc {
   const wear = wearNode(doc);
-  if (!wear || wear.params.userSetFamily) return doc;
-  const family = proposeFamily(type, materialName);
-  return family === wear.params.family ? doc : updateNodeParams<'wear'>(doc, wear.id, { family });
+  if (!wear) return doc;
+  const patch: Partial<NodeParams['wear']> = {};
+  if (!wear.params.userSetFamily) {
+    const family = proposeFamily(type, materialName);
+    if (family !== wear.params.family) patch.family = family;
+  }
+  if (!wear.params.userSetWearSize) {
+    const { widthM, sizeM, intensity } = proposeWearSize(pieceSize);
+    if (widthM !== wear.params.widthM) patch.widthM = widthM;
+    if (sizeM !== wear.params.sizeM) patch.sizeM = sizeM;
+    if (intensity !== wear.params.intensity) patch.intensity = intensity;
+  }
+  return Object.keys(patch).length === 0 ? doc : updateNodeParams<'wear'>(doc, wear.id, patch);
 }
 
 async function decode(file: File): Promise<ImageBitmap> {
@@ -440,7 +455,8 @@ function withAnalysis(
   let next = settings === start ? doc : withMaterialNode(doc, settings);
   const node = structureNode(next);
   if (node) next = updateNodeParams(next, node.id, { type: result.type, analyzed: true });
-  return { doc: withProposedFamily(next, result.type, settings.name), settings };
+  const pieceSize = medianPieceSizeM(result, settings.tileSizeM);
+  return { doc: withProposedWear(next, result.type, settings.name, pieceSize), settings };
 }
 
 /** Grey input of the analysis and the analysis itself, on the Worker; null without height or albedo. */
@@ -767,7 +783,7 @@ export const useProject = create<ProjectState>()((set, get) => ({
           structureGpu = uploadStructure(gpu, analysis.result);
           structure = { result: analysis.result, gpu: structureGpu, source: analysis.source };
         } else if (!analysis) {
-          doc = withProposedFamily(doc, 'continuous', settings.name);
+          doc = withProposedWear(doc, 'continuous', settings.name, null);
         }
       } catch (e) {
         console.error('structure analysis failed', e);
@@ -982,7 +998,10 @@ export const useProject = create<ProjectState>()((set, get) => ({
       next.gpuMaterial = gm ? { ...gm, settings } : gm;
     }
     if (patch.name !== undefined && next.doc) {
-      next.doc = withProposedFamily(next.doc, get().structure?.result.type ?? 'continuous', settings.name);
+      const result = get().structure?.result;
+      next.doc = withProposedWear(
+        next.doc, result?.type ?? 'continuous', settings.name, result ? medianPieceSizeM(result, settings.tileSizeM) : null,
+      );
     }
     set(next);
     const images = next.material?.images;
@@ -1035,7 +1054,7 @@ export const useProject = create<ProjectState>()((set, get) => ({
           // Neither height nor albedo left: drop the structure of the removed maps (continuous).
           const old = get().structure;
           let nextDoc = old && node ? updateNodeParams(doc, node.id, { analyzed: false }) : doc;
-          nextDoc = withProposedFamily(nextDoc, 'continuous', material.settings.name);
+          nextDoc = withProposedWear(nextDoc, 'continuous', material.settings.name, null);
           if (old || nextDoc !== doc) set({ structure: null, doc: nextDoc });
           old?.gpu.destroy();
           return;

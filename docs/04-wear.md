@@ -37,10 +37,10 @@ Viven en el nodo `wear` del documento (`packages/core/src/wear/params.ts`). Toda
 | Parámetro | Por defecto | UI | Qué hace |
 |---|---|---|---|
 | `family` | según el material | Familia | Forma del daño (ver "Familias de la v0.1"). La propone `proposeFamily` hasta que el usuario elige una (`userSetFamily`) |
-| `intensity` | 0.5 (0–1) | Intensidad | Potencial de daño en el borde visible |
-| `widthM` | 0.04 (4 cm) | Alcance | Hasta dónde llega el daño desde el borde visible. Se limita a `wEff`; 0 apaga el desgaste de borde, también el borde mínimo (R30) |
+| `intensity` | 0.5 (0–1); 0.75 con piezas | Intensidad | Potencial de daño en el borde visible. Con piezas la propone `proposeWearSize` (ver "Tamaño del desgaste según la pieza") |
+| `widthM` | 0.04 (4 cm); con piezas, una pieza | Alcance | Hasta dónde llega el daño desde el borde visible, como máximo. Se limita a `wEff`; 0 apaga el desgaste de borde, también el borde mínimo (R30) |
 | `minEdgeM` | 0.004 (4 mm) | Borde mínimo | Borde que se pierde siempre, con contorno irregular |
-| `sizeM` | 0.03 (3 cm) | Tamaño de rotura | Escala del ruido y de las celdas; con piezas, distancia a la junta donde se concentra el daño |
+| `sizeM` | 0.03 (3 cm); con piezas, 1.5 veces el lado corto | Tamaño de rotura | Escala del ruido y de las celdas; con piezas, distancia a la junta donde se concentra el daño |
 | `depthM` | 0.006 (6 mm) | Profundidad | Profundidad de la pérdida (entre 0.5 y 1 vez este valor, según ruido) |
 | `bandM` | 0.006 (6 mm) | Banda de fractura | Ancho de la transición alrededor de cada rotura |
 | `microM` | 0.0005 (0.5 mm) | Microdetalle | Amplitud de la rugosidad de la superficie rota |
@@ -49,6 +49,21 @@ Viven en el nodo `wear` del documento (`packages/core/src/wear/params.ts`). Toda
 | `seed` | 0 | Semilla | Semilla del daño (u32, hash PCG en GPU) |
 | `mask` | apagada, fuerza 1, sin invertir | Máscara B/N | Ver la decisión 43 |
 | `substrate` | interior: tono 0°, saturación ×0.7, valor ×0.8, rugosidad +0.2 | Sustrato | Lo que queda debajo (ver "Pasada de color") |
+
+### Tamaño del desgaste según la pieza
+
+Si el material tiene piezas (ladrillo, baldosa, tablón), el alcance, el tamaño de rotura y la intensidad por defecto salen del tamaño de pieza que mide el análisis de estructura (`medianPieceSizeM`: la mediana del lado largo y del lado corto de las piezas enteras, en metros). Lo calcula `proposeWearSize` (decisión 86):
+
+- **Alcance = una pieza** (el lado largo). El alcance es lo más lejos que puede llegar el daño, no lo que se rompe normalmente: el potencial de daño baja hasta cero justo en el alcance. Con este valor, la rotura típica en una esquina es de un tercio de pieza, y las más hondas llegan casi a una pieza entera.
+- **Tamaño de rotura = 1,5 veces el lado corto**, para que los trozos rotos tengan el tamaño de un ladrillo y no de una miga.
+- **Intensidad = 0,75.**
+- Sin piezas (materiales continuos o direccionales, o si hay menos de 4 piezas enteras) se quedan los valores fijos: 4 cm, 3 cm y 0,5.
+
+Se propone igual que la familia: al importar, al analizar y al renombrar el material. **En cuanto el usuario toca Alcance, Tamaño de rotura o Intensidad, gana su valor** (`userSetWearSize`) y ya no se propone nada encima, aunque se vuelva a analizar. Reemplazar el material empieza un documento nuevo, así que vuelve a proponer; Añadir mapas conserva el documento y los valores del usuario.
+
+Los proyectos guardados antes de este cambio no llevan `userSetWearSize`: al abrirlos se marca como elegido por el usuario y conservan su alcance, su tamaño de rotura y su intensidad.
+
+Una prueba lo mide en bricks wall 13 (vista previa 2048, semilla 0, rectángulo de pared de 200 × 200 cm): en las esquinas, la mediana de lo que se rompe hacia dentro está entre 0,25 y 0,75 piezas y el percentil 90 llega al menos a 0,4 piezas.
 
 Suciedad (nodo `dirt`): `enabled` true, `cavity` 0.4, `runoff` 0 (era 0.3; decisión 69), `runoffLengthM` 0.4 m y `tint` [0.25, 0.22, 0.18]. El desgaste también lleva `enabled` (true por defecto).
 
