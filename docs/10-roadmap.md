@@ -37,7 +37,7 @@ Hecho en la v0.1-C:
 
 Falta para cerrar la v0.1 (plan v0.1-D):
 
-- **`.exe` portable** y **aviso de actualizaciones** (ver [08](08-distribution.md)). El servidor importa todo `packages/core`: el empaquetado del `.exe` debe incluirlo (o importar solo el subpath que usa).
+- ~~**`.exe` portable** y **aviso de actualizaciones**~~ Hecho (v0.1-D, decisiones 90–98; ver [08](08-distribution.md)): `npm run portable`, workflow de release por tag y aviso en la barra de estado. Falta que el usuario haga el ensayo del workflow y publique la primera versión.
 - Islas: marcar también las motas sueltas dentro de la franja `wEff` (decisión 51).
 - Comprobar en Anvil si `Can mirror` es un solo flag para los dos ejes (decisión 54).
 - ~~**Preset de paredes: franja de altura de planta**~~ Hecho (decisión 85): franja `tileU` de 2,6 m para toda pared de planta, rectángulos de pilar y de cubo; el ladrillo de las formas de prueba y de las paredes de planta sale con un 10 % de diferencia como mucho. El `RepeatWrapping` de la decisión 80 queda confirmado por el usuario.
@@ -65,6 +65,13 @@ Pendiente tras la revisión final de la vista 3D, formas y desgaste (2026-11-17)
 - Con la vista previa a 1024, cada cambio hace dos composiciones a 2048; la evaluación podría reutilizar el atlas 3D.
 - El test del límite de búfer de la exportación (`app.spec.ts:362`) falla a veces con la máquina cargada.
 - Las bandas de desgaste de arriba y abajo de una franja repetible usan ruido no periódico: donde la franja se repite, su patrón de rotura cambia de golpe (decisión 89).
+
+Pendiente tras la revisión final de la v0.1-D (2026-11-17):
+
+- «Omitir esta versión» tiene una carrera: `skip` y una comprobación en curso leen y guardan `updates.json` por separado, así que la última en guardar puede pisar la omisión y el aviso reaparece.
+- La ventana de notas del aviso de actualización solo se cierra con el botón «Notas»: falta cerrarla con Escape y con un clic fuera.
+- El empaquetado inyecta con postject en una copia de `node.exe` que conserva su firma Authenticode, ya inválida tras la inyección; habría que quitarla antes de inyectar.
+- Dos copias lanzadas exactamente a la vez pueden pasar ambas la comprobación de `instance.json` antes de que ninguna lo escriba; el efecto es un segundo servidor en otro puerto.
 
 ## Para la v0.2 (pedido por el usuario, 2026-11-12)
 

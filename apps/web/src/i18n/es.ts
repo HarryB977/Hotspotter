@@ -327,4 +327,14 @@ export const es = {
       `${proportion} avisos de proporción · ${layout} problemas de layout (solapes, fuera de límites…)`,
     composeFailed: (msg: string) => `No se pudo componer el atlas: ${msg}`,
   },
+  update: {
+    available: (version: string) => `Hotspotter ${version} disponible`,
+    notes: 'Notas',
+    noNotes: 'Sin notas de versión.',
+    download: 'Descargar',
+    later: 'Más tarde',
+    skip: 'Omitir esta versión',
+    authError: 'No se pueden comprobar actualizaciones; pide la versión nueva',
+    dismiss: 'Cerrar aviso',
+  },
 } as const;

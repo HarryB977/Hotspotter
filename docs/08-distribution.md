@@ -9,17 +9,24 @@ Decidido con el usuario:
 
 ## Portable
 
-- `hotspotter.exe` arranca el servidor local en un puerto libre de localhost y abre la app en el navegador por defecto si es Chrome o Edge; si no, abre uno de los dos si está instalado y, si no hay ninguno, explica qué hace falta. Mientras la app está abierta queda un icono en la bandeja del sistema con "Abrir" y "Salir".
-- Empaquetado: Node Single Executable Application (o una herramienta equivalente) más una carpeta con los assets del frontend. El constructor elige la herramienta concreta.
-- Los datos del usuario (librería de materiales, ajustes, sidecar y modelos de IA) se guardan en una carpeta de datos (por defecto `%LOCALAPPDATA%\Hotspotter`), no junto al `.exe`, para que sustituir la carpeta del portable al actualizar no borre nada.
+- `hotspotter.exe` abre una **ventana de consola** (sin icono en la bandeja; decisión 90) y arranca el servidor local en el puerto **7420**, o en uno libre si está ocupado (decisión 91). Abre la app en Chrome o Edge: el navegador por defecto si es uno de los dos, y si no el que esté instalado; si no hay ninguno, lo explica en la consola. Cerrar la ventana cierra Hotspotter. `HOTSPOTTER_NO_BROWSER=1` no abre el navegador.
+- **Segunda copia** (decisión 92): el `.exe` consulta `/api/health` de la copia que ya está en marcha (`instance.json` en la carpeta de datos). Si es de la misma versión, abre esa en el navegador; si es de otra, avisa en la consola, espera Intro y sale.
+- Empaquetado (decisión 95): `npm run portable` (`scripts/build-portable.mjs`) genera con esbuild un bundle CJS del lanzador y lo convierte en una Node 22 Single Executable Application con postject. Sale `dist/portable/Hotspotter/hotspotter.exe` (unos 83 MB) y, junto a él, la carpeta `web/` con el frontend; el zip pesa unos 32 MB. El `.exe` no está firmado: SmartScreen avisa la primera vez.
+- Los datos del usuario (librería de materiales, ajustes, sidecar y modelos de IA) se guardan en una carpeta de datos (por defecto `%LOCALAPPDATA%\Hotspotter`, o `HOTSPOTTER_DATA_DIR` si está definida; hoy contiene `updates.json`, `instance.json` y `hotspotter.log`), no junto al `.exe`, para que sustituir la carpeta del portable al actualizar no borre nada.
 - Solo Windows en v1.
 
 ## Comprobación de actualizaciones
 
-- Al arrancar (y como mucho una vez cada X horas) el **servidor**, no el navegador, consulta la API de releases de GitHub del repo con el token incrustado.
+- Al cargar la app (y como mucho una vez cada 6 horas, decisión 93) el **servidor**, no el navegador, consulta la API de releases de GitHub del repo con el token incrustado.
 - Si la versión publicada (semver en el tag) es mayor que la local, la UI muestra un aviso discreto con las notas del release y un botón que abre la página de descarga. El usuario puede posponerlo u omitir esa versión.
 - No se descarga ni se reemplaza nada automáticamente en v1.
-- Sin red o con un error de la API, falla en silencio (queda en el log).
+- Solo cuentan las versiones estables (`vX.Y.Z`); los tags con `-` son prerelease y se ignoran. `GET /api/update` devuelve el estado y `POST /api/update/skip` (con la cabecera `X-Hotspotter`) omite una versión.
+- Solo una comprobación **correcta** inicia la ventana de 6 horas; si falla, se reintenta en la siguiente carga de la app (decisión 93). Sin red o con un error de la API, falla en silencio (queda en el log).
+- Si GitHub responde 401 o 403 (token caducado o revocado), la barra de estado muestra una línea de aviso (`authError`, decisión 94) en lugar de la nota de versión nueva.
+
+## Log
+
+El lanzador escribe en `<carpeta de datos>\hotspotter.log` (decisión 98): una línea al arrancar (versión y puerto), los errores del servidor y los fallos de la comprobación de actualizaciones. Solo estado y mensaje, nunca el token. Al arrancar, si el archivo pasa de 1 MB se renombra a `hotspotter.log.1` (sustituyendo al anterior).
 
 ## Acceso y futuro repo público
 
@@ -34,4 +41,10 @@ Decidido con el usuario:
 
 ## Proceso de release
 
-Un script (o GitHub Action) compila, empaqueta, inyecta el token, genera el zip y crea el release con las notas sacadas del changelog. Versionado semver, con `CHANGELOG.md` en la raíz.
+`.github/workflows/release.yml` (decisión 96):
+
+- **Empujar un tag `v*.*.*`** ejecuta `npm ci`, `npm test`, la comprobación de versiones (`check-version`), `npm run portable` con `HOTSPOTTER_READ_TOKEN` inyectado, las notas de release (sección del `CHANGELOG.md`) y `gh release create --verify-tag`. Un tag con `-` se publica como `--prerelease`.
+- **`workflow_dispatch`** solo compila y sube el zip como artefacto: es el ensayo, y nunca publica.
+- Permisos: `contents: read` en el workflow y `write` solo en el job; el checkout usa `persist-credentials: false`. Los e2e no se ejecutan en CI.
+
+El procedimiento paso a paso está en el [README](../README.md#publicar-una-versión). Versionado semver, con `CHANGELOG.md` en la raíz.

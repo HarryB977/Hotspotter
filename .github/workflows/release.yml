@@ -1,0 +1,76 @@
+# A release is created only from a pushed version tag (vX.Y.Z). A manual run
+# (workflow_dispatch) only builds the portable zip and uploads it as a workflow
+# artifact: it never creates a tag or a release.
+name: Release
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: windows-latest
+    # Only this job may write; needed by `gh release create`.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # Unit tests and typecheck only. e2e is not run in CI: it needs samples/
+      # (never committed) and a WebGPU-capable browser.
+      - name: Test
+        run: npm test
+
+      # On push the tag decides the version. On a manual run there is no tag, so
+      # the check compares against the root package.json version.
+      - name: Check version
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if [ "${GITHUB_EVENT_NAME}" != "push" ]; then
+            TAG="v$(node -p "require('./package.json').version")"
+          fi
+          echo "HS_TAG=${TAG}" >> "$GITHUB_ENV"
+          node scripts/check-version.mjs "${TAG}"
+
+      # Fails early when CHANGELOG.md has no section for this version (on a manual run, the root version).
+      - name: Release notes
+        shell: bash
+        run: node scripts/release-notes.mjs "${HS_TAG#v}" > notes.md
+
+      # The token is read from the secret by the build script, which never prints it.
+      # Without the secret the build still works and update checks go unauthenticated.
+      - name: Build portable
+        run: npm run portable
+        env:
+          HOTSPOTTER_READ_TOKEN: ${{ secrets.HOTSPOTTER_READ_TOKEN }}
+
+      - name: Upload zip
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: hotspotter-portable
+          path: dist/*.zip
+
+      - name: Create release
+        if: github.event_name == 'push'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          FLAGS=""
+          case "${HS_TAG}" in *-*) FLAGS="--prerelease" ;; esac
+          gh release create "${HS_TAG}" dist/*.zip --verify-tag --title "${HS_TAG}" --notes-file notes.md ${FLAGS}
