@@ -46,6 +46,7 @@ La vista 3D sirve para ver un hotspot sobre geometría parecida a la de los mapa
 ### Desgaste visible
 
 - **El alcance por defecto del desgaste se calcula a partir del tamaño de pieza** que detecta el análisis de estructura: es la mitad de una pieza. En ladrillo, medio ladrillo.
+  - **Cambiado durante la ejecución (R3, decisión 86):** medido, con alcance de media pieza la rotura típica no llegaba al objetivo (mejor mediana 0,224 del lado largo), porque la caída del sombreador deja la rotura mediana muy por debajo del alcance. Lo construido propone **alcance = 1,0 × lado largo, tamaño de rotura = 1,5 × lado corto e intensidad 0,75**. El resultado visible es una rotura típica de esquina de aproximadamente un tercio de pieza, y las roturas más profundas se acercan a una pieza entera. El alcance es el máximo, no la rotura típica.
   - Los materiales sin piezas (continuos o direccionales) conservan el valor fijo actual.
   - El cálculo funciona como la propuesta de familia (`proposeFamily` y `userSetFamily`): se propone al importar y al analizar, y en cuanto el usuario toca el alcance, se respeta su valor.
 - **Lo que cuenta es el resultado, no el número** (decisión del constructor). Que en una esquina saliente se vea rota del orden de medio ladrillo.
