@@ -18,3 +18,4 @@ Primera versión usable.
 - Guardar y abrir proyectos `.hsp`.
 - Vista 3D con formas de prueba y partes (marcos, columnas, rodapié).
 - `.exe` portable para Windows y aviso de nuevas versiones en la barra de estado.
+- Código abierto con licencia MIT.

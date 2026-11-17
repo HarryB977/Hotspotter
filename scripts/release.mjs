@@ -1,6 +1,7 @@
 // One-command release: bumps every package.json, dates the CHANGELOG "Sin publicar" notes,
 // commits, tags and pushes. The tag push triggers .github/workflows/release.yml.
 // Usage: npm run release <patch|minor|major|X.Y.Z[-pre]> [--sin-tests] [--si]
+// Passing the current version tags it without bumping (first release, or a tag that never got pushed).
 import { spawnSync } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join, relative, resolve } from 'node:path'
@@ -170,17 +171,23 @@ async function main() {
       `Los package.json no tienen todos la versión ${current}: ${stale.map((s) => s.name).join(', ')}.`,
     )
   }
-  const version = nextVersion(current, arg)
+  // Same version as the package.json files: publish it as is (first release, or a tag that never got pushed).
+  const tagOnly = arg.replace(/^v/, '') === current
+  const version = tagOnly ? current : nextVersion(current, arg)
   const tag = `v${version}`
   if (git('tag', '--list', tag) !== '' || git('ls-remote', '--tags', 'origin', `refs/tags/${tag}`) !== '') {
     throw new Error(`La etiqueta ${tag} ya existe.`)
   }
 
-  const changelog = promoteUnreleased(readFileSync('CHANGELOG.md', 'utf8'), version, today())
+  const original = readFileSync('CHANGELOG.md', 'utf8')
+  const changelog = tagOnly ? original : promoteUnreleased(original, version, today())
+  if (tagOnly && extractSection(changelog, version) === null) {
+    throw new Error(`CHANGELOG.md no tiene una sección "## [${version}]" para las notas.`)
+  }
   const prerelease = version.includes('-')
 
   console.log('')
-  console.log(`Versión: ${current} → ${version}${prerelease ? ' (prerelease: la app no la ofrecerá)' : ''}`)
+  console.log(`Versión: ${tagOnly ? `${version} (la actual, sin cambiar package.json)` : `${current} → ${version}`}${prerelease ? ' (prerelease: la app no la ofrecerá)' : ''}`)
   console.log('Notas del release:')
   console.log('')
   console.log(extractSection(changelog, version))
@@ -200,7 +207,7 @@ async function main() {
   }
 
   const files = ['CHANGELOG.md', 'package-lock.json']
-  try {
+  if (!tagOnly) try {
     for (const dir of packageDirs(root)) {
       const file = join(dir, 'package.json')
       writeFileSync(file, setVersion(readFileSync(file, 'utf8'), version))
@@ -221,9 +228,9 @@ async function main() {
   try {
     git('push', '--atomic', '--quiet', 'origin', 'main', tag)
   } catch (err) {
-    console.error('No se pudo subir. Para deshacer el commit y la etiqueta locales:')
+    console.error(`No se pudo subir. Para deshacer ${tagOnly ? 'la etiqueta local' : 'el commit y la etiqueta locales'}:`)
     console.error(`  git tag -d ${tag}`)
-    console.error('  git reset --hard HEAD~1')
+    if (!tagOnly) console.error('  git reset --hard HEAD~1')
     throw err
   }
 

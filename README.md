@@ -63,7 +63,7 @@ El comando enseña la versión y las notas y pide confirmación. Después pasa `
 
 Opciones (van detrás de `--`): `npm run release -- minor --sin-tests` se salta `npm test` (la Action lo pasa igualmente) y `--si` no pide confirmación.
 
-Detalles del proceso, el token de lectura y el ensayo sin publicar: [docs/08-distribution.md](docs/08-distribution.md#proceso-de-release).
+Detalles del proceso, el token opcional y el ensayo sin publicar: [docs/08-distribution.md](docs/08-distribution.md#proceso-de-release).
 
 ## Licencia
 

@@ -28,4 +28,4 @@ Windows 10, RTX 3060, Node 22, Python 3.13, Git 2.40. Shell: PowerShell y Git Ba
 
 ## Secretos
 
-El token de GitHub de solo lectura para consultar releases se inyecta en el build. Nunca se commitea.
+El repo es público y los releases salen sin token. Si algún día se usa uno (secreto `HOTSPOTTER_READ_TOKEN`, ver docs/08), se inyecta en el build y nunca se commitea. Los commits usan la dirección noreply de GitHub del autor, nunca su correo personal.
