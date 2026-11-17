@@ -37,7 +37,7 @@ Hecho en la v0.1-C:
 
 Falta para cerrar la v0.1 (plan v0.1-D):
 
-- **`.exe` portable** y **aviso de actualizaciones** (ver [08](08-distribution.md)). El servidor importa todo `packages/core`: el empaquetado del `.exe` debe incluirlo (o importar solo el subpath que usa).
+- ~~**`.exe` portable** y **aviso de actualizaciones**~~ Hecho (v0.1-D, decisiones 90–98; ver [08](08-distribution.md)): `npm run portable`, workflow de release por tag y aviso en la barra de estado. Falta que el usuario haga el ensayo del workflow y publique la primera versión.
 - Islas: marcar también las motas sueltas dentro de la franja `wEff` (decisión 51).
 - Comprobar en Anvil si `Can mirror` es un solo flag para los dos ejes (decisión 54).
 - ~~**Preset de paredes: franja de altura de planta**~~ Hecho (decisión 85): franja `tileU` de 2,6 m para toda pared de planta, rectángulos de pilar y de cubo; el ladrillo de las formas de prueba y de las paredes de planta sale con un 10 % de diferencia como mucho. El `RepeatWrapping` de la decisión 80 queda confirmado por el usuario.
