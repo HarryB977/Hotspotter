@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Focus } from 'lucide-react';
-import { buildShape, fitFaces } from '@hotspotter/core';
-import type { DocNode, HotspotFit, ShapeFace, TestShape } from '@hotspotter/core';
+import { SHAPE_PARTS, buildShape, fitFaces } from '@hotspotter/core';
+import type { DocNode, HotspotFit, ShapeFace, ShapePart, TestShape } from '@hotspotter/core';
 import { es } from '../i18n/es';
 import {
   VIEW3D_MODES, VIEW3D_SHAPES, runoffOf, useProject,
@@ -34,6 +34,70 @@ function fitShape(atlas: AtlasResult, shape: TestShape): { faces: ShapeFace[]; f
   return { faces, fits: fitFaces(faces, atlas.layout, rotations, { seed, runoff }) };
 }
 
+/**
+ * The "Partes" dropdown: one checkbox per part of the current shape (SHAPE_PARTS order) saying whether it gets the
+ * hotspot texture. Closes on a click outside or Escape.
+ */
+function PartsMenu({ shape, textured, onChange }: {
+  shape: TestShape;
+  textured: Record<ShapePart, boolean>;
+  onChange: (textured: Record<ShapePart, boolean>) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!root.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false);
+    };
+    window.addEventListener('mousedown', onDown);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      window.removeEventListener('mousedown', onDown);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+  return (
+    <div className="relative" ref={root}>
+      <button
+        type="button"
+        className="flex h-6 items-center gap-1 rounded border border-zinc-800 bg-zinc-900 px-1.5 text-sm text-zinc-100 focus-visible:border-accent focus-visible:outline-none"
+        aria-haspopup="true"
+        aria-expanded={open}
+        title={t.partsHint}
+        onClick={() => setOpen((o) => !o)}
+        data-testid="view3d-parts"
+      >
+        {t.parts}
+      </button>
+      {open && (
+        <div
+          role="group"
+          aria-label={t.parts}
+          className="absolute left-0 top-full z-40 mt-1 min-w-[8rem] rounded border border-zinc-700 bg-zinc-900 py-1 text-xs shadow-lg"
+          data-testid="view3d-parts-menu"
+        >
+          {SHAPE_PARTS[shape].map((p) => (
+            <label key={p} className="flex cursor-pointer items-center gap-2 px-2 py-1 text-zinc-200 hover:bg-zinc-800">
+              <input
+                type="checkbox"
+                className="accent-accent"
+                checked={textured[p]}
+                onChange={(e) => onChange({ ...textured, [p]: e.target.checked })}
+                data-testid={`view3d-part-${p}`}
+              />
+              {t.partNames[p]}
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default View3DPane;
 
 /** The 3D view, remountable by the test harness (`view3dDebug.remount`) to check that nothing leaks. */
@@ -51,14 +115,17 @@ export function View3DPane() {
 
 /**
  * Test shapes with the hotspot applied as the target engine would (decision 79), lit by a procedural room and one
- * movable light. It reads the preview atlas back once per composition (decision 80), and only while it is on screen.
+ * movable light. It reads its atlas back once per composition (decision 80), and only while it is on screen; that
+ * atlas is composed at VIEW3D_RES when the preview is lower (decision 88).
  */
 function View3D() {
   const gpu = useProject((s) => s.gpu);
-  const atlas = useProject((s) => s.atlas);
+  const atlas = useProject((s) => s.view3dAtlas);
+  const hasPreview = useProject((s) => s.atlas !== null);
+  const setView3dVisible = useProject((s) => s.setView3dVisible);
   const settings = useProject((s) => s.view3d);
   const setView3d = useProject((s) => s.setView3d);
-  const { shape, mode, lightAzimuthDeg, lightElevationDeg, pointFilter } = settings;
+  const { shape, mode, lightAzimuthDeg, lightElevationDeg, pointFilter, textured } = settings;
 
   const host = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
@@ -94,12 +161,14 @@ function View3D() {
       scene.setSize(w, h);
       visibleRef.current = w > 0 && h > 0;
       setVisible(visibleRef.current);
+      setView3dVisible(visibleRef.current);
     };
     const ro = new ResizeObserver(resize);
     ro.observe(el);
     resize();
     return () => {
       ro.disconnect();
+      setView3dVisible(false);
       loadGen.current++;
       // Textures first, while their renderer is still alive to free them.
       for (const s of retired.current) disposeAtlasTextures(s);
@@ -110,11 +179,13 @@ function View3D() {
       sceneRef.current = null;
       view3dDebug.shownAtlas = null;
     };
-  }, []);
+  }, [setView3dVisible]);
 
   // One read per atlas, only while the pane is on screen; a newer atlas, hiding the pane or unmounting supersedes it.
   useEffect(() => {
     if (!sceneRef.current) return;
+    // With a preview but no 3D atlas yet (its composition at VIEW3D_RES is pending), the old textures stay up.
+    if (!atlas && hasPreview) return;
     if (!atlas) {
       loadGen.current++;
       if (current.current) retired.current.push(current.current.set);
@@ -124,7 +195,7 @@ function View3D() {
     }
     if (!visible || !gpu || current.current?.atlas === atlas) return;
     const mine = ++loadGen.current;
-    const isCurrent = () => mine === loadGen.current && visibleRef.current && useProject.getState().atlas === atlas;
+    const isCurrent = () => mine === loadGen.current && visibleRef.current && useProject.getState().view3dAtlas === atlas;
     const scene = sceneRef.current;
     loadAtlasTextures(gpu, atlas.maps, isCurrent).then(
       async (set) => {
@@ -140,7 +211,7 @@ function View3D() {
       },
       (e) => console.error('3d view textures failed', e),
     );
-  }, [atlas, visible, gpu]);
+  }, [atlas, hasPreview, visible, gpu]);
 
   // The textures and the fitted shape change together, then the replaced textures are freed.
   useLayoutEffect(() => {
@@ -155,7 +226,7 @@ function View3D() {
       }
     }
     scene.setTextures(current.current?.set ?? null);
-    scene.setShape(fitted.faces, fitted.fits, shown?.layout ?? null);
+    scene.setShape(fitted.faces, fitted.fits, shown?.layout ?? null, useProject.getState().view3d.textured);
     for (const s of retired.current) disposeAtlasTextures(s);
     retired.current = [];
     view3dDebug.shownAtlas = shown;
@@ -166,6 +237,7 @@ function View3D() {
   }, [shown, shape]);
 
   useEffect(() => sceneRef.current?.setMode(mode), [mode]);
+  useEffect(() => sceneRef.current?.setTextured(textured), [textured]);
   useEffect(() => sceneRef.current?.setLight(lightAzimuthDeg, lightElevationDeg), [lightAzimuthDeg, lightElevationDeg]);
   useEffect(() => {
     if (!current.current) return;
@@ -181,7 +253,7 @@ function View3D() {
       <div
         role="toolbar"
         aria-label={t.toolbar}
-        className="flex shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b border-zinc-800 px-1.5 py-1 text-xs text-zinc-400"
+        className="flex shrink-0 flex-wrap items-center gap-x-1.5 gap-y-1 border-b border-zinc-800 px-1.5 py-1 text-xs text-zinc-400"
         data-testid="view3d-toolbar"
       >
         <Select value={shape} onValueChange={(v) => setView3d({ shape: v as TestShape })}>
@@ -200,6 +272,7 @@ function View3D() {
             {VIEW3D_MODES.map((m) => <SelectItem key={m} value={m}>{modeLabel(m)}</SelectItem>)}
           </SelectContent>
         </Select>
+        <PartsMenu shape={shape} textured={textured} onChange={(v) => setView3d({ textured: v })} />
         <div className="flex items-center gap-1">
           <span title={t.lightHint}>{t.light}</span>
           <NumField
@@ -259,7 +332,7 @@ function View3D() {
         onPointerLeave={() => setHover(null)}
       >
         <canvas ref={canvas} className="absolute inset-0 h-full w-full" data-testid="view3d-canvas" />
-        {(glError || !atlas) && (
+        {(glError || !hasPreview) && (
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-4 text-center text-zinc-600">
             {glError ?? t.empty3d}
           </div>

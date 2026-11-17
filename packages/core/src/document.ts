@@ -100,6 +100,8 @@ export function parseDoc(s: string): ProjectDoc {
     // Documents saved before bevelM existed bevelled widthM / 2.
     const g = n.type === 'output' ? n.params.groove : undefined;
     if (isObj(g) && typeof g.bevelM !== 'number' && typeof g.widthM === 'number') g.bevelM = g.widthM / 2;
+    // Documents saved before the proposed wear size keep their reach and break size as the user's (decision 86).
+    if (n.type === 'wear' && !('userSetWearSize' in n.params)) n.params.userSetWearSize = true;
   }
   migrateV01A(raw as unknown as ProjectDoc);
   return raw as unknown as ProjectDoc;

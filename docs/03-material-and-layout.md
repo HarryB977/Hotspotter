@@ -58,6 +58,21 @@ Un layout es independiente de la resolución: rectángulos en unidades del atlas
 2. **Manual**: editor 2D para dibujar, mover, dividir y unir rectángulos, con snap a una rejilla en cm y **snap al periodo del material**. Atajos al estilo del Subrect Editor de Hammer (cambiar el tamaño de rejilla con `[` y `]`).
 3. **Automático**: la herramienta propone un layout a partir de un objetivo (paredes, suelos, mixto, trims), la densidad y la estructura del material. Las medidas son múltiplos del periodo y el reparto de tamaños y proporciones queda equilibrado. Es un empaquetado en guillotina, que además produce las juntas rectas largas que Anvil detecta con "Detect Grid". Se puede regenerar con otra seed o pasar a manual para retocarlo.
 
+### Modelar para el hotspot de paredes
+
+El preset Paredes está hecho para una **altura de planta de 2,6 m** (decisión 85). Quien modela los mapas debería ajustarse a estas medidas:
+
+- **Paredes de 2,6 m de alto, de cualquier largo** a partir de unos 44 cm. Todas usan una franja de 2,6 m de alto que se repite a lo largo, así que el ladrillo sale a su tamaño real sea cual sea el largo. La franja no tiene bordes verticales: sus extremos no llevan junta, bisel ni desgaste (decisión 89), así que una pared de más de 8 m se repite sin costura. A cambio, las esquinas de la pared no salen desgastadas por el hotspot; se resuelven con columnas y marcos. El material sí puede notar una costura cada 8 m si 8 m no es múltiplo de su tamaño de tile.
+- **Pilares de 35 cm de ancho y 15 cm de saliente**, y **cantos de pared de 20 cm**. Cada una de esas tres medidas, a 2,6 m de alto, tiene su propio rectángulo.
+- **Bloques de 2 × 2 m**, como el cubo de prueba, que tienen su rectángulo de 2 × 2 m.
+
+El motivo: el hotspot elige el rectángulo por tamaño y estira la textura hasta un 25 % para que encaje. Con estas medidas, el ladrillo sale a su tamaño real, con un 10 % de diferencia como mucho. Lo que se sale de ellas se estira:
+
+- Una cara de 2,6 m de alto y entre 12 y 44 cm de ancho que no mide 15, 20 o 35 cm (por ejemplo, un pilar de 25 o 30 cm) coge el rectángulo de pilar más parecido y se estira hasta un 25 %.
+- Una pared de otra altura (por ejemplo, 3 m) usa la franja, pero estirada en vertical hasta un 25 %. Si se aleja más de eso, coge el rectángulo de forma más parecida y se estira todavía más.
+- Una pared de entre 2,08 y 2,5 m de alto cuyo ancho queda a ±25 % de uno de los rectángulos de 2 m de alto (de unos 0,32 a 2,5 m de ancho) coge un rectángulo fijo, no la franja, y se estira hasta un 25 %. Más ancha, usa la franja.
+- Un bloque de unos 2 m de alto y un ancho distinto de 2 m coge uno de los rectángulos de 2 m de alto (de 0,4 a 2 m de ancho) y se estira en horizontal.
+
 ### Variantes
 
 Como en Source 2 (`concrete_painted_white_hs05a/b/c`, `_blue`…), un proyecto puede tener varias **variantes** que comparten el layout y cambian tinte, bandas, sustrato o seed de daño. Se exportan juntas, con sufijo, y una misma definición de rectángulos sirve para todas.

@@ -1,4 +1,4 @@
-import { pxPerMetre } from '@hotspotter/core';
+import { pxPerMetre, seamlessAxes } from '@hotspotter/core';
 import type { DirtParams, HotspotLayout, RectPlacement, WearParams } from '@hotspotter/core';
 import type { GpuContext } from './gpu';
 import type { GpuMaterial } from './material';
@@ -130,6 +130,9 @@ function rectsBuffer(device: GPUDevice, layout: HotspotLayout, placements: RectP
     const o = (i * RECT_BYTES) / 4;
     f.set([r.x, r.y, r.w, r.h, pl.originM[0], pl.originM[1]], o);
     u[o + 6] = pl.rotate90 ? 1 : 0;
+    // Seamless tiling axes (decision 89): Rect.seams, bit 0 u, bit 1 v.
+    const seam = seamlessAxes(layout, r);
+    u[o + 7] = (seam.u ? 1 : 0) | (seam.v ? 2 : 0);
   });
   const buf = device.createBuffer({ size: data.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
   device.queue.writeBuffer(buf, 0, data);

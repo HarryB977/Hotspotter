@@ -139,12 +139,31 @@ describe('project document', () => {
       { from: 'dirt', to: 'output', port: 'dirt' });
     const r = composeInputsFromDoc(parseDoc(JSON.stringify(old)), 512);
     expect(r.wear).toEqual({
-      ...DEFAULT_WEAR, userSetFamily: true,
+      ...DEFAULT_WEAR, userSetFamily: true, userSetWearSize: true,
       mask: { ...DEFAULT_WEAR.mask, invert: true },
       substrate: { ...DEFAULT_WEAR.substrate, satMul: 0.5 },
     });
     expect(r.dirt).toEqual({ ...DEFAULT_DIRT, cavity: 0.1 });
     expect(r.structure.type).toBe('continuous');
+  });
+
+  it('marks the wear size of documents saved without userSetWearSize as the user\'s, keeping its values', () => {
+    const doc = createDefaultDoc(material);
+    const wear = doc.nodes.find((n) => n.type === 'wear')!.params as unknown as Record<string, unknown>;
+    delete wear.userSetWearSize;
+    wear.widthM = 0.05;
+    wear.sizeM = 0.02;
+    const r = composeInputsFromDoc(parseDoc(JSON.stringify(doc)), 512);
+    expect(r.wear.userSetWearSize).toBe(true);
+    expect(r.wear.widthM).toBe(0.05);
+    expect(r.wear.sizeM).toBe(0.02);
+  });
+
+  it('keeps an explicit userSetWearSize: false', () => {
+    const doc = createDefaultDoc(material);
+    expect((doc.nodes.find((n) => n.type === 'wear')!.params as { userSetWearSize?: boolean }).userSetWearSize).toBe(false);
+    const r = composeInputsFromDoc(parseDoc(JSON.stringify(doc)), 512);
+    expect(r.wear.userSetWearSize).toBe(false);
   });
 
   it('switches on wear and dirt for documents saved without "enabled", and keeps an explicit value', () => {

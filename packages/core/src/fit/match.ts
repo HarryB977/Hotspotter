@@ -1,4 +1,4 @@
-import { rectSizeM } from '../layout';
+import { rectSizeM, seamlessAxes } from '../layout';
 import type { HotspotLayout, HotspotRect } from '../layout';
 import { createRng } from '../rng';
 import type { Rng } from '../rng';
@@ -34,7 +34,7 @@ const MAX_LOG = Math.log(1 + 0.25) + 1e-5;
 /** ProBuilder's default Random Tolerance: in-tolerance rects scoring within this of the best are picked at random. */
 const RANDOM_TOLERANCE = 0.15;
 
-type TileAxis = 'u' | 'v' | null;
+export type TileAxis = 'u' | 'v' | null;
 
 interface Candidate {
   rect: HotspotRect;
@@ -49,10 +49,9 @@ interface Candidate {
 }
 
 /** Tiling axis in rect space; a strip must span the whole atlas on that axis (as ProBuilder's GetTilingAxis). */
-function tileAxis(l: HotspotLayout, r: HotspotRect): TileAxis {
-  if (r.tileU && r.x <= 0 && r.x + r.w >= l.widthPx) return 'u';
-  if (r.tileV && r.y <= 0 && r.y + r.h >= l.heightPx) return 'v';
-  return null;
+export function tileAxis(l: HotspotLayout, r: HotspotRect): TileAxis {
+  const s = seamlessAxes(l, r);
+  return s.u ? 'u' : s.v ? 'v' : null;
 }
 
 const usableSize = (m: { w: number; h: number }) => Number.isFinite(m.w) && Number.isFinite(m.h) && m.w > 0 && m.h > 0;

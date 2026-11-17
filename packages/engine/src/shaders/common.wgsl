@@ -62,16 +62,32 @@ struct Rect {
   rect: vec4<f32>,         // x, y, w, h in reference px, top-left origin
   originM: vec2<f32>,
   rotate90: u32,
-  pad: u32,
+  seams: u32,              // seamless tiling axes (decision 89, seamlessAxes in core): bit 0 u, bit 1 v
 }
 
+const SEAM_U = 1u;
+const SEAM_V = 2u;
+// Stand-in distance for an edge that does not exist: farther than any rect.
+const NO_EDGE = 1e9;
+
 // Distance in reference px from px to the visible edge of rect r, the edge shrunk by halfGroovePx (the groove floor
-// edge). Negative outside it.
-fn visibleEdgePx(r: vec4<f32>, px: vec2<f32>, halfGroovePx: f32) -> f32 {
-  return min(
-    min(px.x - (r.x + halfGroovePx), (r.x + r.z - halfGroovePx) - px.x),
-    min(px.y - (r.y + halfGroovePx), (r.y + r.w - halfGroovePx) - px.y),
-  );
+// edge). Negative outside it. The two edges on a seamless axis (`seams`) are no edge: a tiling strip repeats there.
+fn visibleEdgePx(r: vec4<f32>, seams: u32, px: vec2<f32>, halfGroovePx: f32) -> f32 {
+  var dx = min(px.x - (r.x + halfGroovePx), (r.x + r.z - halfGroovePx) - px.x);
+  var dy = min(px.y - (r.y + halfGroovePx), (r.y + r.w - halfGroovePx) - px.y);
+  if ((seams & SEAM_U) != 0u) { dx = NO_EDGE; }
+  if ((seams & SEAM_V) != 0u) { dy = NO_EDGE; }
+  return min(dx, dy);
+}
+
+// Visible short side of rect r in metres, across the edges it has (the thin-trim cap of the edge wear): the rect minus
+// the groove floor; a seamless axis does not count. Matches evalGeometry (core checks/geometry.ts).
+fn visibleMinM(r: vec4<f32>, seams: u32, ppm: f32, grooveWidthM: f32) -> f32 {
+  var w = r.z;
+  var h = r.w;
+  if ((seams & SEAM_U) != 0u) { w = NO_EDGE; }
+  if ((seams & SEAM_V) != 0u) { h = NO_EDGE; }
+  return max(min(w, h) / ppm - grooveWidthM, 0.0);
 }
 
 // Material metres at reference px `px` of rect r, a direct transcription of atlasPxToMaterialM

@@ -1,7 +1,7 @@
 import * as core from '@hotspotter/core';
 import * as engine from '@hotspotter/engine';
 import type { AtlasMaps } from '@hotspotter/engine';
-import { evalStats, materialJointMean, useProject } from '../state/store';
+import { compose3dStats, evalStats, materialJointMean, useProject, view3dCurrent } from '../state/store';
 import { exportProject } from '../export/encode';
 import { failNextWorkerCall, workerCall } from '../workers/client';
 import { view3dDebug } from '../viewport/three/scene';
@@ -57,6 +57,8 @@ export interface HsHarness {
   readonly view3dFrames: number;
   /** Generation of the 3D view's newest atlas texture set (0: none built yet). */
   readonly view3dTextureGen: number;
+  /** VIEW3D_RES compositions the store has started for the 3D view (decision 88). */
+  readonly compose3dCount: number;
   view3d: {
     /** Atlas textures alive, renderers alive and maps read back so far. */
     readonly liveTextures: number;
@@ -69,8 +71,10 @@ export interface HsHarness {
     faces(): FaceOnScreen[];
     probe(): ReturnType<View3DScene['probe']> | null;
     remount(): void;
-    /** The 3D view shows textures read from the store's current atlas. */
+    /** The 3D view shows textures read from the store's 3D atlas, and that atlas has the preview's inputs. */
     shownCurrent(): boolean;
+    /** Width of the 3D view's colour texture, or null when none is shown. */
+    textureWidth(): number | null;
   };
 }
 
@@ -153,7 +157,14 @@ export function installHarness(): void {
       faces: () => view3dDebug.scene?.facesOnScreen() ?? [],
       probe: () => view3dDebug.scene?.probe() ?? null,
       remount: () => view3dDebug.remount?.(),
-      shownCurrent: () => view3dDebug.shownAtlas !== null && view3dDebug.shownAtlas === useProject.getState().atlas,
+      shownCurrent: () => {
+        const s = useProject.getState();
+        return view3dDebug.shownAtlas !== null && view3dDebug.shownAtlas === s.view3dAtlas && view3dCurrent(s);
+      },
+      textureWidth: () => view3dDebug.scene?.textureWidth ?? null,
+    },
+    get compose3dCount() {
+      return compose3dStats.composes;
     },
     get lastAtlas() {
       return useProject.getState().atlas?.maps ?? null;

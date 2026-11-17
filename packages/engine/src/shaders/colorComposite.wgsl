@@ -162,8 +162,7 @@ fn shade(c: vec2<i32>, id: u32, lossR: f32, lastLoss: i32) {
 
     if (W.enabled != 0u) {
       // Same thin-trim cap as wearLoss.wgsl; widthM 0 disables edge wear entirely, edge tone included (R30).
-      let visibleMinM = max(min(r.z, r.w) / P.ppmRef - P.grooveWidthM, 0.0);
-      let wEff = min(W.widthM, 0.33 * visibleMinM);
+      let wEff = min(W.widthM, 0.33 * visibleMinM(r, pl.seams, P.ppmRef, P.grooveWidthM));
       if (wEff > 0.0) {
         var edge = 0.0;
         if (W.loses != 0u) {
@@ -199,7 +198,7 @@ fn shade(c: vec2<i32>, id: u32, lossR: f32, lastLoss: i32) {
         }
         let bevelPx = P.bevelM * P.ppmRef;
         if (bevelPx > 0.0) {
-          let ve = visibleEdgePx(r, px, halfGroovePx);
+          let ve = visibleEdgePx(r, pl.seams, px, halfGroovePx);
           edge = max(edge, grooveProfile(P.profile, clamp(ve / bevelPx, 0.0, 1.0)));
         }
         let tone = W.edgeTone * W.polish * edge;
@@ -215,8 +214,12 @@ fn shade(c: vec2<i32>, id: u32, lossR: f32, lastLoss: i32) {
     // Runoff from the visible top edge and from the losses above (never above its origin).
     let L = W.runoffLengthM;
     if (W.runoff > 0.0 && L > 0.0) {
-      let dTop = max(px.y - (r.y + halfGroovePx), 0.0) / P.ppmRef;
-      var reach = 1.0 - smoothstep(0.0, L, dTop);
+      // A tileV strip has no top edge (decision 89): runoff only from its losses.
+      var reach = 0.0;
+      if ((pl.seams & SEAM_V) == 0u) {
+        let dTop = max(px.y - (r.y + halfGroovePx), 0.0) / P.ppmRef;
+        reach = 1.0 - smoothstep(0.0, L, dTop);
+      }
       if (lastLoss >= 0) {
         let dLoss = f32(c.y - lastLoss) / (P.ppmRef * P.refScale);
         reach = max(reach, 1.0 - smoothstep(0.0, L, dLoss));

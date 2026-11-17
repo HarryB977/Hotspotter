@@ -35,7 +35,7 @@ fn pixel(p: vec2<u32>) -> Pixel {
     out.rotate90 = pl.rotate90;
     // d: distance from the groove floor edge (the shrunk rect edge), normalized over bevelM.
     let bevelPx = P.bevelM * P.ppmRef;
-    let edgePx = visibleEdgePx(r, px, 0.5 * P.grooveWidthM * P.ppmRef);
+    let edgePx = visibleEdgePx(r, pl.seams, px, 0.5 * P.grooveWidthM * P.ppmRef);
     if (bevelPx > 0.0) {
       out.prof = grooveProfile(P.profile, clamp(edgePx / bevelPx, 0.0, 1.0));
     } else {

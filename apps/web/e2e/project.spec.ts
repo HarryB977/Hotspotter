@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { join, resolve } from 'node:path';
 import { deflateSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
-import { selectLayer } from './helpers';
+import { saveAs, selectLayer, settled } from './helpers';
 
 const BRICKS = resolve(fileURLToPath(new URL('.', import.meta.url)), '../../../samples/pbr/bricks wall 13');
 const CONCRETE = resolve(fileURLToPath(new URL('.', import.meta.url)), '../../../samples/pbr/concrete wall 01');
@@ -47,15 +47,6 @@ function greyPng(w: number, h: number, v: number): Buffer {
     chunk('IEND', Buffer.alloc(0)),
   ]);
 }
-
-/** Waits until the shown atlas was composed from the current document, material, mask and substrate. */
-const settled = (page: Page) =>
-  page.waitForFunction(() => {
-    const s = window.__hs?.store.getState();
-    return !!s?.atlas && !!s.structure && !s.importing && s.analysisIdle && s.atlas.doc === s.doc &&
-      s.atlas.gpuMaterial === s.gpuMaterial && s.atlas.mask === s.mask && s.atlas.substrate === s.substrate &&
-      s.atlas.resolutionPx === s.previewRes;
-  });
 
 const setField = async (page: Page, label: string, value: string) => {
   const f = page.getByLabel(label, { exact: true });
@@ -109,19 +100,6 @@ async function buildSession(page: Page, dir: string): Promise<void> {
   await setField(page, 'Tamaño (m) X', '2');
   await setField(page, 'Tamaño (m) Y', '2');
   await settled(page);
-}
-
-/** Saves through Archivo > Guardar como… and returns the written path. */
-async function saveAs(page: Page, dir: string, name: string): Promise<string> {
-  await page.getByTestId('file-menu').click();
-  await page.getByTestId('file-save-as').click();
-  await page.getByTestId('save-as-dir').fill(dir);
-  await page.getByTestId('save-as-name').fill(name);
-  await page.getByTestId('save-as-run').click();
-  await expect(page.getByTestId('save-as-dialog')).toHaveCount(0);
-  const path = join(dir, name.endsWith('.hsp') ? name : `${name}.hsp`);
-  expect(existsSync(path)).toBe(true);
-  return path;
 }
 
 test('Guardar como writes one .hsp; Nuevo asks only when dirty; Abrir restores the session', async ({ page }, testInfo) => {

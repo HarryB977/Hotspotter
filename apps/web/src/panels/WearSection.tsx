@@ -109,13 +109,13 @@ export function WearSection() {
       </Row>
       <SliderField
         label={t.intensity} hint={t.intensityHint} value={w.intensity} min={0} max={1} step={0.01}
-        onChange={(v) => set({ intensity: v })}
+        onChange={(v) => set({ intensity: v, userSetWearSize: true })}
       />
-      <LengthField label={t.width} hint={t.widthHint} valueM={w.widthM} unit="cm" onChange={(v) => set({ widthM: v })} />
+      <LengthField label={t.width} hint={t.widthHint} valueM={w.widthM} unit="cm" onChange={(v) => set({ widthM: v, userSetWearSize: true })} />
       <LengthField
         label={t.minEdge} hint={t.minEdgeHint} valueM={w.minEdgeM} unit="mm" onChange={(v) => set({ minEdgeM: v })}
       />
-      <LengthField label={t.size} hint={t.sizeHint} valueM={w.sizeM} unit="cm" onChange={(v) => set({ sizeM: v })} />
+      <LengthField label={t.size} hint={t.sizeHint} valueM={w.sizeM} unit="cm" onChange={(v) => set({ sizeM: v, userSetWearSize: true })} />
       <LengthField label={t.depth} hint={t.depthHint} valueM={w.depthM} unit="mm" onChange={(v) => set({ depthM: v })} />
       <LengthField label={t.band} hint={t.bandHint} valueM={w.bandM} unit="mm" onChange={(v) => set({ bandM: v })} />
       <LengthField label={t.micro} hint={t.microHint} valueM={w.microM} unit="mm" onChange={(v) => set({ microM: v })} />

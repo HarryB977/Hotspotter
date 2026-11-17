@@ -1,11 +1,11 @@
 import { create } from 'zustand';
 import {
   CONTINUOUS, HspError, chooseMaps, classifyMapFile, composeInputsFromDoc, createDefaultDoc, downsample,
-  jointMeanRgb, meanRgb, proposeFamily, resolveMaterialName, toGray, updateNodeParams, validateLayout,
+  jointMeanRgb, meanRgb, medianPieceSizeM, proposeFamily, proposeWearSize, resolveMaterialName, toGray, updateNodeParams, validateLayout,
 } from '@hotspotter/core';
 import type {
   CheckResult, DocNode, GrayImage, HotspotLayout, LayoutIssue, MapKind, MaterialSettings, MaterialType, NodeParams,
-  NodeType, ProjectDoc, ProportionIssue, RectPlacement, StructureResult, TestShape,
+  NodeType, ProjectDoc, ProportionIssue, RectPlacement, ShapePart, StructureResult, TestShape,
 } from '@hotspotter/core';
 import {
   composeAtlas, hasMapFromFiles, initGpu, readbackDetailSlope, readbackR32, readbackRgba8, uploadMaterial, uploadRgba8, uploadStructure,
@@ -39,10 +39,17 @@ export interface View3dSettings {
   lightElevationDeg: number;
   /** Nearest-texel filtering, to review pixel art. */
   pointFilter: boolean;
+  /** Which parts of the shapes get the hotspot texture; the others are painted neutral grey. */
+  textured: Record<ShapePart, boolean>;
 }
 
+/** Every shape part. Frames and skirting are neutral by default: they never get the texture at first. */
+const DEFAULT_TEXTURED: Record<ShapePart, boolean> = {
+  body: true, wall: true, columns: true, frames: false, skirting: false, floor: true, ceiling: true,
+};
+
 export const DEFAULT_VIEW3D: View3dSettings = {
-  shape: 'cube', mode: 'lit', lightAzimuthDeg: 35, lightElevationDeg: 45, pointFilter: false,
+  shape: 'cube', mode: 'lit', lightAzimuthDeg: 35, lightElevationDeg: 45, pointFilter: false, textured: DEFAULT_TEXTURED,
 };
 
 const VIEW3D_KEY = 'hs.view3d';
@@ -54,12 +61,16 @@ export function sanitizeView3d(v: unknown, base: View3dSettings = DEFAULT_VIEW3D
   const num = (x: unknown) => (typeof x === 'number' && Number.isFinite(x) ? x : null);
   const az = num(o.lightAzimuthDeg);
   const el = num(o.lightElevationDeg);
+  const textured = (typeof o.textured === 'object' && o.textured !== null ? o.textured : {}) as Record<string, unknown>;
   return {
     shape: VIEW3D_SHAPES.includes(o.shape as TestShape) ? (o.shape as TestShape) : base.shape,
     mode: VIEW3D_MODES.includes(o.mode as View3dMode) ? (o.mode as View3dMode) : base.mode,
     lightAzimuthDeg: az === null ? base.lightAzimuthDeg : ((az % 360) + 360) % 360,
     lightElevationDeg: el === null ? base.lightElevationDeg : Math.min(90, Math.max(0, el)),
     pointFilter: typeof o.pointFilter === 'boolean' ? o.pointFilter : base.pointFilter,
+    textured: Object.fromEntries((Object.keys(DEFAULT_TEXTURED) as ShapePart[]).map((p) => [
+      p, typeof textured[p] === 'boolean' ? textured[p] : base.textured[p],
+    ])) as Record<ShapePart, boolean>,
   };
 }
 
@@ -157,6 +168,13 @@ export interface ProjectState {
   /** Layer whose section the inspector shows. View state: not in the document, not tracked as a change. */
   selectedLayer: NodeType;
   atlas: AtlasResult | null;
+  /**
+   * The atlas the 3D view reads (decision 88): the preview `atlas` itself when it is at VIEW3D_RES or more, otherwise
+   * a VIEW3D_RES composition of the same inputs, made only while the 3D pane is visible. May lag the preview.
+   */
+  view3dAtlas: AtlasResult | null;
+  /** The 3D pane is on screen (non-zero size); while false no 3D composition runs. */
+  view3dVisible: boolean;
   /** Last preview composition failure, shown in the status bar; cleared by the next success. */
   composeError: string | null;
   structure: StructureState | null;
@@ -191,6 +209,8 @@ export interface ProjectState {
   view3d: View3dSettings;
   /** Merges valid fields into the 3D view settings and remembers them. */
   setView3d(patch: Partial<View3dSettings>): void;
+  /** Said by the 3D view when its pane is shown or hidden; showing it composes its atlas if it is behind. */
+  setView3dVisible(v: boolean): void;
   /** Empties the project (no material, document, mask or second set) and forgets its path. */
   newProject(): void;
   /**
@@ -338,12 +358,27 @@ function dirtNode(doc: ProjectDoc): DocNode<'dirt'> | undefined {
   return doc.nodes.find((n): n is DocNode<'dirt'> => n.type === 'dirt');
 }
 
-/** Sets the proposed wear family unless the user picked one; returns `doc` itself when nothing changes. */
-function withProposedFamily(doc: ProjectDoc, type: MaterialType, materialName: string): ProjectDoc {
+/**
+ * Sets the proposed wear family unless the user picked one, and the reach, break size and intensity proposed from
+ * the piece size unless the user edited any of them; returns `doc` itself when nothing changes.
+ */
+function withProposedWear(
+  doc: ProjectDoc, type: MaterialType, materialName: string, pieceSize: { longM: number; shortM: number } | null,
+): ProjectDoc {
   const wear = wearNode(doc);
-  if (!wear || wear.params.userSetFamily) return doc;
-  const family = proposeFamily(type, materialName);
-  return family === wear.params.family ? doc : updateNodeParams<'wear'>(doc, wear.id, { family });
+  if (!wear) return doc;
+  const patch: Partial<NodeParams['wear']> = {};
+  if (!wear.params.userSetFamily) {
+    const family = proposeFamily(type, materialName);
+    if (family !== wear.params.family) patch.family = family;
+  }
+  if (!wear.params.userSetWearSize) {
+    const { widthM, sizeM, intensity } = proposeWearSize(pieceSize);
+    if (widthM !== wear.params.widthM) patch.widthM = widthM;
+    if (sizeM !== wear.params.sizeM) patch.sizeM = sizeM;
+    if (intensity !== wear.params.intensity) patch.intensity = intensity;
+  }
+  return Object.keys(patch).length === 0 ? doc : updateNodeParams<'wear'>(doc, wear.id, patch);
 }
 
 async function decode(file: File): Promise<ImageBitmap> {
@@ -440,7 +475,8 @@ function withAnalysis(
   let next = settings === start ? doc : withMaterialNode(doc, settings);
   const node = structureNode(next);
   if (node) next = updateNodeParams(next, node.id, { type: result.type, analyzed: true });
-  return { doc: withProposedFamily(next, result.type, settings.name), settings };
+  const pieceSize = medianPieceSizeM(result, settings.tileSizeM);
+  return { doc: withProposedWear(next, result.type, settings.name, pieceSize), settings };
 }
 
 /** Grey input of the analysis and the analysis itself, on the Worker; null without height or albedo. */
@@ -508,6 +544,7 @@ function invalidateInFlight(replaced: boolean): void {
     substrateReplacedGen = substrateGen;
   }
   composeGen++;
+  compose3dGen++;
   evalGen++;
   clearTimeout(evalTimer);
 }
@@ -617,6 +654,8 @@ export const useProject = create<ProjectState>()((set, get) => ({
   activeMap: 'baseColor',
   selectedLayer: 'wear',
   atlas: null,
+  view3dAtlas: null,
+  view3dVisible: false,
   composeError: null,
   structure: null,
   structureError: null,
@@ -651,12 +690,13 @@ export const useProject = create<ProjectState>()((set, get) => ({
     setClean(set, {
       doc: null, material: null, gpuMaterial: null, sources: [], importing: false, importError: null,
       structure: null, structureError: null, mask: null, substrate: null, wearError: null,
-      atlas: null, composeError: null, checks: null, checksError: null, checksPending: false, viewFocus: null,
-      viewGen: get().viewGen + 1, projectPath: null, projectError: null, opening: false, selectedLayer: 'wear',
+      atlas: null, view3dAtlas: null, composeError: null, checks: null, checksError: null, checksPending: false,
+      viewFocus: null, viewGen: get().viewGen + 1, projectPath: null, projectError: null, opening: false, selectedLayer: 'wear',
     });
     destroyProject(old, oldBitmaps);
-    // Evaluation reads of the preview atlas were submitted before their first await.
+    // Evaluation reads of the preview atlas and 3D view reads were submitted before their first await.
     if (old.atlas) destroyMaps(old.atlas.maps);
+    if (old.view3dAtlas && old.view3dAtlas !== old.atlas) destroyMaps(old.view3dAtlas.maps);
   },
 
   async saveProject(target) {
@@ -767,7 +807,7 @@ export const useProject = create<ProjectState>()((set, get) => ({
           structureGpu = uploadStructure(gpu, analysis.result);
           structure = { result: analysis.result, gpu: structureGpu, source: analysis.source };
         } else if (!analysis) {
-          doc = withProposedFamily(doc, 'continuous', settings.name);
+          doc = withProposedWear(doc, 'continuous', settings.name, null);
         }
       } catch (e) {
         console.error('structure analysis failed', e);
@@ -785,7 +825,7 @@ export const useProject = create<ProjectState>()((set, get) => ({
       setClean(set, {
         doc, material: { settings, images }, gpuMaterial: { ...gpuMaterial, settings }, sources: c.materialFiles,
         importing: false, importError: null, structure, structureError, mask, substrate, wearError: null,
-        composeError: null, checks: null, checksError: null, checksPending: false, viewFocus: null,
+        view3dAtlas: null, composeError: null, checks: null, checksError: null, checksPending: false, viewFocus: null,
         viewGen: get().viewGen + 1, projectPath: { dir: '', name: file.name }, projectError: null, opening: false, selectedLayer: 'wear',
       });
       // Live now: the cleanup below must never free them.
@@ -795,6 +835,8 @@ export const useProject = create<ProjectState>()((set, get) => ({
       structureGpu = null;
       fresh = new Map();
       destroyProject(old, oldBitmaps);
+      // The preview atlas stays on screen until the recomposition replaces it; the 3D view's own maps go now.
+      if (old.view3dAtlas && old.view3dAtlas !== old.atlas) destroyMaps(old.view3dAtlas.maps);
     } catch (e) {
       destroyTextures(gpuMaterial);
       maskTexture?.destroy();
@@ -833,6 +875,14 @@ export const useProject = create<ProjectState>()((set, get) => ({
     const view3d = sanitizeView3d({ ...get().view3d, ...patch }, get().view3d);
     saveView3d(view3d);
     set({ view3d });
+  },
+
+  setView3dVisible(v) {
+    if (v === get().view3dVisible) return;
+    // Hiding drops a 3D composition in flight.
+    if (!v) compose3dGen++;
+    set({ view3dVisible: v });
+    if (v) void runCompose3d();
   },
 
   setSelectedLayer(t) {
@@ -982,7 +1032,10 @@ export const useProject = create<ProjectState>()((set, get) => ({
       next.gpuMaterial = gm ? { ...gm, settings } : gm;
     }
     if (patch.name !== undefined && next.doc) {
-      next.doc = withProposedFamily(next.doc, get().structure?.result.type ?? 'continuous', settings.name);
+      const result = get().structure?.result;
+      next.doc = withProposedWear(
+        next.doc, result?.type ?? 'continuous', settings.name, result ? medianPieceSizeM(result, settings.tileSizeM) : null,
+      );
     }
     set(next);
     const images = next.material?.images;
@@ -1035,7 +1088,7 @@ export const useProject = create<ProjectState>()((set, get) => ({
           // Neither height nor albedo left: drop the structure of the removed maps (continuous).
           const old = get().structure;
           let nextDoc = old && node ? updateNodeParams(doc, node.id, { analyzed: false }) : doc;
-          nextDoc = withProposedFamily(nextDoc, 'continuous', material.settings.name);
+          nextDoc = withProposedWear(nextDoc, 'continuous', material.settings.name, null);
           if (old || nextDoc !== doc) set({ structure: null, doc: nextDoc });
           old?.gpu.destroy();
           return;
@@ -1279,16 +1332,21 @@ async function recompose(): Promise<void> {
       destroyMaps(maps);
       return;
     }
-    const prev = useProject.getState().atlas;
-    useProject.setState({
-      atlas: {
-        maps, doc, gpuMaterial, structure, mask, substrate, layout, placements, issues,
-        layoutIssues: validateLayout(layout),
-        resolutionPx: previewRes, gpuMs,
-      },
-      composeError: null,
-    });
+    const { atlas: prev, view3dAtlas: prev3d } = useProject.getState();
+    const atlas: AtlasResult = {
+      maps, doc, gpuMaterial, structure, mask, substrate, layout, placements, issues,
+      layoutIssues: validateLayout(layout),
+      resolutionPx: previewRes, gpuMs,
+    };
+    // A 3D composition in flight describes an older atlas.
+    compose3dGen++;
+    const shared = previewRes >= VIEW3D_RES;
+    // The 3D view reads this atlas itself, or lets go of the old one if it read that (destroyed right below).
+    const view3d = shared ? { view3dAtlas: atlas } : prev3d !== null && prev3d === prev ? { view3dAtlas: null } : {};
+    useProject.setState({ atlas, composeError: null, ...view3d });
     if (prev) destroyMaps(prev.maps);
+    if (shared && prev3d && prev3d !== prev) destroyMaps(prev3d.maps);
+    if (!shared) void runCompose3d();
   } catch (e) {
     if (maps) destroyMaps(maps);
     if (mine === composeGen) {
@@ -1308,6 +1366,90 @@ useProject.subscribe((s, prev) => {
   clearTimeout(composeTimer);
   composeTimer = setTimeout(() => void runCompose(), RECOMPOSE_DEBOUNCE_MS);
 });
+
+/** Resolution of the atlas the 3D view reads (decision 88). */
+export const VIEW3D_RES = 2048;
+
+/** 3D compositions started (debug counter for the tests). */
+export const compose3dStats = { composes: 0 };
+
+/** Bumped by every 3D compose, by a committed preview, by open and Nuevo and by hiding the pane. */
+let compose3dGen = 0;
+let composing3d = false;
+let compose3dAgain = false;
+
+/** `a` was composed from the same inputs as `b`. */
+function sameInputs(a: AtlasResult, b: AtlasResult): boolean {
+  return a.doc === b.doc && a.gpuMaterial === b.gpuMaterial && a.structure === b.structure && a.mask === b.mask &&
+    a.substrate === b.substrate;
+}
+
+/** The 3D view's atlas shows what the preview atlas shows (at its own resolution). */
+export function view3dCurrent(s: Pick<ProjectState, 'atlas' | 'view3dAtlas'>): boolean {
+  return s.atlas !== null && s.view3dAtlas !== null && sameInputs(s.view3dAtlas, s.atlas);
+}
+
+/** Like runCompose: one 3D compose at a time; requests made meanwhile run once when it ends. */
+async function runCompose3d(): Promise<void> {
+  if (composing3d) {
+    compose3dAgain = true;
+    return;
+  }
+  composing3d = true;
+  try {
+    await compose3d();
+  } finally {
+    composing3d = false;
+    if (compose3dAgain) {
+      compose3dAgain = false;
+      void runCompose3d();
+    }
+  }
+}
+
+/**
+ * Composes the preview atlas's inputs at VIEW3D_RES for the 3D view, while its pane is visible and the preview is
+ * lower. The layout and placements are the preview's (resolved at the output resolution, as the evaluation composes
+ * them), so the 3D rects are the 2D view's.
+ */
+async function compose3d(): Promise<void> {
+  const s = useProject.getState();
+  const src = s.atlas;
+  const mine = ++compose3dGen;
+  const gpu = s.gpu;
+  if (!gpu || !s.view3dVisible || !src || src.resolutionPx >= VIEW3D_RES || view3dCurrent(s)) return;
+  // The preview's inputs were replaced (their textures may be gone): its recomposition asks again when it lands.
+  if (
+    src.doc !== s.doc || src.gpuMaterial !== s.gpuMaterial || src.structure !== s.structure || src.mask !== s.mask ||
+    src.substrate !== s.substrate
+  ) {
+    return;
+  }
+  compose3dStats.composes++;
+  let maps: AtlasMaps | null = null;
+  try {
+    const t0 = performance.now();
+    // Binds every texture and submits before its first await, like the preview's.
+    maps = await composeAtlas(gpu, composeInputFor(
+      { doc: src.doc, gpuMaterial: src.gpuMaterial, structure: src.structure, mask: src.mask, substrate: src.substrate },
+      { layout: src.layout, placements: src.placements },
+      VIEW3D_RES,
+    ));
+    await gpu.device.queue.onSubmittedWorkDone();
+    const gpuMs = performance.now() - t0;
+    if (mine !== compose3dGen) {
+      destroyMaps(maps);
+      return;
+    }
+    const { view3dAtlas: prev, atlas } = useProject.getState();
+    useProject.setState({ view3dAtlas: { ...src, maps, resolutionPx: VIEW3D_RES, gpuMs } });
+    // The 3D view's reads of the old maps were submitted before their first await. Never the preview's maps.
+    if (prev && prev !== atlas) destroyMaps(prev.maps);
+  } catch (e) {
+    if (maps) destroyMaps(maps);
+    if (mine === compose3dGen) console.error('3d view compose failed', e);
+  }
+}
 
 /** Resolution of the evaluation composition the checks run on (docs/04-wear.md). */
 export const EVAL_RES = 2048;

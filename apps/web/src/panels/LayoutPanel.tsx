@@ -39,10 +39,17 @@ export function LayoutPanel() {
             value={p.preset}
             onValueChange={(v) => setLayoutParams({ mode: 'preset', preset: v as PresetId })}
           >
-            <SelectTrigger data-testid="layout-preset"><SelectValue /></SelectTrigger>
+            <SelectTrigger
+              data-testid="layout-preset"
+              title={p.preset === 'walls' ? es.layout.wallsPresetHint : undefined}
+            >
+              <SelectValue />
+            </SelectTrigger>
             <SelectContent>
               {PRESET_IDS.map((id) => (
-                <SelectItem key={id} value={id}>{es.layout.presets[id]}</SelectItem>
+                <SelectItem key={id} value={id} title={id === 'walls' ? es.layout.wallsPresetHint : undefined}>
+                  {es.layout.presets[id]}
+                </SelectItem>
               ))}
             </SelectContent>
           </Select>

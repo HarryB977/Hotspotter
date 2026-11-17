@@ -37,10 +37,10 @@ Viven en el nodo `wear` del documento (`packages/core/src/wear/params.ts`). Toda
 | Parámetro | Por defecto | UI | Qué hace |
 |---|---|---|---|
 | `family` | según el material | Familia | Forma del daño (ver "Familias de la v0.1"). La propone `proposeFamily` hasta que el usuario elige una (`userSetFamily`) |
-| `intensity` | 0.5 (0–1) | Intensidad | Potencial de daño en el borde visible |
-| `widthM` | 0.04 (4 cm) | Alcance | Hasta dónde llega el daño desde el borde visible. Se limita a `wEff`; 0 apaga el desgaste de borde, también el borde mínimo (R30) |
+| `intensity` | 0.5 (0–1); 0.75 con piezas | Intensidad | Potencial de daño en el borde visible. Con piezas la propone `proposeWearSize` (ver "Tamaño del desgaste según la pieza") |
+| `widthM` | 0.04 (4 cm); con piezas, una pieza | Alcance | Hasta dónde llega el daño desde el borde visible, como máximo. Se limita a `wEff`; 0 apaga el desgaste de borde, también el borde mínimo (R30) |
 | `minEdgeM` | 0.004 (4 mm) | Borde mínimo | Borde que se pierde siempre, con contorno irregular |
-| `sizeM` | 0.03 (3 cm) | Tamaño de rotura | Escala del ruido y de las celdas; con piezas, distancia a la junta donde se concentra el daño |
+| `sizeM` | 0.03 (3 cm); con piezas, 1.5 veces el lado corto | Tamaño de rotura | Escala del ruido y de las celdas; con piezas, distancia a la junta donde se concentra el daño |
 | `depthM` | 0.006 (6 mm) | Profundidad | Profundidad de la pérdida (entre 0.5 y 1 vez este valor, según ruido) |
 | `bandM` | 0.006 (6 mm) | Banda de fractura | Ancho de la transición alrededor de cada rotura |
 | `microM` | 0.0005 (0.5 mm) | Microdetalle | Amplitud de la rugosidad de la superficie rota |
@@ -49,6 +49,21 @@ Viven en el nodo `wear` del documento (`packages/core/src/wear/params.ts`). Toda
 | `seed` | 0 | Semilla | Semilla del daño (u32, hash PCG en GPU) |
 | `mask` | apagada, fuerza 1, sin invertir | Máscara B/N | Ver la decisión 43 |
 | `substrate` | interior: tono 0°, saturación ×0.7, valor ×0.8, rugosidad +0.2 | Sustrato | Lo que queda debajo (ver "Pasada de color") |
+
+### Tamaño del desgaste según la pieza
+
+Si el material tiene piezas (ladrillo, baldosa, tablón), el alcance, el tamaño de rotura y la intensidad por defecto salen del tamaño de pieza que mide el análisis de estructura (`medianPieceSizeM`: la mediana del lado largo y del lado corto de las piezas enteras, en metros). Lo calcula `proposeWearSize` (decisión 86):
+
+- **Alcance = una pieza** (el lado largo). El alcance es lo más lejos que puede llegar el daño, no lo que se rompe normalmente: el potencial de daño baja hasta cero justo en el alcance. Medido en bricks wall 13 con la semilla 0, la rotura típica en una esquina es de un tercio de pieza, y las más hondas llegan casi a una pieza entera. Cambia con la semilla: con otras, la típica llega hasta media pieza más o menos.
+- **Tamaño de rotura = 1,5 veces el lado corto**, para que los trozos rotos tengan el tamaño de un ladrillo y no de una miga.
+- **Intensidad = 0,75.**
+- Sin piezas (materiales continuos o direccionales, o si hay menos de 4 piezas enteras) se quedan los valores fijos: 4 cm, 3 cm y 0,5.
+
+Se propone igual que la familia: al importar, al analizar y al renombrar el material. **En cuanto el usuario toca Alcance, Tamaño de rotura o Intensidad, gana su valor** (`userSetWearSize`) y ya no se propone nada encima, aunque se vuelva a analizar. Reemplazar el material empieza un documento nuevo, así que vuelve a proponer; Añadir mapas conserva el documento y los valores del usuario.
+
+Los proyectos guardados antes de este cambio no llevan `userSetWearSize`: al abrirlos se marca como elegido por el usuario y conservan su alcance, su tamaño de rotura y su intensidad.
+
+Una prueba lo mide en bricks wall 13 (vista previa 2048, semilla 0, rectángulo de pared de 200 × 200 cm): en las esquinas, la mediana de lo que se rompe hacia dentro está entre 0,25 y 0,75 piezas y el percentil 90 llega al menos a 0,4 piezas.
 
 Suciedad (nodo `dirt`): `enabled` true, `cavity` 0.4, `runoff` 0 (era 0.3; decisión 69), `runoffLengthM` 0.4 m y `tint` [0.25, 0.22, 0.18]. El desgaste también lleva `enabled` (true por defecto).
 
@@ -80,7 +95,7 @@ El motor decide primero qué píxeles pierden material y a qué profundidad obje
 
 Todo se mide en metros sobre coordenadas locales del rectángulo, así que la preview y el export coinciden a cualquier resolución. A esas coordenadas se suma un desplazamiento por rectángulo, derivado de la seed y del **índice** del rectángulo en el layout: reordenar los rectángulos cambia su desgaste.
 
-- El potencial de daño cae con la distancia al borde visible del rectángulo (el borde del fondo de ranura) en un ancho `wEff = min(widthM, 0.33 · lado menor visible)`. El lado menor visible es el del rectángulo menos el fondo de ranura. Así los trims finos no quedan comidos.
+- El potencial de daño cae con la distancia al borde visible del rectángulo (el borde del fondo de ranura) en un ancho `wEff = min(widthM, 0.33 · lado menor visible)`. El lado menor visible es el del rectángulo menos el fondo de ranura. Así los trims finos no quedan comidos. Una franja `tileU` o `tileV` que ocupa todo el atlas no tiene borde en su eje de repetición (decisión 89): sus extremos no llevan junta, bisel, desgaste ni tono de arista, y su lado menor visible es el del otro eje, así que la franja se repite sin costura.
 - La máscara B/N lo modula (gris medio = neutro, decisión 43). Con piezas, `pieceBias` lo concentra a menos de `sizeM` de una junta, con un peso aleatorio por pieza.
 - La forma sale de una mezcla de fBm y celdas Voronoi (`cellMix` de la familia). La celda se parte en cada junta, así que la rotura sigue el contorno de las piezas. Las celdas se estiran (`anisotropy`) a lo largo de la veta del material, o de su eje X si no hay veta, y giran con el rectángulo.
 - Siempre se pierde un borde mínimo irregular. Su ancho base es `min(minEdgeM, 0.5 · wEff)` (en trims finos manda el límite) y el contorno interior llega hasta 1.6 veces ese ancho.
@@ -198,8 +213,8 @@ Cada fila tiene un estado (correcto, aviso o error), un mensaje en español llan
 
 | Comprobación | Regla de la v0.1 |
 |---|---|
-| Cobertura de borde | Solo con `minEdgeM > 0`. Se recorre el perímetro visible de cada rectángulo (sin el fondo de ranura) y, en cada punto, la franja del borde mínimo hacia dentro, de ancho `min(minEdgeM, 0.5·wEff)`. Si un tramo de más de 2 cm no tiene `wearMask` en esa franja, da aviso, con el punto medio de cada tramo. Si el borde mínimo mide menos de un píxel de la evaluación (atlas muy anchos), no se comprueba y el mensaje lo dice; un trim fino con un borde de menos de un píxel se salta |
-| Islas | Manchas de pérdida visible (`wearMask ≥ 128`) dentro de un rectángulo que no llegan a la franja de desgaste de borde: ningún píxel a menos de `wEff` del borde visible. Antes de etiquetarlas se puentean los huecos de hasta `bandM`, como si la máscara se dilatara `bandM/2`: dos píxeles perdidos del mismo rectángulo se unen si sus centros distan como mucho `bandM·px/m + 1` px (y siempre con vecindad 8). Sin límite de área. Si hay alguna, da aviso, con el centroide de cada una (R38). La regla de R38 con la franja del borde garantizado (`1.6·rimM` + 1 px) avisaba en todos los ladrillos por defecto (bricks wall 13: 337, 208, 323 y 173 islas con intensidad 0.5 y 1 y semillas 0 y 7): eran desconchones a 1–3 cm del canto, separados del borde por más de `bandM`. Por eso se usa la franja `wEff` del brief; las motas sueltas dentro de esa franja no se marcan (pendiente, decisión 51) |
+| Cobertura de borde | Solo con `minEdgeM > 0`. Se recorre el perímetro visible de cada rectángulo (sin el fondo de ranura) y, en cada punto, la franja del borde mínimo hacia dentro, de ancho `min(minEdgeM, 0.5·wEff)`. Si un tramo de más de 2 cm no tiene `wearMask` en esa franja, da aviso, con el punto medio de cada tramo. Si el borde mínimo mide menos de un píxel de la evaluación (atlas muy anchos), no se comprueba y el mensaje lo dice; un trim fino con un borde de menos de un píxel se salta. Una franja repetible que ocupa el atlas no tiene borde en su eje de repetición (decisión 89): en una `tileU` se recorren por separado el borde de arriba y el de abajo, cada uno como un lazo que da la vuelta por los extremos |
+| Islas | Manchas de pérdida visible (`wearMask ≥ 128`) dentro de un rectángulo que no llegan a la franja de desgaste de borde: ningún píxel a menos de `wEff` del borde visible. Antes de etiquetarlas se puentean los huecos de hasta `bandM`, como si la máscara se dilatara `bandM/2`: dos píxeles perdidos del mismo rectángulo se unen si sus centros distan como mucho `bandM·px/m + 1` px (y siempre con vecindad 8). Sin límite de área. Los extremos de una franja repetible no son borde (decisión 89). Si hay alguna, da aviso, con el centroide de cada una (R38). La regla de R38 con la franja del borde garantizado (`1.6·rimM` + 1 px) avisaba en todos los ladrillos por defecto (bricks wall 13: 337, 208, 323 y 173 islas con intensidad 0.5 y 1 y semillas 0 y 7): eran desconchones a 1–3 cm del canto, separados del borde por más de `bandM`. Por eso se usa la franja `wEff` del brief; las motas sueltas dentro de esa franja no se marcan (pendiente, decisión 51) |
 | Coherencia de normal | La misma definición que el test de la Task 9 (R40, R41): Sobel sobre la altura macro, con y hacia arriba. La pendiente del material es la mayor entre la del relieve propio (Sobel de la altura final menos la macro) y la de su normal de detalle (`|n.xy| / n.z` de `matNormal`, la normal del material ya muestreada en el atlas; plana sin normal map; la GPU calcula esa pendiente y solo se lee un valor por píxel, decisión 72). Como en `normalFromHeight.wgsl`, esa normal de detalle se desvanece hacia (0, 0, 1) según `wearMask` antes de medirla: lo perdido se lleva su relieve. Es así porque un normal map puede llevar mucho más relieve que su height. Solo cuentan los píxeles donde la pendiente macro pasa de 0.2 **y** supera a la del material; en ellos se exige `dot(n.xy, −grad macro) ≥ 0`. Donde el relieve del material es más fuerte (una junta de baldosa que cruza el bisel), la normal sigue al material con razón y no se juzga. Si falla más del 0.5 % de los píxeles contados, da error |
 | Proporciones | `checkProportions` con el periodo girado de cada rectángulo. Si hay problemas, da aviso, con el centro de cada rectángulo |
 | Sangrado | Si la ranura visible (fondo `groove.widthM` más el bisel a cada lado, `2·groove.bevelM`) mide menos de 4 px a la resolución de exportación, da aviso: la ranura desaparece en mip 2 y hay que ensanchar la ranura o el bisel. Con los valores por defecto (6 + 2·3 mm = 12 mm en 8 m) mide 6.1 px a 4096 y está bien (R35) |

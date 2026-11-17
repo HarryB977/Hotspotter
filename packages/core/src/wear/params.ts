@@ -30,6 +30,8 @@ export interface WearParams {
   family: WearFamily;
   /** True once the user picks a family; proposeFamily never overrides it. */
   userSetFamily?: boolean;
+  /** True once the user edits widthM, sizeM or intensity; proposeWearSize never overrides them. */
+  userSetWearSize?: boolean;
   intensity: number;
   widthM: number;
   minEdgeM: number;
@@ -56,6 +58,7 @@ export interface DirtParams {
 export const DEFAULT_WEAR: WearParams = {
   enabled: true,
   family: 'brittle',
+  userSetWearSize: false,
   intensity: 0.5,
   widthM: 0.04,
   minEdgeM: 0.004,
@@ -80,4 +83,23 @@ export function proposeFamily(t: MaterialType, materialName: string): WearFamily
   if (/metal|steel|iron|alumin/i.test(materialName)) return 'dent';
   if (/paint|pintur/i.test(materialName)) return 'chipping';
   return 'erosion';
+}
+
+/**
+ * Proposal from the median piece size (decision 86). The reach is where the damage potential falls to zero, so the
+ * typical break is far shorter: a reach of one piece gives breaks of about a third of a piece at the corners.
+ */
+const REACH_PER_LONG = 1.0;
+const BREAK_PER_SHORT = 1.5;
+const PIECES_INTENSITY = 0.75;
+
+/**
+ * Wear reach (`widthM`), break size (`sizeM`) and intensity proposed from the median piece size. Without pieces,
+ * the fixed defaults.
+ */
+export function proposeWearSize(
+  piece: { longM: number; shortM: number } | null,
+): { widthM: number; sizeM: number; intensity: number } {
+  if (!piece) return { widthM: DEFAULT_WEAR.widthM, sizeM: DEFAULT_WEAR.sizeM, intensity: DEFAULT_WEAR.intensity };
+  return { widthM: REACH_PER_LONG * piece.longM, sizeM: BREAK_PER_SHORT * piece.shortM, intensity: PIECES_INTENSITY };
 }

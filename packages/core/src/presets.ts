@@ -58,12 +58,17 @@ function trimBands(): Kid[] {
 }
 
 const TREES: Record<PresetId, Node> = {
+  // Built around a 2.6 m storey (decision 85). Every storey wall from about 0.44 m long takes the tileU strip at
+  // exact scale: the only other storey-height rects are pillar fronts (35), wall ends (20) and pillar sides (15).
+  // The rest is under 2.08 m tall, out of ±25 % of a storey wall; 200 x 200 fits a 2 m cube.
   walls: stack(
-    band(260, [320, 200, 120, 80, 40, 40], WALL),
-    band(260, [280, 200, 160, 100, 60], WALL),
-    band(120, [200, 200, 160, 120, 120], HALF),
-    band(80, [800], WALL_TILE),
-    band(80, [40, 40, 80, 80, 160, 200, 200], WALL),
+    band(260, [800], WALL_TILE),
+    [260, row(
+      ...[35, 35, 20, 15, 15].map((w): Kid => [w, leaf(WALL)]),
+      [680, stack(band(200, [200, 200, 120, 120, 40], WALL), band(60, [200, 200, 160, 120], HALF))],
+    )],
+    band(200, [200, 200, 120, 120, 80, 80], WALL),
+    band(80, [200, 200, 160, 120, 80, 40], HALF),
   ),
   floors: stack(
     band(16, [800], PLANK),

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { CHECK_IDS, deltaE76, jointMeanRgb, meanRgb, runChecks } from '../src/checks';
 import type { CheckContext, CheckResult, EvalMaps } from '../src/checks';
+import { edgeDistPx, evalGeometry } from '../src/checks/geometry';
 import { makeRect } from '../src/layout';
 import type { HotspotLayout } from '../src/layout';
 import { CONTINUOUS } from '../src/period';
@@ -140,6 +141,43 @@ describe('runChecks', () => {
     // No area cap: a 10 × 10 px patch in the middle is an island too.
     for (let y = 120; y < 130; y++) for (let x = 100; x < 110; x++) m.wearMask[y * 256 + x] = 255;
     expect(get(runChecks(ctxWith(m)), 'islands').points).toEqual([[21.5, 121.5], [105, 125]]);
+  });
+
+  it('a tileU strip has no left or right edge (decision 89): coverage, islands and the geometry agree with the GPU', () => {
+    const strip = (): HotspotLayout => ({ ...layout1m(), rects: [makeRect({ id: 's', x: 0, y: 0, w: 256, h: 256, tileU: true })] });
+    const n = 256;
+    // The visible rect is not shrunk by the groove at the u-ends, as rectId.wgsl draws it.
+    const geo = evalGeometry(strip(), DEFAULT_WEAR, n);
+    expect([geo.rects[0].x0, geo.rects[0].x1]).toEqual([0, n]);
+    expect(geo.rects[0].y0).toBeGreaterThan(0);
+    // The u-ends are no edge: at row 100 only the top edge counts.
+    expect(edgeDistPx(geo.rects[0], 0, 100)).toBeCloseTo(100.5 - geo.rects[0].y0, 6);
+
+    // Wear only along the top and bottom bands: covered, with no gap at the u-ends.
+    const m = flatMaps(n);
+    const bandPx = Math.ceil(0.006 * n) + 1;
+    for (let y = 0; y < n; y++) {
+      if (y > bandPx && y < n - 1 - bandPx) continue;
+      for (let x = 0; x < n; x++) m.wearMask[y * n + x] = 200;
+    }
+    expect(get(runChecks(ctxWith(m, { layout: strip() })), 'coverage').status).toBe('ok');
+    // The same band on a plain rect leaves its left and right sides bare.
+    expect(get(runChecks(ctxWith(m)), 'coverage').status).toBe('warn');
+    // The top band wraps around the strip's ends: a 3 cm gap across x = 0 is one gap, not two short ones.
+    const wrap = flatMaps(n);
+    wrap.wearMask.set(m.wearMask);
+    for (let y = 0; y <= bandPx; y++) for (let x = 0; x < n; x++) if (x < 4 || x >= n - 4) wrap.wearMask[y * n + x] = 0;
+    const gap = get(runChecks(ctxWith(wrap, { layout: strip() })), 'coverage');
+    expect(gap.status).toBe('warn');
+    expect(gap.points).toHaveLength(1);
+
+    // A speck 2 px from the u-end, far from the top and bottom, does not touch any edge strip: an island.
+    for (let y = 120; y < 123; y++) for (let x = 2; x < 5; x++) m.wearMask[y * n + x] = 200;
+    const isl = get(runChecks(ctxWith(m, { layout: strip() })), 'islands');
+    expect(isl.status).toBe('warn');
+    expect(isl.points).toEqual([[3.5, 121.5]]);
+    // On a plain rect the same speck sits in the left edge strip.
+    expect(get(runChecks(ctxWith(m)), 'islands').status).toBe('ok');
   });
 
   it('normal errors when more than 0.5 % of the steep pixels point against the slope', () => {

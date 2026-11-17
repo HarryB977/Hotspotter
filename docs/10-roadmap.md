@@ -33,13 +33,16 @@ Hecho en la v0.1-C:
   - [x] Quitadas las esperas fijas de 200 ms de `structure.spec.ts` (comprobaciones negativas); se espera a una señal de análisis terminado.
   - [x] `readbackRgba16f` a 2048 devuelve la pendiente por píxel en lugar de los cuatro canales.
 
+- [x] **Vista 3D: formas, partes y desgaste** (decisiones 85–88): preset de paredes con franja de altura de planta (2,6 m) y de pilar; pared con huecos en una sola pieza por lado (caras con huecos abiertos); marcos, columnas y rodapié como partes; menú "Partes" con textura o material neutro; propuesta de alcance y tamaño de rotura de desgaste a partir del tamaño de pieza (alcance = 1,0 × lado largo, tamaño de rotura = 1,5 × lado corto, intensidad 0,75); vista 3D compuesta a 2048 px.
+
 Falta para cerrar la v0.1 (plan v0.1-D):
 
 - **`.exe` portable** y **aviso de actualizaciones** (ver [08](08-distribution.md)). El servidor importa todo `packages/core`: el empaquetado del `.exe` debe incluirlo (o importar solo el subpath que usa).
 - Islas: marcar también las motas sueltas dentro de la franja `wEff` (decisión 51).
 - Comprobar en Anvil si `Can mirror` es un solo flag para los dos ejes (decisión 54).
-- **Preset de paredes: franja de altura de planta** (decidido con el usuario, 2026-11-16). Añadir al preset de paredes una franja horizontal repetible de altura de planta, para que paredes grandes como las del Pasillo (6 × 3 m) no estiren un rectángulo (hoy unas 3.75 veces, lo mismo que haría ProBuilder con el preset actual). El `RepeatWrapping` de la decisión 80 queda confirmado por el usuario.
-- Vista 3D, menores: los zócalos del Pasillo tienen sus remates estirados porque no se permite girar (decisión 79); el interruptor "Píxeles" vuelve a subir las seis texturas de golpe; la vista 3D no avisa si el contexto WebGL nunca se recupera.
+- ~~**Preset de paredes: franja de altura de planta**~~ Hecho (decisión 85): franja `tileU` de 2,6 m para toda pared de planta, rectángulos de pilar y de cubo; el ladrillo de las formas de prueba y de las paredes de planta sale con un 10 % de diferencia como mucho. El `RepeatWrapping` de la decisión 80 queda confirmado por el usuario.
+  - **Contrapartida (regla R2):** las paredes de planta toman la franja a escala exacta, así que **no tienen bordes verticales desgastados por el hotspot**; la franja solo desgasta arriba y abajo, y sus extremos no llevan junta, bisel ni desgaste (decisión 89), así que las paredes de más de 8 m se repiten sin costura de desgaste. El material puede notar una costura cada 8 m si 8 m no es múltiplo de su tile. Las esquinas salientes se apoyan en columnas y marcos, que cubren las uniones.
+- Vista 3D, menores: el interruptor "Píxeles" vuelve a subir las seis texturas de golpe; la vista 3D no avisa si el contexto WebGL nunca se recupera. (Los zócalos del Pasillo ya no se ven estirados: el preset de paredes ya no estira el Pasillo, que mide 6 × 2,6 m.)
 - `inset`: no es un fallo. Se escribe en px de la textura exportada, porque la exportación resuelve el layout a la resolución de exportación (`encode.ts` → `document.ts`), y hoy vale siempre 0.
 - Que el usuario valide los sets del banco frente a `samples/examples/` (criterio de [11](11-test-bench.md)).
 
@@ -52,6 +55,16 @@ Pendiente tras la revisión final de la v0.1-C:
 - Cosmética del interruptor de la pila de capas (franja muerta, hover).
 - Faltan tests: `localStorage` que lanza, `pointercancel`, los límites 20/80, el tope total de 1 GiB y las dimensiones completas de la columna y las escaleras.
 - Validar en el pipeline la pasada de pendiente, y las esperas por inactividad de `structure.spec.ts`.
+
+Pendiente tras la revisión final de la vista 3D, formas y desgaste (2026-11-17):
+
+- En el modo Rectángulos, los contornos de los rectángulos no se recortan por los huecos de la cara.
+- Al cerrar el menú Partes con Escape, el foco no vuelve al botón Partes.
+- Si la composición 3D falla, no se muestra ningún mensaje: debería volver al atlas de la vista previa y avisar.
+- Ningún test cubre que Abrir o Nuevo sustituyan una composición 3D en marcha.
+- Con la vista previa a 1024, cada cambio hace dos composiciones a 2048; la evaluación podría reutilizar el atlas 3D.
+- El test del límite de búfer de la exportación (`app.spec.ts:362`) falla a veces con la máquina cargada.
+- Las bandas de desgaste de arriba y abajo de una franja repetible usan ruido no periódico: donde la franja se repite, su patrón de rotura cambia de golpe (decisión 89).
 
 ## Para la v0.2 (pedido por el usuario, 2026-11-12)
 
