@@ -14,16 +14,21 @@ export interface UpdateService {
 const CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const STABLE = /^v?(\d+)\.(\d+)\.(\d+)$/;
 
-/** Compares stable x.y.z versions (a leading 'v' is allowed). Returns <0, 0 or >0. */
+const SEMVER = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/;
+
+/** Compares x.y.z versions (a leading 'v' and a -prerelease suffix are allowed): X.Y.Z-pre < X.Y.Z. Returns <0, 0 or >0. */
 export function compareSemver(a: string, b: string): number {
-  const pa = STABLE.exec(a.trim());
-  const pb = STABLE.exec(b.trim());
-  if (!pa || !pb) throw new Error(`Not a stable semver: ${!pa ? a : b}`);
+  const pa = SEMVER.exec(a.trim());
+  const pb = SEMVER.exec(b.trim());
+  if (!pa || !pb) throw new Error(`Not a semver: ${!pa ? a : b}`);
   for (let i = 1; i <= 3; i++) {
     const d = Number(pa[i]) - Number(pb[i]);
     if (d !== 0) return d;
   }
-  return 0;
+  if (pa[4] === undefined && pb[4] === undefined) return 0;
+  if (pa[4] === undefined) return 1;
+  if (pb[4] === undefined) return -1;
+  return pa[4] < pb[4] ? -1 : pa[4] > pb[4] ? 1 : 0;
 }
 
 const bare = (v: string): string => v.trim().replace(/^v/, '');
@@ -55,10 +60,15 @@ export function createUpdateService(o: {
   fetch?: typeof fetch;
   now?: () => number;
   repo?: string;
+  /** Receives update-check problems; they are never printed for the user. Defaults to console.error. */
+  log?: (msg: string) => void;
+  timeoutMs?: number;
 }): UpdateService {
   const doFetch = o.fetch ?? fetch;
   const now = o.now ?? Date.now;
   const repo = o.repo ?? 'HarryB977/Hotspotter';
+  const log = o.log ?? ((msg: string) => console.error(msg));
+  const timeoutMs = o.timeoutMs ?? 10_000;
   const file = join(o.dir, 'updates.json');
 
   async function load(): Promise<Persisted> {
@@ -84,7 +94,7 @@ export function createUpdateService(o: {
       await writeFile(tmp, JSON.stringify(p), 'utf8');
       await rename(tmp, file);
     } catch (err) {
-      console.error('update state not saved:', err instanceof Error ? err.message : 'unknown error');
+      log(`update state not saved: ${err instanceof Error ? err.message : 'unknown error'}`);
     }
   }
 
@@ -95,10 +105,21 @@ export function createUpdateService(o: {
     };
     if (o.token) headers.Authorization = `Bearer ${o.token}`;
     try {
-      const res = await doFetch(`https://api.github.com/repos/${repo}/releases/latest`, { headers });
-      if (res.status === 401 || res.status === 403) return { kind: 'authError' };
+      const res = await doFetch(`https://api.github.com/repos/${repo}/releases/latest`, {
+        headers,
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      const rateLimited = res.status === 429 || (res.status === 403 && res.headers.get('x-ratelimit-remaining') === '0');
+      if (rateLimited) {
+        log(`update check failed: rate limited (HTTP ${res.status})`);
+        return null;
+      }
+      if (res.status === 401 || res.status === 403) {
+        log(`update check failed: access denied (HTTP ${res.status})`);
+        return { kind: 'authError' };
+      }
       if (!res.ok) {
-        console.error('update check failed: HTTP', res.status);
+        log(`update check failed: HTTP ${res.status}`);
         return null;
       }
       const body = (await res.json()) as { tag_name?: unknown; body?: unknown; html_url?: unknown };
@@ -108,10 +129,13 @@ export function createUpdateService(o: {
         kind: 'release',
         version: bare(tag),
         notes: typeof body.body === 'string' ? body.body : '',
-        url: typeof body.html_url === 'string' ? body.html_url : '',
+        url:
+          typeof body.html_url === 'string' && body.html_url.startsWith('https://github.com/')
+            ? body.html_url
+            : `https://github.com/${repo}/releases`,
       };
     } catch (err) {
-      console.error('update check failed:', err instanceof Error ? err.message : 'unknown error');
+      log(`update check failed: ${err instanceof Error ? err.message : 'unknown error'}`);
       return null;
     }
   }
@@ -120,7 +144,12 @@ export function createUpdateService(o: {
     const l = p.latest;
     if (l.kind === 'authError') return { status: 'authError' };
     if (l.kind !== 'release') return { status: 'none' };
-    if (compareSemver(l.version, o.currentVersion) <= 0) return { status: 'none' };
+    try {
+      if (compareSemver(l.version, o.currentVersion) <= 0) return { status: 'none' };
+    } catch {
+      // A hand-edited updates.json or an odd current version must not break the route.
+      return { status: 'none' };
+    }
     if (p.skipped.map(bare).includes(l.version)) return { status: 'none' };
     return { status: 'available', version: l.version, notes: l.notes, url: l.url };
   }

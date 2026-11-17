@@ -1,5 +1,5 @@
 // Entry point of hotspotter.exe (bundled to CJS and packed as a Node SEA by scripts/build-portable.mjs).
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { buildApp } from './app';
@@ -47,12 +47,6 @@ async function main(): Promise<void> {
   rotateLog(dir);
   const token = typeof __HOTSPOTTER_GH_TOKEN__ !== 'undefined' ? __HOTSPOTTER_GH_TOKEN__ : '';
   const log = createFileLog(dir, [token]);
-  // Update-check failures and other server-side problems are reported with console.error; keep a copy in the log.
-  const consoleError = console.error.bind(console);
-  console.error = (...args: unknown[]) => {
-    consoleError(...args);
-    log(args.map((a) => (a instanceof Error ? a.message : String(a))).join(' '));
-  };
 
   const running = await findRunning(dir);
   if (running) {
@@ -71,9 +65,20 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
+  const webRoot = join(dirname(process.execPath), 'web');
+  if (!existsSync(webRoot)) {
+    say(
+      'Falta la carpeta web junto a hotspotter.exe: descomprime el zip entero y abre el .exe desde esa carpeta.',
+      '',
+      'Pulsa Intro para salir.',
+    );
+    await waitForEnter();
+    process.exit(1);
+  }
+
   const port = await pickPort(PREFERRED_PORT);
-  const updates = createUpdateService({ currentVersion: APP_VERSION, token: token || undefined, dir });
-  const app = buildApp({ webRoot: join(dirname(process.execPath), 'web'), port, dev: false, updates });
+  const updates = createUpdateService({ currentVersion: APP_VERSION, token: token || undefined, dir, log });
+  const app = buildApp({ webRoot, port, dev: false, updates });
   app.addHook('onError', async (req, _reply, err) => {
     log(`server error ${req.method} ${req.url.split('?')[0]}: ${err.message}`);
   });

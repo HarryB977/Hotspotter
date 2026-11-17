@@ -2,7 +2,7 @@
 // the second-copy path and the different-version path. Every process it starts is killed on exit.
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -15,6 +15,7 @@ const { version } = JSON.parse(await readFile(join(root, 'apps', 'server', 'pack
 const children = [];
 const servers = [];
 let dataDir;
+let bareDir;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -23,8 +24,8 @@ function check(cond, msg) {
   console.log(`  ok  ${msg}`);
 }
 
-function start(env, stdin = 'ignore') {
-  const child = spawn(exe, [], {
+function start(env, stdin = 'ignore', exePath = exe) {
+  const child = spawn(exePath, [], {
     env: { ...process.env, HOTSPOTTER_NO_BROWSER: '1', HOTSPOTTER_DATA_DIR: dataDir, ...env },
     stdio: [stdin, 'pipe', 'pipe'],
     windowsHide: true,
@@ -108,6 +109,18 @@ try {
   other.stdin.write('\n');
   check((await exitWithin(other, 10_000)) === 0, 'exits after Enter');
 
+  console.log('[smoke] exe without its web folder');
+  const bare = await mkdtemp(join(tmpdir(), 'hs-smoke-bare-'));
+  bareDir = bare;
+  const bareExe = join(bare, 'hotspotter.exe');
+  await copyFile(exe, bareExe);
+  const lonely = start({ HOTSPOTTER_DATA_DIR: join(bare, 'data') }, 'pipe', bareExe);
+  await waitFor('missing-web message', async () => lonely.output.includes('Falta la carpeta web junto a hotspotter.exe'));
+  check(lonely.exitCode === null, 'waits for Enter before exiting');
+  lonely.stdin.write('\n');
+  check((await exitWithin(lonely, 10_000)) === 1, 'exits after Enter without starting a server');
+  check(!lonely.output.includes('Cierra esta ventana'), 'no server was started');
+
   console.log('[smoke] PASS');
 } catch (err) {
   failed = true;
@@ -116,6 +129,7 @@ try {
 } finally {
   for (const c of children) kill(c);
   for (const s of servers) s.close();
+  if (bareDir) await rm(bareDir, { recursive: true, force: true }).catch(() => {});
   if (dataDir) await rm(dataDir, { recursive: true, force: true }).catch(() => {});
 }
 process.exit(failed ? 1 : 0);

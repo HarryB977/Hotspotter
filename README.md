@@ -34,12 +34,13 @@ npm run bench  # banco visual sobre samples/pbr (necesita samples/, que no está
 
 Los releases los crea GitHub Actions (`.github/workflows/release.yml`) al empujar un tag `vX.Y.Z`. Detalles en [docs/08-distribution.md](docs/08-distribution.md).
 
-1. **Crea el token de lectura** (una sola vez): GitHub → Settings → Developer settings → Fine-grained personal access tokens → Generate new token. Repositorio: solo `HarryB977/Hotspotter`. Permisos: Contents de solo lectura y Metadata de solo lectura. Elige tú la caducidad.
+1. **Crea el token de lectura** (una sola vez): GitHub → Settings → Developer settings → Fine-grained personal access tokens → Generate new token. Repositorio: solo `HarryB977/Hotspotter`. Permisos: Contents de solo lectura y Metadata de solo lectura. Elige una caducidad larga y planifica un release antes de que venza: al caducar, todos los `.exe` ya repartidos muestran la línea de aviso de acceso (`authError`).
 2. **Guárdalo como secreto** del repositorio: Settings → Secrets and variables → Actions → New repository secret, con el nombre `HOTSPOTTER_READ_TOKEN`.
-3. **Antes de la primera versión, haz el ensayo**: pestaña Actions → "Release" → Run workflow. Compila y sube el zip como artefacto sin publicar nada; descárgalo y pruébalo.
-4. **Publica**: sube la versión en todos los `package.json`, añade una sección `## [X.Y.Z]` a `CHANGELOG.md` (sus notas serán las del release), haz commit y:
+3. **Antes de la primera versión, haz el ensayo**: pestaña Actions → "Release" → Run workflow. Compila y sube el zip como artefacto sin publicar nada. Lo encuentras al final de la página de esa ejecución, en la sección «Artifacts»; es un zip que contiene dentro el zip portable. Descárgalo, descomprímelo y pruébalo.
+4. **Publica**: sube la versión en todos los `package.json`, ejecuta `npm install` para que `package-lock.json` quede al día, añade una sección `## [X.Y.Z]` a `CHANGELOG.md` (sus notas serán las del release), haz commit y:
 
    ```
+   git push
    git tag vX.Y.Z
    git push origin vX.Y.Z
    ```
@@ -49,7 +50,7 @@ Los releases los crea GitHub Actions (`.github/workflows/release.yml`) al empuja
 
 ### Para tus compañeros
 
-- Descarga el zip del release y descomprímelo; ejecuta `hotspotter.exe` de la carpeta.
+- Descarga el zip del release y descomprímelo entero; ejecuta `hotspotter.exe` desde la carpeta descomprimida, nunca desde dentro del zip.
 - SmartScreen avisará porque el `.exe` no está firmado: Más información → Ejecutar de todas formas.
 - Para actualizar, cierra Hotspotter (la ventana de consola) y sobrescribe la carpeta con la nueva.
 - Tus datos están en `%LOCALAPPDATA%\Hotspotter`, fuera de la carpeta del programa, así que sobrescribirla no los borra. Ahí también está `hotspotter.log`.

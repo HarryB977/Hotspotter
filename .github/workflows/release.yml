@@ -46,6 +46,11 @@ jobs:
           echo "HS_TAG=${TAG}" >> "$GITHUB_ENV"
           node scripts/check-version.mjs "${TAG}"
 
+      # Fails early when CHANGELOG.md has no section for this version (on a manual run, the root version).
+      - name: Release notes
+        shell: bash
+        run: node scripts/release-notes.mjs "${HS_TAG#v}" > notes.md
+
       # The token is read from the secret by the build script, which never prints it.
       # Without the secret the build still works and update checks go unauthenticated.
       - name: Build portable
@@ -59,11 +64,6 @@ jobs:
         with:
           name: hotspotter-portable
           path: dist/*.zip
-
-      - name: Release notes
-        if: github.event_name == 'push'
-        shell: bash
-        run: node scripts/release-notes.mjs "${HS_TAG#v}" > notes.md
 
       - name: Create release
         if: github.event_name == 'push'

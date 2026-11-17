@@ -6,7 +6,7 @@ type UpdateState =
   | { status: 'available'; version: string; notes: string; url: string }
   | { status: 'authError' };
 
-/** The server's update state; a missing route (dev) or any failure counts as no update. */
+/** The server's update state; a missing route (404, e.g. an older server) or any failure counts as no update. */
 async function fetchUpdate(): Promise<UpdateState> {
   try {
     const res = await fetch('/api/update');

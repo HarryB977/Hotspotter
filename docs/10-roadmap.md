@@ -66,6 +66,13 @@ Pendiente tras la revisión final de la vista 3D, formas y desgaste (2026-11-17)
 - El test del límite de búfer de la exportación (`app.spec.ts:362`) falla a veces con la máquina cargada.
 - Las bandas de desgaste de arriba y abajo de una franja repetible usan ruido no periódico: donde la franja se repite, su patrón de rotura cambia de golpe (decisión 89).
 
+Pendiente tras la revisión final de la v0.1-D (2026-11-17):
+
+- «Omitir esta versión» tiene una carrera: `skip` y una comprobación en curso leen y guardan `updates.json` por separado, así que la última en guardar puede pisar la omisión y el aviso reaparece.
+- La ventana de notas del aviso de actualización solo se cierra con el botón «Notas»: falta cerrarla con Escape y con un clic fuera.
+- El empaquetado inyecta con postject en una copia de `node.exe` que conserva su firma Authenticode, ya inválida tras la inyección; habría que quitarla antes de inyectar.
+- Dos copias lanzadas exactamente a la vez pueden pasar ambas la comprobación de `instance.json` antes de que ninguna lo escriba; el efecto es un segundo servidor en otro puerto.
+
 ## Para la v0.2 (pedido por el usuario, 2026-11-12)
 
 - **Deshilachado** (papel, tela, césped) como familia de desgaste (decisión 56).
